@@ -58,9 +58,9 @@ cd ~/.dotfiles
 1. Git identity setup in `~/.gitconfig.local`
 2. migration of accidentally managed `user.name` / `user.email`
 3. GitHub browser authentication when needed
-4. `gh auth setup-git`
-5. pinned private agent-config submodule sync/init
-6. dotfile link/check
+4. GitHub credential helper setup into `~/.gitconfig.local`
+5. base dotfile link/check
+6. pinned private agent-config submodule sync/init
 7. Infisical user login when needed
 8. `infisical init` when no project binding exists
 9. Infisical runtime-access validation
@@ -77,7 +77,7 @@ Do **not** use `git config --global user.name/user.email` after `~/.gitconfig` i
 
 ## Agent configuration
 
-Global Claude Code, Codex, and OpenCode repositories are pinned as sibling submodules under `agents/`. A fresh clone does not need `--recurse-submodules`: `script/bootstrap` authenticates GitHub first, then initializes the exact commits recorded by the parent repository.
+Global Claude Code, Codex, and OpenCode repositories are pinned as sibling submodules under `agents/`. A fresh clone does not need `--recurse-submodules`: `script/bootstrap` authenticates GitHub, stores the GitHub credential helper in machine-local `~/.gitconfig.local`, links the stable global Git config, then initializes the exact commits recorded by the parent repository.
 
 The current submodules are fetched automatically but are **not yet linked into active agent config paths**. Each child repository must first be made cross-platform; for example, the current Claude settings contain a Windows-specific absolute hook path. Activation before that cleanup would make the same dotfiles commit behave differently across operating systems.
 
