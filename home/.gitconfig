@@ -1,0 +1,11 @@
+[init]
+	defaultBranch = main
+
+[fetch]
+	prune = true
+
+[core]
+	excludesFile = ~/.config/git/ignore
+
+[include]
+	path = ~/.gitconfig.local

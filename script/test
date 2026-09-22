@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+
+clean_home="$tmp/clean-home"
+mkdir -p "$clean_home"
+
+HOME="$clean_home" "$repo_root/script/link"
+HOME="$clean_home" "$repo_root/script/check"
+HOME="$clean_home" "$repo_root/script/link"
+HOME="$clean_home" "$repo_root/script/check"
+
+expected_gitconfig="$repo_root/home/.gitconfig"
+actual_gitconfig="$(readlink "$clean_home/.gitconfig")"
+if [[ "$actual_gitconfig" != "$expected_gitconfig" ]]; then
+  printf 'expected .gitconfig link to %s, got %s\n' "$expected_gitconfig" "$actual_gitconfig" >&2
+  exit 1
+fi
+
+conflict_home="$tmp/conflict-home"
+mkdir -p "$conflict_home"
+printf 'keep-me\n' > "$conflict_home/.gitconfig"
+
+if HOME="$conflict_home" "$repo_root/script/link"; then
+  printf 'link unexpectedly succeeded with an unmanaged conflict\n' >&2
+  exit 1
+fi
+
+if [[ "$(cat "$conflict_home/.gitconfig")" != 'keep-me' ]]; then
+  printf 'link modified an unmanaged target\n' >&2
+  exit 1
+fi
+
+if [[ -e "$conflict_home/.config/git/ignore" || -L "$conflict_home/.config/git/ignore" ]]; then
+  printf 'link partially applied other managed targets before aborting\n' >&2
+  exit 1
+fi
+
+printf 'symlink behavior tests passed\n'
