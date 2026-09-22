@@ -37,7 +37,10 @@ cat > "$fake_bin/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "$FAKE_GH_LOG"
-exit 0
+
+if [[ "$*" == "auth setup-git --hostname github.com" ]]; then
+  git config --global credential.https://github.com.helper '!gh auth git-credential'
+fi
 EOF
 
 cat > "$fake_bin/infisical" <<'EOF'
@@ -85,6 +88,16 @@ fi
 
 if ! grep -Fq 'auth setup-git --hostname github.com' "$gh_log"; then
   printf 'bootstrap did not configure gh as the Git credential helper\n' >&2
+  exit 1
+fi
+
+if [[ "$(git config --file "$home/.gitconfig.local" --get credential.https://github.com.helper)" != '!gh auth git-credential' ]]; then
+  printf 'bootstrap did not keep the GitHub credential helper in local Git config\n' >&2
+  exit 1
+fi
+
+if git config --file "$repo/home/.gitconfig" --get credential.https://github.com.helper >/dev/null 2>&1; then
+  printf 'bootstrap leaked the GitHub credential helper into managed .gitconfig\n' >&2
   exit 1
 fi
 
