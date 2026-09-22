@@ -61,7 +61,7 @@ EOF
 
 chmod +x "$fake_bin/gh" "$fake_bin/infisical"
 
-HOME="$home" PATH="$fake_bin:$PATH" FAKE_GH_LOG="$gh_log" FAKE_INFISICAL_LOG="$infisical_log" DOTFILES_GIT_NAME='Fallback User' DOTFILES_GIT_EMAIL='fallback@example.invalid' DOTFILES_ALLOW_INTERACTIVE_AUTH=1 "$repo/script/bootstrap"
+HOME="$home" PATH="$fake_bin:$PATH" FAKE_GH_LOG="$gh_log" FAKE_INFISICAL_LOG="$infisical_log" DOTFILES_GIT_NAME='Fallback User' DOTFILES_GIT_EMAIL='fallback@example.invalid' DOTFILES_ALLOW_INTERACTIVE_AUTH=1 DOTFILES_SKIP_AGENT_SUBMODULES=1 "$repo/script/bootstrap"
 
 if [[ "$(git config --file "$home/.gitconfig.local" --get user.name)" != 'Migrated User' ]]; then
   printf 'bootstrap did not migrate Git user.name to local config\n' >&2
