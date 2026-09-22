@@ -19,6 +19,10 @@ git -C "$repo" config user.email 'committer@example.invalid'
 git -C "$repo" add .
 git -C "$repo" commit -qm 'test fixture'
 
+# Exercise the fresh-machine path even though the real repository now commits
+# non-secret Infisical project binding metadata.
+rm -f "$repo/.infisical.json"
+
 cat >> "$repo/home/.gitconfig" <<'EOF'
 
 [user]
