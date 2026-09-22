@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+source_root="$repo_root/home"
+target_root="${HOME:?HOME must be set}"
+status=0
+
+while IFS= read -r -d '' source; do
+  relative="${source#"$source_root"/}"
+  target="$target_root/$relative"
+
+  if [[ ! -L "$target" ]]; then
+    if [[ -e "$target" ]]; then
+      printf 'drift   %s exists but is not a symlink\n' "$target" >&2
+    else
+      printf 'missing %s\n' "$target" >&2
+    fi
+    status=1
+    continue
+  fi
+
+  if [[ "$(readlink "$target")" != "$source" ]]; then
+    printf 'drift   %s -> %s (expected %s)\n' "$target" "$(readlink "$target")" "$source" >&2
+    status=1
+    continue
+  fi
+
+  printf 'ok      %s\n' "$target"
+done < <(find "$source_root" -type f -print0)
+
+exit "$status"
