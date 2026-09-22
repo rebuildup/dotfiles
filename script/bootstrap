@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+local_git_config="${DOTFILES_GIT_LOCAL_CONFIG:-$HOME/.gitconfig.local}"
+infisical_config="$repo_root/.infisical.json"
+created_infisical_binding=false
+
+require_command() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    printf 'missing required command: %s (install it via pc-setup)\n' "$1" >&2
+    exit 1
+  fi
+}
+
+for command in git gh infisical; do
+  require_command "$command"
+done
+
+"$repo_root/script/link"
+"$repo_root/script/check"
+
+mkdir -p "$(dirname "$local_git_config")"
+touch "$local_git_config"
+chmod 600 "$local_git_config"
+
+managed_name="$(git config --file "$repo_root/home/.gitconfig" --get user.name 2>/dev/null || true)"
+managed_email="$(git config --file "$repo_root/home/.gitconfig" --get user.email 2>/dev/null || true)"
+
+if [[ -n "$managed_name" || -n "$managed_email" ]]; then
+  printf 'migrating Git identity out of managed ~/.gitconfig into %s\n' "$local_git_config"
+
+  if [[ -n "$managed_name" ]] && ! git config --file "$local_git_config" --get user.name >/dev/null 2>&1; then
+    git config --file "$local_git_config" user.name "$managed_name"
+  fi
+  if [[ -n "$managed_email" ]] && ! git config --file "$local_git_config" --get user.email >/dev/null 2>&1; then
+    git config --file "$local_git_config" user.email "$managed_email"
+  fi
+
+  git config --file "$repo_root/home/.gitconfig" --unset-all user.name 2>/dev/null || true
+  git config --file "$repo_root/home/.gitconfig" --unset-all user.email 2>/dev/null || true
+  printf 'warning managed Git config changed while removing local identity; review git diff before committing\n' >&2
+fi
+
+git_name="$(git config --file "$local_git_config" --get user.name 2>/dev/null || true)"
+git_email="$(git config --file "$local_git_config" --get user.email 2>/dev/null || true)"
+
+if [[ -z "$git_name" ]]; then
+  git_name="${DOTFILES_GIT_NAME:-}"
+  if [[ -z "$git_name" && -t 0 ]]; then
+    read -r -p 'Git user.name: ' git_name
+  fi
+fi
+
+if [[ -z "$git_email" ]]; then
+  git_email="${DOTFILES_GIT_EMAIL:-}"
+  if [[ -z "$git_email" && -t 0 ]]; then
+    read -r -p 'Git user.email: ' git_email
+  fi
+fi
+
+if [[ -z "$git_name" || -z "$git_email" ]]; then
+  printf 'Git identity is missing. Re-run interactively or set DOTFILES_GIT_NAME and DOTFILES_GIT_EMAIL.\n' >&2
+  exit 1
+fi
+
+git config --file "$local_git_config" user.name "$git_name"
+git config --file "$local_git_config" user.email "$git_email"
+printf 'ok      Git identity stored in %s\n' "$local_git_config"
+
+if ! gh auth status --hostname github.com >/dev/null 2>&1; then
+  if [[ -t 0 ]]; then
+    printf 'GitHub authentication is required; starting browser login.\n'
+    gh auth login --hostname github.com --git-protocol https --web
+  else
+    printf 'GitHub authentication is missing. Run: gh auth login --hostname github.com --git-protocol https --web\n' >&2
+    exit 1
+  fi
+fi
+
+gh auth setup-git --hostname github.com
+gh auth status --hostname github.com
+printf 'ok      GitHub HTTPS credential helper configured through gh\n'
+
+if [[ ! -f "$infisical_config" ]]; then
+  if [[ ! -t 0 && "${DOTFILES_ALLOW_INTERACTIVE_AUTH:-0}" != "1" ]]; then
+    printf 'missing %s; run bootstrap interactively so Infisical project binding can be selected\n' "$infisical_config" >&2
+    exit 1
+  fi
+
+  printf 'Infisical project binding is missing; starting user login and project selection.\n'
+  infisical login
+  (
+    cd "$repo_root"
+    infisical init
+  )
+  created_infisical_binding=true
+fi
+
+if ! "$repo_root/script/secrets-doctor"; then
+  if [[ -t 0 ]]; then
+    printf 'Infisical access validation failed; refreshing user login.\n'
+    infisical login
+    "$repo_root/script/secrets-doctor"
+  else
+    printf 'Infisical access validation failed. Run infisical login interactively and retry.\n' >&2
+    exit 1
+  fi
+fi
+
+"$repo_root/script/check-secrets"
+
+if [[ "$created_infisical_binding" == true ]]; then
+  printf '\ncreated %s\n' "$infisical_config"
+  printf 'This file contains project binding metadata, not secret values. Review it and commit it through the normal issue/release flow.\n'
+fi
+
+printf '\nbootstrap complete\n'
