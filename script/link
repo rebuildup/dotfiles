@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+source_root="$repo_root/home"
+target_root="${HOME:?HOME must be set}"
+status=0
+
+# Preflight every managed target before mutating HOME. A conflict anywhere
+# aborts the whole operation so linking never leaves a partial result.
+while IFS= read -r -d '' source; do
+  relative="${source#"$source_root"/}"
+  target="$target_root/$relative"
+
+  if [[ -L "$target" ]]; then
+    if [[ "$(readlink "$target")" != "$source" ]]; then
+      printf 'conflict %s -> %s (expected %s)\n' "$target" "$(readlink "$target")" "$source" >&2
+      status=1
+    fi
+    continue
+  fi
+
+  if [[ -e "$target" ]]; then
+    printf 'conflict %s already exists and is unmanaged\n' "$target" >&2
+    status=1
+  fi
+done < <(find "$source_root" -type f -print0)
+
+if [[ "$status" -ne 0 ]]; then
+  exit "$status"
+fi
+
+while IFS= read -r -d '' source; do
+  relative="${source#"$source_root"/}"
+  target="$target_root/$relative"
+
+  if [[ -L "$target" ]]; then
+    printf 'ok      %s\n' "$target"
+    continue
+  fi
+
+  mkdir -p "$(dirname "$target")"
+  ln -s "$source" "$target"
+  printf 'linked  %s -> %s\n' "$target" "$source"
+done < <(find "$source_root" -type f -print0)
