@@ -13,12 +13,24 @@ require_command() {
   fi
 }
 
+sync_agent_submodules() {
+  if [[ "${DOTFILES_SKIP_AGENT_SUBMODULES:-0}" == "1" ]]; then
+    printf 'skip    agent config submodules (DOTFILES_SKIP_AGENT_SUBMODULES=1)\n'
+    return
+  fi
+
+  if [[ ! -f "$repo_root/.gitmodules" ]]; then
+    return
+  fi
+
+  printf 'syncing pinned agent config submodules\n'
+  git -C "$repo_root" submodule sync --recursive
+  git -C "$repo_root" submodule update --init --recursive
+}
+
 for command in git gh infisical; do
   require_command "$command"
 done
-
-"$repo_root/script/link"
-"$repo_root/script/check"
 
 mkdir -p "$(dirname "$local_git_config")"
 touch "$local_git_config"
@@ -81,6 +93,14 @@ fi
 gh auth setup-git --hostname github.com
 gh auth status --hostname github.com
 printf 'ok      GitHub HTTPS credential helper configured through gh\n'
+
+# Agent configuration repositories are private. Authenticate Git first, then
+# fetch the pinned submodule commits. Fresh clones intentionally do not require
+# --recurse-submodules.
+sync_agent_submodules
+
+"$repo_root/script/link"
+"$repo_root/script/check"
 
 if [[ ! -f "$infisical_config" ]]; then
   if [[ ! -t 0 && "${DOTFILES_ALLOW_INTERACTIVE_AUTH:-0}" != "1" ]]; then
