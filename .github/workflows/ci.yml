@@ -11,11 +11,13 @@ permissions:
   contents: read
 
 jobs:
-  symlink:
+  validation:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Check shell syntax
-        run: bash -n script/link script/check script/test
+        run: bash -n script/link script/check script/test script/secrets-init script/secrets-doctor script/with-secrets script/check-secrets
       - name: Test symlink behavior
         run: ./script/test
+      - name: Guard secret material
+        run: ./script/check-secrets
