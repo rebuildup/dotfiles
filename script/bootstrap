@@ -26,6 +26,14 @@ sync_agent_submodules() {
   printf 'syncing pinned agent config submodules\n'
   git -C "$repo_root" submodule sync --recursive
   git -C "$repo_root" submodule update --init --recursive
+
+  submodule_status="$(git -C "$repo_root" submodule status --recursive)"
+  if grep -Eq '^[+-U]' <<<"$submodule_status"; then
+    printf 'agent submodule state does not match the pinned parent commit:\n%s\n' "$submodule_status" >&2
+    exit 1
+  fi
+
+  printf '%s\n' "$submodule_status"
 }
 
 for command in git gh infisical; do
