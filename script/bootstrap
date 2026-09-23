@@ -14,6 +14,403 @@ require_command() {
   fi
 }
 
+next_backup_path() {
+  local target="$1"
+  local base="$target.pre-dotfiles"
+  local candidate="$base"
+  local index=1
+
+  while [[ -e "$candidate" || -L "$candidate" ]]; do
+    candidate="$base.$index"
+    index=$((index + 1))
+  done
+
+  printf '%s\n' "$candidate"
+}
+
+preflight_managed_target_migration() {
+  local source="$1"
+  local target="$2"
+
+  if [[ ! -e "$target" && ! -L "$target" ]]; then
+    return
+  fi
+
+  if [[ -L "$target" ]]; then
+    if [[ "$(readlink "$target")" == "$source" ]]; then
+      return
+    fi
+    printf 'conflict %s -> %s (expected %s)\n' "$target" "$(readlink "$target")" "$source" >&2
+    return 1
+  fi
+
+  if [[ ! -f "$target" ]]; then
+    printf 'conflict %s exists but is not a regular file; migrate it manually\n' "$target" >&2
+    return 1
+  fi
+}
+
+preflight_git_migrations() {
+  local managed_gitconfig="$repo_root/home/.gitconfig"
+  local managed_ignore="$repo_root/home/.config/git/ignore"
+
+  preflight_managed_target_migration "$managed_gitconfig" "$HOME/.gitconfig"
+  preflight_managed_target_migration "$managed_ignore" "$HOME/.config/git/ignore"
+
+  if [[ -f "$HOME/.gitconfig" && ! -L "$HOME/.gitconfig" ]]; then
+    if ! git config --file "$HOME/.gitconfig" --list >/dev/null; then
+      printf 'existing %s is not valid Git config; refusing automatic migration\n' "$HOME/.gitconfig" >&2
+      return 1
+    fi
+  fi
+}
+
+migrate_unmanaged_gitconfig() {
+  local target="$HOME/.gitconfig"
+  local backup
+  local record
+  local key
+  local value
+
+  if [[ ! -e "$target" || -L "$target" ]]; then
+    return
+  fi
+
+  backup="$(next_backup_path "$target")"
+
+  while IFS= read -r -d '' record; do
+    key="\${record%%
+  if [[ "${DOTFILES_SKIP_AGENT_SUBMODULES:-0}" == "1" ]]; then
+    printf 'skip    agent config submodules (DOTFILES_SKIP_AGENT_SUBMODULES=1)\n'
+    return
+  fi
+
+  if [[ ! -f "$repo_root/.gitmodules" ]]; then
+    return
+  fi
+
+  printf 'syncing pinned agent config submodules\n'
+  git -C "$repo_root" submodule sync --recursive
+  git -C "$repo_root" submodule update --init --recursive
+
+  submodule_status="$(git -C "$repo_root" submodule status --recursive)"
+  if grep -Eq '^[+-U]' <<<"$submodule_status"; then
+    printf 'agent submodule state does not match the pinned parent commit:\n%s\n' "$submodule_status" >&2
+    exit 1
+  fi
+
+  printf '%s\n' "$submodule_status"
+}
+
+for command in git gh infisical; do
+  require_command "$command"
+done
+
+preflight_git_migrations
+
+mkdir -p "$(dirname "$local_git_config")"
+touch "$local_git_config"
+chmod 600 "$local_git_config"
+
+migrate_unmanaged_gitconfig
+migrate_unmanaged_gitignore
+refresh_local_gitignore_override
+
+managed_name="$(git config --file "$repo_root/home/.gitconfig" --get user.name 2>/dev/null || true)"
+managed_email="$(git config --file "$repo_root/home/.gitconfig" --get user.email 2>/dev/null || true)"
+
+if [[ -n "$managed_name" || -n "$managed_email" ]]; then
+  printf 'migrating Git identity out of managed ~/.gitconfig into %s\n' "$local_git_config"
+
+  if [[ -n "$managed_name" ]] && ! git config --file "$local_git_config" --get user.name >/dev/null 2>&1; then
+    git config --file "$local_git_config" user.name "$managed_name"
+  fi
+  if [[ -n "$managed_email" ]] && ! git config --file "$local_git_config" --get user.email >/dev/null 2>&1; then
+    git config --file "$local_git_config" user.email "$managed_email"
+  fi
+
+  git config --file "$repo_root/home/.gitconfig" --unset-all user.name 2>/dev/null || true
+  git config --file "$repo_root/home/.gitconfig" --unset-all user.email 2>/dev/null || true
+  printf 'warning managed Git config changed while removing local identity; review git diff before committing\n' >&2
+fi
+
+git_name="$(git config --file "$local_git_config" --get user.name 2>/dev/null || true)"
+git_email="$(git config --file "$local_git_config" --get user.email 2>/dev/null || true)"
+
+if [[ -z "$git_name" ]]; then
+  git_name="${DOTFILES_GIT_NAME:-}"
+  if [[ -z "$git_name" && -t 0 ]]; then
+    read -r -p 'Git user.name: ' git_name
+  fi
+fi
+
+if [[ -z "$git_email" ]]; then
+  git_email="${DOTFILES_GIT_EMAIL:-}"
+  if [[ -z "$git_email" && -t 0 ]]; then
+    read -r -p 'Git user.email: ' git_email
+  fi
+fi
+
+if [[ -z "$git_name" || -z "$git_email" ]]; then
+  printf 'Git identity is missing. Re-run interactively or set DOTFILES_GIT_NAME and DOTFILES_GIT_EMAIL.\n' >&2
+  exit 1
+fi
+
+git config --file "$local_git_config" user.name "$git_name"
+git config --file "$local_git_config" user.email "$git_email"
+printf 'ok      Git identity stored in %s\n' "$local_git_config"
+
+if ! gh auth status --hostname github.com >/dev/null 2>&1; then
+  if [[ -t 0 ]]; then
+    printf 'GitHub authentication is required; starting browser login.\n'
+    gh auth login --hostname github.com --git-protocol https --web
+  else
+    printf 'GitHub authentication is missing. Run: gh auth login --hostname github.com --git-protocol https --web\n' >&2
+    exit 1
+  fi
+fi
+
+GIT_CONFIG_GLOBAL="$local_git_config" gh auth setup-git --hostname github.com
+gh auth status --hostname github.com
+printf 'ok      GitHub HTTPS credential helper stored in %s\n' "$local_git_config"
+
+# Install the stable ~/.gitconfig include before Git needs credentials for
+# private submodules. gh writes only to ~/.gitconfig.local above.
+"$repo_root/script/link"
+"$repo_root/script/check"
+
+# Agent configuration repositories are private. Authenticate Git first, then
+# fetch the pinned submodule commits. Fresh clones intentionally do not require
+# --recurse-submodules.
+sync_agent_submodules
+
+if [[ ! -f "$infisical_config" ]]; then
+  printf 'missing tracked Infisical project binding: %s\n' "$infisical_config" >&2
+  printf 'restore the file from Git instead of running infisical init manually\n' >&2
+  exit 1
+fi
+
+if ! "$repo_root/script/secrets-doctor"; then
+  if [[ -t 0 || "${DOTFILES_ALLOW_INTERACTIVE_AUTH:-0}" == "1" ]]; then
+    printf 'Infisical self-host access validation failed; refreshing user login for %s.\n' "$INFISICAL_SITE_URL"
+    infisical login "--domain=$INFISICAL_SITE_URL"
+    "$repo_root/script/secrets-doctor"
+  else
+    printf 'Infisical access validation failed. Run: infisical login --domain=%s\n' "$INFISICAL_SITE_URL" >&2
+    exit 1
+  fi
+fi
+
+"$repo_root/script/check-secrets"
+
+printf '\nbootstrap complete\n'
+\n'*}"
+    value="\${record#*
+  if [[ "${DOTFILES_SKIP_AGENT_SUBMODULES:-0}" == "1" ]]; then
+    printf 'skip    agent config submodules (DOTFILES_SKIP_AGENT_SUBMODULES=1)\n'
+    return
+  fi
+
+  if [[ ! -f "$repo_root/.gitmodules" ]]; then
+    return
+  fi
+
+  printf 'syncing pinned agent config submodules\n'
+  git -C "$repo_root" submodule sync --recursive
+  git -C "$repo_root" submodule update --init --recursive
+
+  submodule_status="$(git -C "$repo_root" submodule status --recursive)"
+  if grep -Eq '^[+-U]' <<<"$submodule_status"; then
+    printf 'agent submodule state does not match the pinned parent commit:\n%s\n' "$submodule_status" >&2
+    exit 1
+  fi
+
+  printf '%s\n' "$submodule_status"
+}
+
+for command in git gh infisical; do
+  require_command "$command"
+done
+
+mkdir -p "$(dirname "$local_git_config")"
+touch "$local_git_config"
+chmod 600 "$local_git_config"
+
+managed_name="$(git config --file "$repo_root/home/.gitconfig" --get user.name 2>/dev/null || true)"
+managed_email="$(git config --file "$repo_root/home/.gitconfig" --get user.email 2>/dev/null || true)"
+
+if [[ -n "$managed_name" || -n "$managed_email" ]]; then
+  printf 'migrating Git identity out of managed ~/.gitconfig into %s\n' "$local_git_config"
+
+  if [[ -n "$managed_name" ]] && ! git config --file "$local_git_config" --get user.name >/dev/null 2>&1; then
+    git config --file "$local_git_config" user.name "$managed_name"
+  fi
+  if [[ -n "$managed_email" ]] && ! git config --file "$local_git_config" --get user.email >/dev/null 2>&1; then
+    git config --file "$local_git_config" user.email "$managed_email"
+  fi
+
+  git config --file "$repo_root/home/.gitconfig" --unset-all user.name 2>/dev/null || true
+  git config --file "$repo_root/home/.gitconfig" --unset-all user.email 2>/dev/null || true
+  printf 'warning managed Git config changed while removing local identity; review git diff before committing\n' >&2
+fi
+
+git_name="$(git config --file "$local_git_config" --get user.name 2>/dev/null || true)"
+git_email="$(git config --file "$local_git_config" --get user.email 2>/dev/null || true)"
+
+if [[ -z "$git_name" ]]; then
+  git_name="${DOTFILES_GIT_NAME:-}"
+  if [[ -z "$git_name" && -t 0 ]]; then
+    read -r -p 'Git user.name: ' git_name
+  fi
+fi
+
+if [[ -z "$git_email" ]]; then
+  git_email="${DOTFILES_GIT_EMAIL:-}"
+  if [[ -z "$git_email" && -t 0 ]]; then
+    read -r -p 'Git user.email: ' git_email
+  fi
+fi
+
+if [[ -z "$git_name" || -z "$git_email" ]]; then
+  printf 'Git identity is missing. Re-run interactively or set DOTFILES_GIT_NAME and DOTFILES_GIT_EMAIL.\n' >&2
+  exit 1
+fi
+
+git config --file "$local_git_config" user.name "$git_name"
+git config --file "$local_git_config" user.email "$git_email"
+printf 'ok      Git identity stored in %s\n' "$local_git_config"
+
+if ! gh auth status --hostname github.com >/dev/null 2>&1; then
+  if [[ -t 0 ]]; then
+    printf 'GitHub authentication is required; starting browser login.\n'
+    gh auth login --hostname github.com --git-protocol https --web
+  else
+    printf 'GitHub authentication is missing. Run: gh auth login --hostname github.com --git-protocol https --web\n' >&2
+    exit 1
+  fi
+fi
+
+GIT_CONFIG_GLOBAL="$local_git_config" gh auth setup-git --hostname github.com
+gh auth status --hostname github.com
+printf 'ok      GitHub HTTPS credential helper stored in %s\n' "$local_git_config"
+
+# Install the stable ~/.gitconfig include before Git needs credentials for
+# private submodules. gh writes only to ~/.gitconfig.local above.
+"$repo_root/script/link"
+"$repo_root/script/check"
+
+# Agent configuration repositories are private. Authenticate Git first, then
+# fetch the pinned submodule commits. Fresh clones intentionally do not require
+# --recurse-submodules.
+sync_agent_submodules
+
+if [[ ! -f "$infisical_config" ]]; then
+  printf 'missing tracked Infisical project binding: %s\n' "$infisical_config" >&2
+  printf 'restore the file from Git instead of running infisical init manually\n' >&2
+  exit 1
+fi
+
+if ! "$repo_root/script/secrets-doctor"; then
+  if [[ -t 0 || "${DOTFILES_ALLOW_INTERACTIVE_AUTH:-0}" == "1" ]]; then
+    printf 'Infisical self-host access validation failed; refreshing user login for %s.\n' "$INFISICAL_SITE_URL"
+    infisical login "--domain=$INFISICAL_SITE_URL"
+    "$repo_root/script/secrets-doctor"
+  else
+    printf 'Infisical access validation failed. Run: infisical login --domain=%s\n' "$INFISICAL_SITE_URL" >&2
+    exit 1
+  fi
+fi
+
+"$repo_root/script/check-secrets"
+
+printf '\nbootstrap complete\n'
+\n'}"
+
+    case "$key" in
+      init.defaultbranch|fetch.prune|core.excludesfile)
+        continue
+        ;;
+      include.path|includeif.*.path)
+        case "$value" in
+          "$HOME/.gitconfig"|"$HOME/.gitconfig.local"|"~/.gitconfig"|"~/.gitconfig.local"|"$local_git_config")
+            continue
+            ;;
+        esac
+        ;;
+    esac
+
+    if git config --file "$local_git_config" --get-all "$key" >/dev/null 2>&1; then
+      continue
+    fi
+
+    git config --file "$local_git_config" --add "$key" "$value"
+  done < <(git config --file "$target" --null --list)
+
+  mv "$target" "$backup"
+  printf 'migrated %s -> %s; user-owned Git settings preserved in %s\n' "$target" "$backup" "$local_git_config"
+}
+
+migrate_unmanaged_gitignore() {
+  local target="$HOME/.config/git/ignore"
+  local managed="$repo_root/home/.config/git/ignore"
+  local local_ignore="$HOME/.config/git/ignore.local"
+  local backup
+  local temp
+  local configured_excludes
+
+  if [[ ! -e "$target" || -L "$target" ]]; then
+    return
+  fi
+
+  backup="$(next_backup_path "$target")"
+
+  if cmp -s "$target" "$managed"; then
+    mv "$target" "$backup"
+    printf 'migrated %s -> %s; content already matches managed baseline\n' "$target" "$backup"
+    return
+  fi
+
+  mkdir -p "$(dirname "$local_ignore")"
+  temp="$(mktemp)"
+  {
+    cat "$managed"
+    if [[ -f "$local_ignore" ]]; then
+      cat "$local_ignore"
+    fi
+    cat "$target"
+  } | awk '!seen[$0]++' > "$temp"
+  mv "$temp" "$local_ignore"
+
+  configured_excludes="$(git config --file "$local_git_config" --get core.excludesFile 2>/dev/null || true)"
+  if [[ -z "$configured_excludes" || "$configured_excludes" == "$local_ignore" ]]; then
+    git config --file "$local_git_config" core.excludesFile "$local_ignore"
+  else
+    printf 'preserve  existing local core.excludesFile=%s; migrated ignore remains at %s\n' "$configured_excludes" "$local_ignore"
+  fi
+
+  mv "$target" "$backup"
+  printf 'migrated %s -> %s; merged ignore patterns into %s\n' "$target" "$backup" "$local_ignore"
+}
+
+refresh_local_gitignore_override() {
+  local managed="$repo_root/home/.config/git/ignore"
+  local local_ignore="$HOME/.config/git/ignore.local"
+  local configured_excludes
+  local temp
+
+  configured_excludes="$(git config --file "$local_git_config" --get core.excludesFile 2>/dev/null || true)"
+  if [[ "$configured_excludes" != "$local_ignore" || ! -f "$local_ignore" ]]; then
+    return
+  fi
+
+  temp="$(mktemp)"
+  {
+    cat "$managed"
+    cat "$local_ignore"
+  } | awk '!seen[$0]++' > "$temp"
+  mv "$temp" "$local_ignore"
+}
+
 sync_agent_submodules() {
   if [[ "${DOTFILES_SKIP_AGENT_SUBMODULES:-0}" == "1" ]]; then
     printf 'skip    agent config submodules (DOTFILES_SKIP_AGENT_SUBMODULES=1)\n'
