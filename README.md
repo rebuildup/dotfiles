@@ -55,6 +55,8 @@ cd ~/.dotfiles
 
 初回cloneでは `--recurse-submodules` を付けない。private agent config repositoryは、bootstrapがGitHub認証を済ませてからpinされたcommitを取得する。
 
+既存の `~/.gitconfig` / `~/.config/git/ignore` がある場合、bootstrapは元ファイルを `.pre-dotfiles` backupとして残した上で、user-owned Git設定や追加ignore patternをmachine-local stateへ移行してからmanaged symlinkへ切り替える。
+
 bootstrap中に未設定のものだけ要求される:
 
 - Git identity
@@ -84,7 +86,7 @@ git submodule status --recursive
 
 - Keep only configuration that I actually use or need to reproduce.
 - `home/` mirrors `$HOME`; managed files are linked individually into the real home directory.
-- Linking is idempotent and non-destructive. Existing unmanaged targets are never overwritten automatically.
+- Linking is idempotent and non-destructive. `script/link` never overwrites unmanaged targets; `script/bootstrap` only adopts known legacy Git targets after preserving backups and migrating user-owned state.
 - Secret values are not Git state. The self-hosted Infisical instance at `https://secrets.rebuildup.dev` is the canonical secret source of truth.
 - Prefer process-scoped `infisical run` injection over global exports or persistent plaintext `.env` files.
 - Git identity is machine/user-local state in `~/.gitconfig.local`; do not write it into the managed `~/.gitconfig`.

@@ -14,6 +14,157 @@ require_command() {
   fi
 }
 
+next_backup_path() {
+  local target="$1"
+  local base="$target.pre-dotfiles"
+  local candidate="$base"
+  local index=1
+
+  while [[ -e "$candidate" || -L "$candidate" ]]; do
+    candidate="$base.$index"
+    index=$((index + 1))
+  done
+
+  printf '%s\n' "$candidate"
+}
+
+preflight_managed_target_migration() {
+  local source="$1"
+  local target="$2"
+
+  if [[ ! -e "$target" && ! -L "$target" ]]; then
+    return
+  fi
+
+  if [[ -L "$target" ]]; then
+    if [[ "$(readlink "$target")" == "$source" ]]; then
+      return
+    fi
+    printf 'conflict %s -> %s (expected %s)\n' "$target" "$(readlink "$target")" "$source" >&2
+    return 1
+  fi
+
+  if [[ ! -f "$target" ]]; then
+    printf 'conflict %s exists but is not a regular file; migrate it manually\n' "$target" >&2
+    return 1
+  fi
+}
+
+preflight_git_migrations() {
+  local managed_gitconfig="$repo_root/home/.gitconfig"
+  local managed_ignore="$repo_root/home/.config/git/ignore"
+
+  preflight_managed_target_migration "$managed_gitconfig" "$HOME/.gitconfig"
+  preflight_managed_target_migration "$managed_ignore" "$HOME/.config/git/ignore"
+
+  if [[ -f "$HOME/.gitconfig" && ! -L "$HOME/.gitconfig" ]]; then
+    if ! git config --file "$HOME/.gitconfig" --list >/dev/null; then
+      printf 'existing %s is not valid Git config; refusing automatic migration\n' "$HOME/.gitconfig" >&2
+      return 1
+    fi
+  fi
+}
+
+migrate_unmanaged_gitconfig() {
+  local target="$HOME/.gitconfig"
+  local backup
+  local key
+  local value
+
+  if [[ ! -e "$target" || -L "$target" ]]; then
+    return
+  fi
+
+  backup="$(next_backup_path "$target")"
+
+  while read -r key value; do
+    [[ -n "$key" ]] || continue
+
+    case "$key" in
+      init.defaultbranch|fetch.prune|core.excludesfile)
+        continue
+        ;;
+      include.path|includeif.*.path)
+        case "$value" in
+          "$HOME/.gitconfig"|"$HOME/.gitconfig.local"|"~/.gitconfig"|"~/.gitconfig.local"|"$local_git_config")
+            continue
+            ;;
+        esac
+        ;;
+    esac
+
+    if git config --file "$local_git_config" --get-all "$key" >/dev/null 2>&1; then
+      continue
+    fi
+
+    git config --file "$local_git_config" --add "$key" "$value"
+  done < <(git config --file "$target" --get-regexp '.*' 2>/dev/null || true)
+
+  mv "$target" "$backup"
+  printf 'migrated %s -> %s; user-owned Git settings preserved in %s\n' "$target" "$backup" "$local_git_config"
+}
+
+migrate_unmanaged_gitignore() {
+  local target="$HOME/.config/git/ignore"
+  local managed="$repo_root/home/.config/git/ignore"
+  local local_ignore="$HOME/.config/git/ignore.local"
+  local backup
+  local temp
+  local configured_excludes
+
+  if [[ ! -e "$target" || -L "$target" ]]; then
+    return
+  fi
+
+  backup="$(next_backup_path "$target")"
+
+  if cmp -s "$target" "$managed"; then
+    mv "$target" "$backup"
+    printf 'migrated %s -> %s; content already matches managed baseline\n' "$target" "$backup"
+    return
+  fi
+
+  mkdir -p "$(dirname "$local_ignore")"
+  temp="$(mktemp)"
+  {
+    cat "$managed"
+    if [[ -f "$local_ignore" ]]; then
+      cat "$local_ignore"
+    fi
+    cat "$target"
+  } | awk '!seen[$0]++' > "$temp"
+  mv "$temp" "$local_ignore"
+
+  configured_excludes="$(git config --file "$local_git_config" --get core.excludesFile 2>/dev/null || true)"
+  if [[ -z "$configured_excludes" || "$configured_excludes" == "$local_ignore" ]]; then
+    git config --file "$local_git_config" core.excludesFile "$local_ignore"
+  else
+    printf 'preserve  existing local core.excludesFile=%s; migrated ignore remains at %s\n' "$configured_excludes" "$local_ignore"
+  fi
+
+  mv "$target" "$backup"
+  printf 'migrated %s -> %s; merged ignore patterns into %s\n' "$target" "$backup" "$local_ignore"
+}
+
+refresh_local_gitignore_override() {
+  local managed="$repo_root/home/.config/git/ignore"
+  local local_ignore="$HOME/.config/git/ignore.local"
+  local configured_excludes
+  local temp
+
+  configured_excludes="$(git config --file "$local_git_config" --get core.excludesFile 2>/dev/null || true)"
+  if [[ "$configured_excludes" != "$local_ignore" || ! -f "$local_ignore" ]]; then
+    return
+  fi
+
+  temp="$(mktemp)"
+  {
+    cat "$managed"
+    cat "$local_ignore"
+  } | awk '!seen[$0]++' > "$temp"
+  mv "$temp" "$local_ignore"
+}
+
 sync_agent_submodules() {
   if [[ "${DOTFILES_SKIP_AGENT_SUBMODULES:-0}" == "1" ]]; then
     printf 'skip    agent config submodules (DOTFILES_SKIP_AGENT_SUBMODULES=1)\n'
@@ -41,9 +192,15 @@ for command in git gh infisical; do
   require_command "$command"
 done
 
+preflight_git_migrations
+
 mkdir -p "$(dirname "$local_git_config")"
 touch "$local_git_config"
 chmod 600 "$local_git_config"
+
+migrate_unmanaged_gitconfig
+migrate_unmanaged_gitignore
+refresh_local_gitignore_override
 
 managed_name="$(git config --file "$repo_root/home/.gitconfig" --get user.name 2>/dev/null || true)"
 managed_email="$(git config --file "$repo_root/home/.gitconfig" --get user.email 2>/dev/null || true)"
