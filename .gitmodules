@@ -1,0 +1,9 @@
+[submodule "agents/claude"]
+	path = agents/claude
+	url = https://github.com/rebuildup/my-claude-setting.git
+[submodule "agents/codex"]
+	path = agents/codex
+	url = https://github.com/rebuildup/my-codex-config.git
+[submodule "agents/opencode"]
+	path = agents/opencode
+	url = https://github.com/rebuildup/my-opencode-setting.git

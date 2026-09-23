@@ -18,8 +18,10 @@ jobs:
         with:
           persist-credentials: false
       - name: Check shell syntax
-        run: bash -n script/link script/check script/test script/secrets-init script/secrets-doctor script/with-secrets script/check-secrets
+        run: bash -n script/link script/check script/test script/bootstrap script/secrets-doctor script/with-secrets script/check-secrets script/test-workflow
       - name: Test symlink behavior
         run: ./script/test
+      - name: Test bootstrap and Infisical workflow
+        run: ./script/test-workflow
       - name: Guard secret material
         run: ./script/check-secrets
