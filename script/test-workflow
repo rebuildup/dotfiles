@@ -121,10 +121,17 @@ if ! grep -Fq 'run --project-config-dir=' "$infisical_log"; then
   exit 1
 fi
 
-HOME="$home" PATH="$fake_bin:$PATH" FAKE_INFISICAL_LOG="$infisical_log" "$repo/script/with-secrets" true
+HOME="$home" PATH="$fake_bin:$PATH" FAKE_INFISICAL_LOG="$infisical_log" DOTFILES_INFISICAL_ENV=ignored DOTFILES_INFISICAL_PATH=/ignored "$repo/script/with-secrets" true
 
-if ! tail -n 1 "$infisical_log" | grep -Fq 'run --project-config-dir='; then
-  printf 'with-secrets did not delegate to infisical run\n' >&2
+last_infisical_call="$(tail -n 1 "$infisical_log")"
+
+if [[ "$last_infisical_call" != run\ --project-config-dir=*\ --\ true ]]; then
+  printf 'with-secrets did not delegate directly to bound-project infisical run: %s\n' "$last_infisical_call" >&2
+  exit 1
+fi
+
+if [[ "$last_infisical_call" == *'--env='* || "$last_infisical_call" == *'--path='* ]]; then
+  printf 'with-secrets unexpectedly applied runtime environment/path selectors\n' >&2
   exit 1
 fi
 
