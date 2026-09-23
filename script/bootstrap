@@ -13,12 +13,32 @@ require_command() {
   fi
 }
 
+sync_agent_submodules() {
+  if [[ "${DOTFILES_SKIP_AGENT_SUBMODULES:-0}" == "1" ]]; then
+    printf 'skip    agent config submodules (DOTFILES_SKIP_AGENT_SUBMODULES=1)\n'
+    return
+  fi
+
+  if [[ ! -f "$repo_root/.gitmodules" ]]; then
+    return
+  fi
+
+  printf 'syncing pinned agent config submodules\n'
+  git -C "$repo_root" submodule sync --recursive
+  git -C "$repo_root" submodule update --init --recursive
+
+  submodule_status="$(git -C "$repo_root" submodule status --recursive)"
+  if grep -Eq '^[+-U]' <<<"$submodule_status"; then
+    printf 'agent submodule state does not match the pinned parent commit:\n%s\n' "$submodule_status" >&2
+    exit 1
+  fi
+
+  printf '%s\n' "$submodule_status"
+}
+
 for command in git gh infisical; do
   require_command "$command"
 done
-
-"$repo_root/script/link"
-"$repo_root/script/check"
 
 mkdir -p "$(dirname "$local_git_config")"
 touch "$local_git_config"
@@ -78,9 +98,19 @@ if ! gh auth status --hostname github.com >/dev/null 2>&1; then
   fi
 fi
 
-gh auth setup-git --hostname github.com
+GIT_CONFIG_GLOBAL="$local_git_config" gh auth setup-git --hostname github.com
 gh auth status --hostname github.com
-printf 'ok      GitHub HTTPS credential helper configured through gh\n'
+printf 'ok      GitHub HTTPS credential helper stored in %s\n' "$local_git_config"
+
+# Install the stable ~/.gitconfig include before Git needs credentials for
+# private submodules. gh writes only to ~/.gitconfig.local above.
+"$repo_root/script/link"
+"$repo_root/script/check"
+
+# Agent configuration repositories are private. Authenticate Git first, then
+# fetch the pinned submodule commits. Fresh clones intentionally do not require
+# --recurse-submodules.
+sync_agent_submodules
 
 if [[ ! -f "$infisical_config" ]]; then
   if [[ ! -t 0 && "${DOTFILES_ALLOW_INTERACTIVE_AUTH:-0}" != "1" ]]; then

@@ -21,6 +21,10 @@ This repository owns **user-level CLI configuration**. Application/package insta
 ```text
 .
 ├── .infisical.json       # project/default-environment binding; created by infisical init
+├── agents/               # pinned private agent-config submodules
+│   ├── claude/
+│   ├── codex/
+│   └── opencode/
 ├── home/                 # public files that mirror paths below $HOME
 ├── script/
 │   ├── bootstrap         # fresh-machine identity/auth/project bootstrap
@@ -51,14 +55,15 @@ cd ~/.dotfiles
 
 `bootstrap` performs:
 
-1. dotfile link/check
-2. Git identity setup in `~/.gitconfig.local`
-3. migration of accidentally managed `user.name` / `user.email`
-4. GitHub browser authentication when needed
-5. `gh auth setup-git`
-6. Infisical user login when needed
-7. `infisical init` when no project binding exists
-8. Infisical runtime-access validation
+1. Git identity setup in `~/.gitconfig.local`
+2. migration of accidentally managed `user.name` / `user.email`
+3. GitHub browser authentication when needed
+4. GitHub credential helper setup into `~/.gitconfig.local`
+5. base dotfile link/check
+6. pinned private agent-config submodule sync/init
+7. Infisical user login when needed
+8. `infisical init` when no project binding exists
+9. Infisical runtime-access validation
 
 For non-interactive Git identity setup:
 
@@ -69,6 +74,32 @@ DOTFILES_GIT_EMAIL='you@example.com' \
 ```
 
 Do **not** use `git config --global user.name/user.email` after `~/.gitconfig` is linked: Git may write through the managed global-config path.
+
+## Agent configuration
+
+Global Claude Code, Codex, and OpenCode repositories are pinned as sibling submodules under `agents/`. A fresh clone does not need `--recurse-submodules`: `script/bootstrap` authenticates GitHub, stores the GitHub credential helper in machine-local `~/.gitconfig.local`, links the stable global Git config, then initializes the exact commits recorded by the parent repository.
+
+The current submodules are fetched automatically but are **not yet linked into active agent config paths**. Each child repository must first be made cross-platform; for example, the current Claude settings contain a Windows-specific absolute hook path. Activation before that cleanup would make the same dotfiles commit behave differently across operating systems.
+
+The target composition is:
+
+```text
+agents/
+├── common/      # future shared global instructions / Agent Skills
+├── claude/      # Claude-specific settings
+├── codex/       # Codex-specific settings
+└── opencode/    # OpenCode-specific settings
+```
+
+The future common repository will own only tool-neutral Markdown instructions, Agent Skills, and genuinely portable supporting assets. Product-specific permission/provider/plugin formats stay in their product repositories.
+
+One common global instruction source will be linked to:
+
+- `~/.claude/CLAUDE.md`
+- `~/.codex/AGENTS.md`
+- `~/.config/opencode/AGENTS.md`
+
+See [ADR-0005](docs/adr/ADR-0005.md).
 
 ## Secret model
 
@@ -151,4 +182,5 @@ The current common Git baseline includes:
 - [`ADR-0002`](docs/adr/ADR-0002.md) — minimal common-first configuration and `pc-setup` boundary
 - [`ADR-0003`](docs/adr/ADR-0003.md) — superseded SOPS + age design
 - [`ADR-0004`](docs/adr/ADR-0004.md) — Infisical secret source of truth
+- [`ADR-0005`](docs/adr/ADR-0005.md) — sibling agent-config submodules and shared portable assets
 - [`dotfiles survey`](docs/research/dotfiles-survey.md)
