@@ -7,8 +7,9 @@ This repository manages personal CLI configuration. Preserve these project-local
 - `script/link` must remain idempotent and non-destructive. Never silently replace an unmanaged file, directory, or foreign symlink.
 - Git identity belongs in `~/.gitconfig.local`. Do not instruct users to run `git config --global user.*` against the symlink-managed global config.
 - GitHub HTTPS Git authentication uses `gh auth setup-git`; do not introduce account-password authentication.
-- Infisical is the canonical source of truth for portable secret values. Secret values are not Git state, including encrypted SOPS payloads.
-- `.infisical.json` is non-secret project binding metadata and may be committed. Infisical login/session/cache material must remain machine-local.
+- The canonical Infisical control plane is the self-hosted instance at `https://secrets.rebuildup.dev`; wrappers must not silently fall back to Infisical Cloud.
+- `config/infisical.sh` owns non-secret instance metadata. `.infisical.json` owns the dotfiles project binding. Both may be committed; secret values and login/session/cache material remain machine-local.
+- The dotfiles Infisical project ID is `d4c2fc09-a923-4a38-9cf4-b51769aadb76`.
 - Human workstations use Infisical user login. Automation uses dedicated least-privilege Machine Identities; prefer platform-native/OIDC short-lived authentication over static client secrets.
 - Environment-shaped secrets should use process-scoped `infisical run` injection rather than global shell exports or persistent plaintext files.
 - Do not manage Infisical credential/cache directories, SSH private keys, `.env` files, SOPS payloads, or private key material through `home/`.
