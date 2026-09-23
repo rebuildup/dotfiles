@@ -78,7 +78,7 @@ case "${1:-}" in
       exit 1
     fi
     if [[ "${FAKE_INFISICAL_HANG_RUN:-0}" == "1" ]]; then
-      sleep 30
+      while :; do :; done
     fi
     ;;
   *)
