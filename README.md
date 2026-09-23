@@ -6,6 +6,76 @@ Machine/package provisioning belongs in [`rebuildup/pc-setup`](https://github.co
 
 This is not a reusable dotfiles template.
 
+
+## Setup
+
+Fresh machineでは `pc-setup` をentrypointにする。OS package managerやInfisical/GitHub CLIの個別導入手順はこのrepositoryでは持たない。
+
+> `pc-setup` 0.1.0 is still in its release stack. Until it reaches `main`, the commands below intentionally pin the current setup branches (`1` for the common mise bootstrap and `4` for NixOS). After the release they should be changed back to `main`.
+
+### NixOS / NixOS-WSL
+
+```bash
+nix run 'github:rebuildup/pc-setup/4?dir=platforms/nixos'
+```
+
+Nix profileが必要toolを用意し、`~/.dotfiles` をcloneして `script/bootstrap` まで進める。
+
+### Ubuntu / Ubuntu WSL
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/rebuildup/pc-setup/1/bootstrap.sh | bash
+```
+
+### macOS
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/rebuildup/pc-setup/1/bootstrap.sh | bash
+```
+
+Ubuntu/macOSではpc-setupがGit + miseを最小bootstrapし、その後miseが `~/.dotfiles` checkout、GitHub CLI、Infisical等を用意してこのrepositoryのbootstrapへhandoffする。
+
+### Windows 11
+
+```powershell
+irm https://raw.githubusercontent.com/rebuildup/pc-setup/1/bootstrap.ps1 | iex
+```
+
+Windows machineのtool/application setupはmise + WinGetで進める。Windows nativeのdotfiles symlink adapterはまだcanonicalではないため、user-level dotfiles / agent configは現時点ではWSL側への適用をcanonicalとする。
+
+### Direct dotfiles recovery
+
+pc-setupを使わずこのrepositoryだけを復旧する場合は、先に `git`、`gh`、`infisical` が利用可能な状態を作る。
+
+その後:
+
+```bash
+git clone https://github.com/rebuildup/dotfiles.git ~/.dotfiles
+cd ~/.dotfiles
+./script/bootstrap
+```
+
+初回cloneでは `--recurse-submodules` を付けない。private agent config repositoryは、bootstrapがGitHub認証を済ませてからpinされたcommitを取得する。
+
+bootstrap中に未設定のものだけ要求される:
+
+- Git identity
+- GitHub browser login
+- Infisical login
+
+`.infisical.json` はcommit済みなので、通常はInfisical projectの再選択は発生しない。
+
+### Verify
+
+```bash
+cd ~/.dotfiles
+./script/check
+./script/secrets-doctor
+git submodule status --recursive
+```
+
+`git submodule status --recursive` の各行の先頭に `-`、`+`、`U` がなく、`script/check` と `script/secrets-doctor` が成功すればdotfiles bootstrap完了。
+
 ## Principles
 
 - Keep only configuration that I actually use or need to reproduce.
@@ -43,33 +113,7 @@ This is not a reusable dotfiles template.
 └── AGENTS.md
 ```
 
-`.infisical.json` is non-secret project binding metadata. It appears after the first `infisical init`; once reviewed, commit it through the normal issue/release flow so future machines bind to the same project without repeating project selection.
-
-## Fresh-machine bootstrap
-
-The machine first needs `git`, `gh`, and `infisical`. On managed machines these come from `pc-setup`.
-
-```bash
-git clone https://github.com/rebuildup/dotfiles.git ~/.dotfiles
-cd ~/.dotfiles
-./script/bootstrap
-```
-
-`bootstrap` performs:
-
-1. Git identity setup in `~/.gitconfig.local`
-2. migration of accidentally managed `user.name` / `user.email`
-3. GitHub browser authentication when needed
-4. GitHub credential helper setup into `~/.gitconfig.local`
-5. base dotfile link/check
-6. pinned private agent-config submodule sync/init
-7. Infisical user login when needed
-8. `infisical init` when no project binding exists
-9. Infisical runtime-access validation
-
-If Git identity is missing, `script/bootstrap` asks for it once and stores it in `~/.gitconfig.local`.
-
-Do **not** use `git config --global user.name/user.email` after `~/.gitconfig` is linked: Git may write through the managed global-config path.
+`.infisical.json` is committed non-secret project binding metadata. A new machine reuses this binding, so normal setup only needs Infisical user login; project selection is not repeated.
 
 ## Agent configuration
 
