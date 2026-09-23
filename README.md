@@ -1,19 +1,21 @@
 # dotfiles
 
-Minimal personal CLI configuration managed with symlinks. Portable secrets are managed centrally in Infisical and injected at runtime.
+Personal user-level configuration for my development machines.
 
-This repository owns **user-level CLI configuration**. Application/package installation, OS defaults, package-manager setup, Infisical/GitHub CLI installation, and machine provisioning belong in [`rebuildup/pc-setup`](https://github.com/rebuildup/pc-setup).
+Machine/package provisioning belongs in [`rebuildup/pc-setup`](https://github.com/rebuildup/pc-setup). This repository owns the user configuration that is linked into `$HOME`, portable agent configuration composition, and Infisical runtime integration.
+
+This is not a reusable dotfiles template.
 
 ## Principles
 
-- Keep the repository small. Add configuration only when there is an actual preference or recurring need.
+- Keep only configuration that I actually use or need to reproduce.
 - `home/` mirrors `$HOME`; managed files are linked individually into the real home directory.
 - Linking is idempotent and non-destructive. Existing unmanaged targets are never overwritten automatically.
 - Secret values are not Git state. Infisical is the canonical secret source of truth.
 - Prefer process-scoped `infisical run` injection over global exports or persistent plaintext `.env` files.
 - Git identity is machine/user-local state in `~/.gitconfig.local`; do not write it into the managed `~/.gitconfig`.
 - GitHub HTTPS authentication uses GitHub CLI as Git's credential helper rather than account-password authentication.
-- Human workstations use Infisical user login; CI/agents use least-privilege Machine Identities and short-lived platform/OIDC authentication where possible.
+- Local machines use Infisical user login; automated workloads use dedicated Machine Identities and short-lived platform/OIDC authentication where possible.
 - Prefer common configuration. Add platform-specific structure only after a real platform difference appears.
 
 ## Layout
@@ -65,13 +67,7 @@ cd ~/.dotfiles
 8. `infisical init` when no project binding exists
 9. Infisical runtime-access validation
 
-For non-interactive Git identity setup:
-
-```bash
-DOTFILES_GIT_NAME='Your Name' \
-DOTFILES_GIT_EMAIL='you@example.com' \
-./script/bootstrap
-```
+If Git identity is missing, `script/bootstrap` asks for it once and stores it in `~/.gitconfig.local`.
 
 Do **not** use `git config --global user.name/user.email` after `~/.gitconfig` is linked: Git may write through the managed global-config path.
 
@@ -145,13 +141,11 @@ The wrapper uses `infisical run --project-config-dir=~/.dotfiles -- ...`, so the
 
 Project-specific applications should normally keep their own `.infisical.json` and call `infisical run` directly rather than depending on the global dotfiles project.
 
-## Migration from SOPS
+## SOPS migration history
 
-ADR-0003 is superseded by ADR-0004.
+SOPS + age was replaced by Infisical in 0.1.1. Active SOPS configuration and encrypted payloads are no longer part of the current tree.
 
-Before the 0.1.1 migration is released to `main`, import every still-required value from the previous SOPS payload into the chosen Infisical project and verify it through `script/with-secrets`.
-
-The patch removes active `.sops.yaml`, `secrets/*.sops.*`, SOPS helpers, and age bootstrap requirements. Historical ciphertext remains in Git history unless history is deliberately rewritten. Rotate migrated credentials when practical so the retired age key cannot decrypt still-valid historical values.
+Historical ciphertext remains in Git history. Migrated credentials should be rotated when practical if they are still valid.
 
 ## Add a dotfile
 
