@@ -11,26 +11,24 @@ This is not a reusable dotfiles template.
 
 Fresh machineでは `pc-setup` をentrypointにする。OS package managerやInfisical/GitHub CLIの個別導入手順はこのrepositoryでは持たない。
 
-> `pc-setup` 0.1.0 is still in its release stack. Until it reaches `main`, the commands below intentionally pin the current setup branches (`1` for the common mise bootstrap and `4` for NixOS). After the release they should be changed back to `main`.
-
 ### NixOS / NixOS-WSL
 
 ```bash
-nix run 'github:rebuildup/pc-setup/4?dir=platforms/nixos'
+nix run 'github:rebuildup/pc-setup?dir=platforms/nixos'
 ```
 
-Nix profileが必要toolを用意し、`~/.dotfiles` をcloneして `script/bootstrap` まで進める。
+Nix/Flakeとmachine-global mise baselineが必要toolを用意し、`~/.dotfiles` をcloneして `script/bootstrap` まで進める。
 
 ### Ubuntu / Ubuntu WSL
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/rebuildup/pc-setup/1/bootstrap.sh | bash
+curl -fsSL https://raw.githubusercontent.com/rebuildup/pc-setup/main/bootstrap.sh | bash
 ```
 
 ### macOS
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/rebuildup/pc-setup/1/bootstrap.sh | bash
+curl -fsSL https://raw.githubusercontent.com/rebuildup/pc-setup/main/bootstrap.sh | bash
 ```
 
 Ubuntu/macOSではpc-setupがGit + miseを最小bootstrapし、その後miseが `~/.dotfiles` checkout、GitHub CLI、Infisical等を用意してこのrepositoryのbootstrapへhandoffする。
@@ -38,7 +36,7 @@ Ubuntu/macOSではpc-setupがGit + miseを最小bootstrapし、その後miseが 
 ### Windows 11
 
 ```powershell
-irm https://raw.githubusercontent.com/rebuildup/pc-setup/1/bootstrap.ps1 | iex
+irm https://raw.githubusercontent.com/rebuildup/pc-setup/main/bootstrap.ps1 | iex
 ```
 
 Windows machineのtool/application setupはmise + WinGetで進める。Windows nativeのdotfiles symlink adapterはまだcanonicalではないため、user-level dotfiles / agent configは現時点ではWSL側への適用をcanonicalとする。
