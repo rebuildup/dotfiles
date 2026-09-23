@@ -63,7 +63,7 @@ bootstrap中に未設定のものだけ要求される:
 - GitHub browser login
 - Infisical self-host login
 
-Infisicalは `https://secrets.rebuildup.dev` のself-hosted instanceを使用する。bootstrapは必要時に:
+Infisicalは `https://secrets.rebuildup.dev` のself-hosted instanceを使用する。WSLではSecret Service / D-Busに依存しないようInfisicalの`file` vault backendを使用し、backend切替でsessionが失効した場合はbootstrapが再ログインへ進む。bootstrapは必要時に:
 
 ```bash
 infisical login --domain=https://secrets.rebuildup.dev
@@ -231,4 +231,5 @@ The current common Git baseline includes:
 - [`ADR-0004`](docs/adr/ADR-0004.md) — Infisical secret source of truth
 - [`ADR-0005`](docs/adr/ADR-0005.md) — sibling agent-config submodules and shared portable assets
 - [`ADR-0006`](docs/adr/ADR-0006.md) — self-hosted Infisical control plane
+- [`ADR-0007`](docs/adr/ADR-0007.md) — WSL Infisical file-vault / bounded runtime validation
 - [`dotfiles survey`](docs/research/dotfiles-survey.md)
