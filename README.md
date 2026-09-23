@@ -126,6 +126,7 @@ Canonical binding:
 - site: `https://secrets.rebuildup.dev`
 - API: `https://secrets.rebuildup.dev/api`
 - project: `d4c2fc09-a923-4a38-9cf4-b51769aadb76`
+- environment: `dev`
 
 A new machine reuses this binding. Normal setup only needs user authentication against the self-hosted instance; `infisical init` is not part of the normal bootstrap.
 
@@ -187,7 +188,7 @@ Run a command with the secrets from the bound dotfiles Infisical project injecte
 ./script/with-secrets command arg1 arg2
 ```
 
-There is no runtime environment/path selector in this wrapper. The `.infisical.json` project binding is the scope boundary. `config/infisical.sh` pins `INFISICAL_API_URL=https://secrets.rebuildup.dev/api`, and `with-secrets` delegates to `infisical run --project-config-dir=~/.dotfiles -- ...` without narrowing the project further.
+There is no runtime environment/path selector at call time. The dotfiles secret project uses the canonical `dev` environment. `config/infisical.sh` pins the API URL, project ID, and environment, and `with-secrets` delegates with explicit `--projectId` and `--env=dev`. The wrapper does not narrow secrets by path.
 
 Project-specific secrets belong to that project's own Infisical project and `.infisical.json`. If secret sets become too broad, split the ownership at the project boundary instead of adding a secret-selection step to every command.
 
