@@ -6,6 +6,112 @@ Machine/package provisioning belongs in [`rebuildup/pc-setup`](https://github.co
 
 This is not a reusable dotfiles template.
 
+
+## Setup
+
+Fresh machineでは、まず `git`、`gh`、`infisical` を使える状態にしてからこのrepositoryをbootstrapする。
+
+### NixOS / NixOS-WSL
+
+dotfilesだけを先に導入する場合は、一時Nix shellで必要toolを揃える。
+
+```bash
+nix shell nixpkgs#git nixpkgs#gh nixpkgs#infisical -c bash
+```
+
+shell内で下の「Common bootstrap」を実行する。
+
+`pc-setup` のNixOS profileを適用済みなら `git` / `gh` / `infisical` は恒久profileに入るため、この一時shellは不要。
+
+### Ubuntu / Ubuntu WSL
+
+Gitとinstaller用toolを入れる。
+
+```bash
+sudo apt-get update
+sudo apt-get install -y git curl wget ca-certificates
+```
+
+GitHub CLIは公式APT repositoryから入れる。
+
+```bash
+sudo mkdir -p -m 755 /etc/apt/keyrings
+out="$(mktemp)"
+wget -nv -O"$out" https://cli.github.com/packages/githubcli-archive-keyring.gpg
+cat "$out" | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg >/dev/null
+rm -f "$out"
+sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
+sudo mkdir -p -m 755 /etc/apt/sources.list.d
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+  | sudo tee /etc/apt/sources.list.d/github-cli.list >/dev/null
+sudo apt-get update
+sudo apt-get install -y gh
+```
+
+Infisical CLIは公式repositoryから入れる。
+
+```bash
+curl -1sLf 'https://artifacts-cli.infisical.com/setup.deb.sh' | sudo -E bash
+sudo apt-get update
+sudo apt-get install -y infisical
+```
+
+その後、下の「Common bootstrap」を実行する。
+
+### macOS
+
+Homebrewがまだ無ければ先に入れる。
+
+```bash
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+```
+
+installer終了時に表示される `brew shellenv` の設定を反映してから:
+
+```bash
+brew install git gh
+brew install infisical/get-cli/infisical
+```
+
+その後、下の「Common bootstrap」を実行する。
+
+### Windows 11
+
+Windows nativeのapplication/package provisioningは `rebuildup/pc-setup` が所有する。
+
+現在のdotfiles bootstrapはBashとPOSIX symlinkを前提としており、Windows nativeへの直接適用はまだcanonicalではない。WindowsではWSL側へdotfilesを導入し、使用するdistributionに応じて上の **NixOS / NixOS-WSL** または **Ubuntu / Ubuntu WSL** の手順を使う。
+
+Windows native側のClaude/Codex/OpenCode設定も将来的に同じsource of truthへlinkするが、cross-platform link adapterが完成するまでは自動適用しない。
+
+### Common bootstrap
+
+初回cloneでは `--recurse-submodules` を付けない。agent config repositoryはprivateなので、bootstrapがGitHub認証を済ませてからpinされたsubmoduleを取得する。
+
+```bash
+git clone https://github.com/rebuildup/dotfiles.git ~/.dotfiles
+cd ~/.dotfiles
+./script/bootstrap
+```
+
+`script/bootstrap` の途中で必要に応じて:
+
+- Git identity
+- GitHub browser login
+- Infisical login
+
+が要求される。
+
+完了後に確認する。
+
+```bash
+cd ~/.dotfiles
+./script/check
+./script/secrets-doctor
+git submodule status --recursive
+```
+
+`git submodule status --recursive` の各行の先頭に `-`、`+`、`U` が無く、`script/check` と `script/secrets-doctor` が成功すればbootstrap完了。
+
 ## Principles
 
 - Keep only configuration that I actually use or need to reproduce.
@@ -44,32 +150,6 @@ This is not a reusable dotfiles template.
 ```
 
 `.infisical.json` is non-secret project binding metadata. It appears after the first `infisical init`; once reviewed, commit it through the normal issue/release flow so future machines bind to the same project without repeating project selection.
-
-## Fresh-machine bootstrap
-
-The machine first needs `git`, `gh`, and `infisical`. On managed machines these come from `pc-setup`.
-
-```bash
-git clone https://github.com/rebuildup/dotfiles.git ~/.dotfiles
-cd ~/.dotfiles
-./script/bootstrap
-```
-
-`bootstrap` performs:
-
-1. Git identity setup in `~/.gitconfig.local`
-2. migration of accidentally managed `user.name` / `user.email`
-3. GitHub browser authentication when needed
-4. GitHub credential helper setup into `~/.gitconfig.local`
-5. base dotfile link/check
-6. pinned private agent-config submodule sync/init
-7. Infisical user login when needed
-8. `infisical init` when no project binding exists
-9. Infisical runtime-access validation
-
-If Git identity is missing, `script/bootstrap` asks for it once and stores it in `~/.gitconfig.local`.
-
-Do **not** use `git config --global user.name/user.email` after `~/.gitconfig` is linked: Git may write through the managed global-config path.
 
 ## Agent configuration
 
