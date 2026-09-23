@@ -11,6 +11,7 @@ fake_bin="$tmp/bin"
 gh_log="$tmp/gh.log"
 infisical_log="$tmp/infisical.log"
 infisical_state="$tmp/infisical-authenticated"
+infisical_vault_state="$tmp/infisical-vault"
 mkdir -p "$repo" "$home" "$fake_bin"
 
 git -C "$source_root" archive HEAD | tar -x -C "$repo"
@@ -49,12 +50,35 @@ case "${1:-}" in
   --version)
     printf '%s\n' 'infisical version test'
     ;;
+  vault)
+    if [[ "${2:-}" == "set" && "${3:-}" == "file" ]]; then
+      previous="$(cat "$FAKE_INFISICAL_VAULT_STATE" 2>/dev/null || printf 'auto')"
+      printf '%s\n' 'file' > "$FAKE_INFISICAL_VAULT_STATE"
+      if [[ "$previous" != 'file' ]]; then
+        rm -f "$FAKE_INFISICAL_STATE"
+      fi
+    else
+      current="$(cat "$FAKE_INFISICAL_VAULT_STATE" 2>/dev/null || printf 'auto')"
+      printf 'You are currently using [%s] vault to store your login credentials\n' "$current" >&2
+    fi
+    ;;
   login)
-    : > "$FAKE_INFISICAL_STATE"
+    if [[ "${2:-}" == "status" ]]; then
+      if [[ ! -f "$FAKE_INFISICAL_STATE" ]]; then
+        printf '%s\n' 'not authenticated' >&2
+        exit 1
+      fi
+      printf '{"sessions":[{"principalType":"user","status":"authenticated","domain":"https://secrets.rebuildup.dev"}]}\n'
+    else
+      : > "$FAKE_INFISICAL_STATE"
+    fi
     ;;
   run)
     if [[ ! -f "$FAKE_INFISICAL_STATE" ]]; then
       exit 1
+    fi
+    if [[ "${FAKE_INFISICAL_HANG_RUN:-0}" == "1" ]]; then
+      sleep 30
     fi
     ;;
   *)
@@ -77,7 +101,7 @@ cat > "$home/.config/git/ignore" <<'EOF'
 *.local-only
 EOF
 
-HOME="$home" PATH="$fake_bin:$PATH" FAKE_GH_LOG="$gh_log" FAKE_INFISICAL_LOG="$infisical_log" FAKE_INFISICAL_STATE="$infisical_state" DOTFILES_GIT_NAME='Fallback User' DOTFILES_GIT_EMAIL='fallback@example.invalid' DOTFILES_ALLOW_INTERACTIVE_AUTH=1 DOTFILES_SKIP_AGENT_SUBMODULES=1 "$repo/script/bootstrap"
+HOME="$home" PATH="$fake_bin:$PATH" FAKE_GH_LOG="$gh_log" FAKE_INFISICAL_LOG="$infisical_log" FAKE_INFISICAL_STATE="$infisical_state" FAKE_INFISICAL_VAULT_STATE="$infisical_vault_state" WSL_DISTRO_NAME=Ubuntu DOTFILES_GIT_NAME='Fallback User' DOTFILES_GIT_EMAIL='fallback@example.invalid' DOTFILES_ALLOW_INTERACTIVE_AUTH=1 DOTFILES_SKIP_AGENT_SUBMODULES=1 "$repo/script/bootstrap"
 
 if [[ ! -L "$home/.gitconfig" || "$(readlink "$home/.gitconfig")" != "$repo/home/.gitconfig" ]]; then
   printf 'bootstrap did not adopt ~/.gitconfig as the managed symlink\n' >&2
@@ -147,7 +171,7 @@ if git config --file "$repo/home/.gitconfig" --get credential.https://github.com
   exit 1
 fi
 
-HOME="$home" PATH="$fake_bin:$PATH" FAKE_GH_LOG="$gh_log" FAKE_INFISICAL_LOG="$infisical_log" FAKE_INFISICAL_STATE="$infisical_state" DOTFILES_ALLOW_INTERACTIVE_AUTH=1 DOTFILES_SKIP_AGENT_SUBMODULES=1 "$repo/script/bootstrap"
+HOME="$home" PATH="$fake_bin:$PATH" FAKE_GH_LOG="$gh_log" FAKE_INFISICAL_LOG="$infisical_log" FAKE_INFISICAL_STATE="$infisical_state" FAKE_INFISICAL_VAULT_STATE="$infisical_vault_state" WSL_DISTRO_NAME=Ubuntu DOTFILES_ALLOW_INTERACTIVE_AUTH=1 DOTFILES_SKIP_AGENT_SUBMODULES=1 "$repo/script/bootstrap"
 
 if [[ "$(find "$home" -maxdepth 1 -name '.gitconfig.pre-dotfiles*' -type f | wc -l)" -ne 1 ]]; then
   printf 'bootstrap created duplicate ~/.gitconfig migration backups on rerun\n' >&2
@@ -163,6 +187,11 @@ expected_site='https://secrets.rebuildup.dev'
 expected_api='https://secrets.rebuildup.dev/api'
 expected_project='d4c2fc09-a923-4a38-9cf4-b51769aadb76'
 expected_environment='dev'
+
+if ! grep -Fxq "$expected_api|vault set file" "$infisical_log"; then
+  printf 'bootstrap did not switch WSL to the Infisical file vault\n' >&2
+  exit 1
+fi
 
 if ! grep -Fxq "$expected_api|login --domain=$expected_site" "$infisical_log"; then
   printf 'bootstrap did not login to the pinned self-hosted Infisical domain\n' >&2
@@ -184,7 +213,7 @@ if ! grep -Fq "$expected_api|run --projectId=$expected_project --env=$expected_e
   exit 1
 fi
 
-HOME="$home" PATH="$fake_bin:$PATH" FAKE_INFISICAL_LOG="$infisical_log" FAKE_INFISICAL_STATE="$infisical_state" DOTFILES_INFISICAL_ENV=ignored DOTFILES_INFISICAL_PATH=/ignored "$repo/script/with-secrets" true
+HOME="$home" PATH="$fake_bin:$PATH" FAKE_INFISICAL_LOG="$infisical_log" FAKE_INFISICAL_STATE="$infisical_state" FAKE_INFISICAL_VAULT_STATE="$infisical_vault_state" WSL_DISTRO_NAME=Ubuntu DOTFILES_INFISICAL_ENV=ignored DOTFILES_INFISICAL_PATH=/ignored "$repo/script/with-secrets" true
 
 last_infisical_call="$(tail -n 1 "$infisical_log")"
 
@@ -195,6 +224,11 @@ fi
 
 if [[ "$last_infisical_call" == *'--path='* ]]; then
   printf 'with-secrets unexpectedly narrowed secrets by path\n' >&2
+  exit 1
+fi
+
+if HOME="$home" PATH="$fake_bin:$PATH" FAKE_INFISICAL_LOG="$infisical_log" FAKE_INFISICAL_STATE="$infisical_state" FAKE_INFISICAL_VAULT_STATE="$infisical_vault_state" FAKE_INFISICAL_HANG_RUN=1 DOTFILES_INFISICAL_PROBE_TIMEOUT_SECONDS=1 "$repo/script/secrets-doctor"; then
+  printf 'secrets-doctor unexpectedly accepted a hung Infisical runtime probe\n' >&2
   exit 1
 fi
 
