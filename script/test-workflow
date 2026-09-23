@@ -64,7 +64,57 @@ EOF
 
 chmod +x "$fake_bin/gh" "$fake_bin/infisical"
 
+mkdir -p "$home/.config/git"
+cat > "$home/.gitconfig" <<EOF
+[alias]
+	co = checkout
+[core]
+	excludesFile = $home/.config/git/ignore
+EOF
+
+cat > "$home/.config/git/ignore" <<'EOF'
+.DS_Store
+*.local-only
+EOF
+
 HOME="$home" PATH="$fake_bin:$PATH" FAKE_GH_LOG="$gh_log" FAKE_INFISICAL_LOG="$infisical_log" FAKE_INFISICAL_STATE="$infisical_state" DOTFILES_GIT_NAME='Fallback User' DOTFILES_GIT_EMAIL='fallback@example.invalid' DOTFILES_ALLOW_INTERACTIVE_AUTH=1 DOTFILES_SKIP_AGENT_SUBMODULES=1 "$repo/script/bootstrap"
+
+if [[ ! -L "$home/.gitconfig" || "$(readlink "$home/.gitconfig")" != "$repo/home/.gitconfig" ]]; then
+  printf 'bootstrap did not adopt ~/.gitconfig as the managed symlink\n' >&2
+  exit 1
+fi
+
+if [[ ! -f "$home/.gitconfig.pre-dotfiles" ]]; then
+  printf 'bootstrap did not preserve the original ~/.gitconfig backup\n' >&2
+  exit 1
+fi
+
+if [[ "$(git config --file "$home/.gitconfig.local" --get alias.co)" != 'checkout' ]]; then
+  printf 'bootstrap did not preserve user-owned Git config in the local config\n' >&2
+  exit 1
+fi
+
+if [[ ! -L "$home/.config/git/ignore" || "$(readlink "$home/.config/git/ignore")" != "$repo/home/.config/git/ignore" ]]; then
+  printf 'bootstrap did not adopt the global ignore as the managed symlink\n' >&2
+  exit 1
+fi
+
+if [[ ! -f "$home/.config/git/ignore.pre-dotfiles" ]]; then
+  printf 'bootstrap did not preserve the original global ignore backup\n' >&2
+  exit 1
+fi
+
+if [[ "$(git config --file "$home/.gitconfig.local" --get core.excludesFile)" != "$home/.config/git/ignore.local" ]]; then
+  printf 'bootstrap did not activate the merged local global-ignore override\n' >&2
+  exit 1
+fi
+
+for pattern in '.DS_Store' 'Thumbs.db' '*.local-only'; do
+  if ! grep -Fxq "$pattern" "$home/.config/git/ignore.local"; then
+    printf 'bootstrap lost global ignore pattern: %s\n' "$pattern" >&2
+    exit 1
+  fi
+done
 
 if [[ "$(git config --file "$home/.gitconfig.local" --get user.name)" != 'Migrated User' ]]; then
   printf 'bootstrap did not migrate Git user.name to local config\n' >&2
@@ -94,6 +144,18 @@ fi
 
 if git config --file "$repo/home/.gitconfig" --get credential.https://github.com.helper >/dev/null 2>&1; then
   printf 'bootstrap leaked the GitHub credential helper into managed .gitconfig\n' >&2
+  exit 1
+fi
+
+HOME="$home" PATH="$fake_bin:$PATH" FAKE_GH_LOG="$gh_log" FAKE_INFISICAL_LOG="$infisical_log" FAKE_INFISICAL_STATE="$infisical_state" DOTFILES_ALLOW_INTERACTIVE_AUTH=1 DOTFILES_SKIP_AGENT_SUBMODULES=1 "$repo/script/bootstrap"
+
+if [[ "$(find "$home" -maxdepth 1 -name '.gitconfig.pre-dotfiles*' -type f | wc -l)" -ne 1 ]]; then
+  printf 'bootstrap created duplicate ~/.gitconfig migration backups on rerun\n' >&2
+  exit 1
+fi
+
+if [[ "$(find "$home/.config/git" -maxdepth 1 -name 'ignore.pre-dotfiles*' -type f | wc -l)" -ne 1 ]]; then
+  printf 'bootstrap created duplicate global-ignore migration backups on rerun\n' >&2
   exit 1
 fi
 
