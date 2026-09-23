@@ -9,7 +9,7 @@ This repository manages personal CLI configuration. Preserve these project-local
 - GitHub HTTPS Git authentication uses `gh auth setup-git`; do not introduce account-password authentication.
 - The canonical Infisical control plane is the self-hosted instance at `https://secrets.rebuildup.dev`; wrappers must not silently fall back to Infisical Cloud.
 - `config/infisical.sh` owns non-secret instance metadata. `.infisical.json` owns the dotfiles project binding. Both may be committed; secret values and login/session/cache material remain machine-local.
-- The dotfiles Infisical project ID is `d4c2fc09-a923-4a38-9cf4-b51769aadb76`.
+- The dotfiles Infisical project ID is `d4c2fc09-a923-4a38-9cf4-b51769aadb76`; its canonical environment is `dev`. Wrappers must pass both explicitly.
 - Human workstations use Infisical user login. Automation uses dedicated least-privilege Machine Identities; prefer platform-native/OIDC short-lived authentication over static client secrets.
 - Environment-shaped secrets should use process-scoped `infisical run` injection rather than global shell exports or persistent plaintext files.
 - Do not manage Infisical credential/cache directories, SSH private keys, `.env` files, SOPS payloads, or private key material through `home/`.
