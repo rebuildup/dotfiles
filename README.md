@@ -93,13 +93,13 @@ cd ~/.dotfiles
 ./script/bootstrap
 ```
 
-`script/bootstrap` の途中で必要に応じて:
+`script/bootstrap` の途中で未設定のものだけ要求される:
 
 - Git identity
 - GitHub browser login
 - Infisical login
 
-が要求される。
+`.infisical.json` はcommit済みなので、通常はInfisical projectの再選択は発生しない。
 
 完了後に確認する。
 
@@ -149,7 +149,7 @@ git submodule status --recursive
 └── AGENTS.md
 ```
 
-`.infisical.json` is non-secret project binding metadata. It appears after the first `infisical init`; once reviewed, commit it through the normal issue/release flow so future machines bind to the same project without repeating project selection.
+`.infisical.json` is committed non-secret project binding metadata. A new machine reuses this binding, so normal setup only needs Infisical user login; project selection is not repeated.
 
 ## Agent configuration
 
