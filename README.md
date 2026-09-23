@@ -9,83 +9,43 @@ This is not a reusable dotfiles template.
 
 ## Setup
 
-Fresh machineでは、まず `git`、`gh`、`infisical` を使える状態にしてからこのrepositoryをbootstrapする。
+Fresh machineでは `pc-setup` をentrypointにする。OS package managerやInfisical/GitHub CLIの個別導入手順はこのrepositoryでは持たない。
 
 ### NixOS / NixOS-WSL
 
-dotfilesだけを先に導入する場合は、一時Nix shellで必要toolを揃える。
-
 ```bash
-nix shell nixpkgs#git nixpkgs#gh nixpkgs#infisical -c bash
+nix run 'github:rebuildup/pc-setup?dir=platforms/nixos'
 ```
 
-shell内で下の「Common bootstrap」を実行する。
-
-`pc-setup` のNixOS profileを適用済みなら `git` / `gh` / `infisical` は恒久profileに入るため、この一時shellは不要。
+Nix profileが必要toolを用意し、`~/.dotfiles` をcloneして `script/bootstrap` まで進める。
 
 ### Ubuntu / Ubuntu WSL
 
-Gitとinstaller用toolを入れる。
-
 ```bash
-sudo apt-get update
-sudo apt-get install -y git curl wget ca-certificates
+curl -fsSL https://raw.githubusercontent.com/rebuildup/pc-setup/main/bootstrap.sh | bash
 ```
-
-GitHub CLIは公式APT repositoryから入れる。
-
-```bash
-sudo mkdir -p -m 755 /etc/apt/keyrings
-out="$(mktemp)"
-wget -nv -O"$out" https://cli.github.com/packages/githubcli-archive-keyring.gpg
-cat "$out" | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg >/dev/null
-rm -f "$out"
-sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
-sudo mkdir -p -m 755 /etc/apt/sources.list.d
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
-  | sudo tee /etc/apt/sources.list.d/github-cli.list >/dev/null
-sudo apt-get update
-sudo apt-get install -y gh
-```
-
-Infisical CLIは公式repositoryから入れる。
-
-```bash
-curl -1sLf 'https://artifacts-cli.infisical.com/setup.deb.sh' | sudo -E bash
-sudo apt-get update
-sudo apt-get install -y infisical
-```
-
-その後、下の「Common bootstrap」を実行する。
 
 ### macOS
 
-Homebrewがまだ無ければ先に入れる。
-
 ```bash
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+curl -fsSL https://raw.githubusercontent.com/rebuildup/pc-setup/main/bootstrap.sh | bash
 ```
 
-installer終了時に表示される `brew shellenv` の設定を反映してから:
-
-```bash
-brew install git gh
-brew install infisical/get-cli/infisical
-```
-
-その後、下の「Common bootstrap」を実行する。
+Ubuntu/macOSではpc-setupがGit + miseを最小bootstrapし、その後miseが `~/.dotfiles` checkout、GitHub CLI、Infisical等を用意してこのrepositoryのbootstrapへhandoffする。
 
 ### Windows 11
 
-Windows nativeのapplication/package provisioningは `rebuildup/pc-setup` が所有する。
+```powershell
+irm https://raw.githubusercontent.com/rebuildup/pc-setup/main/bootstrap.ps1 | iex
+```
 
-現在のdotfiles bootstrapはBashとPOSIX symlinkを前提としており、Windows nativeへの直接適用はまだcanonicalではない。WindowsではWSL側へdotfilesを導入し、使用するdistributionに応じて上の **NixOS / NixOS-WSL** または **Ubuntu / Ubuntu WSL** の手順を使う。
+Windows machineのtool/application setupはmise + WinGetで進める。Windows nativeのdotfiles symlink adapterはまだcanonicalではないため、user-level dotfiles / agent configは現時点ではWSL側への適用をcanonicalとする。
 
-Windows native側のClaude/Codex/OpenCode設定も将来的に同じsource of truthへlinkするが、cross-platform link adapterが完成するまでは自動適用しない。
+### Direct dotfiles recovery
 
-### Common bootstrap
+pc-setupを使わずこのrepositoryだけを復旧する場合は、先に `git`、`gh`、`infisical` が利用可能な状態を作る。
 
-初回cloneでは `--recurse-submodules` を付けない。agent config repositoryはprivateなので、bootstrapがGitHub認証を済ませてからpinされたsubmoduleを取得する。
+その後:
 
 ```bash
 git clone https://github.com/rebuildup/dotfiles.git ~/.dotfiles
@@ -93,7 +53,9 @@ cd ~/.dotfiles
 ./script/bootstrap
 ```
 
-`script/bootstrap` の途中で未設定のものだけ要求される:
+初回cloneでは `--recurse-submodules` を付けない。private agent config repositoryは、bootstrapがGitHub認証を済ませてからpinされたcommitを取得する。
+
+bootstrap中に未設定のものだけ要求される:
 
 - Git identity
 - GitHub browser login
@@ -101,7 +63,7 @@ cd ~/.dotfiles
 
 `.infisical.json` はcommit済みなので、通常はInfisical projectの再選択は発生しない。
 
-完了後に確認する。
+### Verify
 
 ```bash
 cd ~/.dotfiles
@@ -110,7 +72,7 @@ cd ~/.dotfiles
 git submodule status --recursive
 ```
 
-`git submodule status --recursive` の各行の先頭に `-`、`+`、`U` が無く、`script/check` と `script/secrets-doctor` が成功すればbootstrap完了。
+`git submodule status --recursive` の各行の先頭に `-`、`+`、`U` がなく、`script/check` と `script/secrets-doctor` が成功すればdotfiles bootstrap完了。
 
 ## Principles
 
