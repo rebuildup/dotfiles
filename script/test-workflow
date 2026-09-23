@@ -1,0 +1,142 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+source_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+
+repo="$tmp/repo"
+home="$tmp/home"
+fake_bin="$tmp/bin"
+gh_log="$tmp/gh.log"
+infisical_log="$tmp/infisical.log"
+mkdir -p "$repo" "$home" "$fake_bin"
+
+git -C "$source_root" archive HEAD | tar -x -C "$repo"
+git -C "$repo" init -q -b main
+git -C "$repo" config user.name 'Test Committer'
+git -C "$repo" config user.email 'committer@example.invalid'
+git -C "$repo" add .
+git -C "$repo" commit -qm 'test fixture'
+
+# Exercise the fresh-machine path even though the real repository now commits
+# non-secret Infisical project binding metadata.
+rm -f "$repo/.infisical.json"
+
+cat >> "$repo/home/.gitconfig" <<'EOF'
+
+[user]
+	name = Migrated User
+	email = migrated@example.invalid
+EOF
+
+git -C "$repo" add home/.gitconfig
+git -C "$repo" commit -qm 'fixture: misplaced managed identity'
+
+cat > "$fake_bin/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$FAKE_GH_LOG"
+
+if [[ "$*" == "auth setup-git --hostname github.com" ]]; then
+  git config --global credential.https://github.com.helper '!gh auth git-credential'
+fi
+EOF
+
+cat > "$fake_bin/infisical" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$FAKE_INFISICAL_LOG"
+
+case "${1:-}" in
+  --version)
+    printf '%s\n' 'infisical version test'
+    ;;
+  login)
+    ;;
+  init)
+    cat > .infisical.json <<'JSON'
+{"workspaceId":"test-project","defaultEnvironment":"dev"}
+JSON
+    ;;
+  run)
+    ;;
+  *)
+    ;;
+esac
+EOF
+
+chmod +x "$fake_bin/gh" "$fake_bin/infisical"
+
+HOME="$home" PATH="$fake_bin:$PATH" FAKE_GH_LOG="$gh_log" FAKE_INFISICAL_LOG="$infisical_log" DOTFILES_GIT_NAME='Fallback User' DOTFILES_GIT_EMAIL='fallback@example.invalid' DOTFILES_ALLOW_INTERACTIVE_AUTH=1 DOTFILES_SKIP_AGENT_SUBMODULES=1 "$repo/script/bootstrap"
+
+if [[ "$(git config --file "$home/.gitconfig.local" --get user.name)" != 'Migrated User' ]]; then
+  printf 'bootstrap did not migrate Git user.name to local config\n' >&2
+  exit 1
+fi
+
+if [[ "$(git config --file "$home/.gitconfig.local" --get user.email)" != 'migrated@example.invalid' ]]; then
+  printf 'bootstrap did not migrate Git user.email to local config\n' >&2
+  exit 1
+fi
+
+if git config --file "$repo/home/.gitconfig" --get user.name >/dev/null 2>&1 ||
+   git config --file "$repo/home/.gitconfig" --get user.email >/dev/null 2>&1; then
+  printf 'bootstrap left identity in managed .gitconfig\n' >&2
+  exit 1
+fi
+
+if ! grep -Fq 'auth setup-git --hostname github.com' "$gh_log"; then
+  printf 'bootstrap did not configure gh as the Git credential helper\n' >&2
+  exit 1
+fi
+
+if [[ "$(git config --file "$home/.gitconfig.local" --get credential.https://github.com.helper)" != '!gh auth git-credential' ]]; then
+  printf 'bootstrap did not keep the GitHub credential helper in local Git config\n' >&2
+  exit 1
+fi
+
+if git config --file "$repo/home/.gitconfig" --get credential.https://github.com.helper >/dev/null 2>&1; then
+  printf 'bootstrap leaked the GitHub credential helper into managed .gitconfig\n' >&2
+  exit 1
+fi
+
+if ! grep -Fxq 'login' "$infisical_log"; then
+  printf 'bootstrap did not start Infisical user login for an unbound repo\n' >&2
+  exit 1
+fi
+
+if ! grep -Fxq 'init' "$infisical_log"; then
+  printf 'bootstrap did not initialize Infisical project binding\n' >&2
+  exit 1
+fi
+
+if [[ ! -f "$repo/.infisical.json" ]]; then
+  printf 'bootstrap did not create .infisical.json project metadata\n' >&2
+  exit 1
+fi
+
+if ! grep -Fq 'run --project-config-dir=' "$infisical_log"; then
+  printf 'bootstrap did not validate Infisical runtime access\n' >&2
+  exit 1
+fi
+
+HOME="$home" PATH="$fake_bin:$PATH" FAKE_INFISICAL_LOG="$infisical_log" "$repo/script/with-secrets" true
+
+if ! tail -n 1 "$infisical_log" | grep -Fq 'run --project-config-dir='; then
+  printf 'with-secrets did not delegate to infisical run\n' >&2
+  exit 1
+fi
+
+printf 'legacy\n' > "$repo/.sops.yaml"
+git -C "$repo" add -f .sops.yaml
+
+if "$repo/script/check-secrets"; then
+  printf 'check-secrets unexpectedly accepted legacy SOPS state\n' >&2
+  exit 1
+fi
+
+git -C "$repo" reset -q HEAD -- .sops.yaml
+rm -f "$repo/.sops.yaml"
+
+printf 'bootstrap and Infisical workflow tests passed\n'
