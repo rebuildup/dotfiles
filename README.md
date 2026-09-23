@@ -59,9 +59,15 @@ bootstrap中に未設定のものだけ要求される:
 
 - Git identity
 - GitHub browser login
-- Infisical login
+- Infisical self-host login
 
-`.infisical.json` はcommit済みなので、通常はInfisical projectの再選択は発生しない。
+Infisicalは `https://secrets.rebuildup.dev` のself-hosted instanceを使用する。bootstrapは必要時に:
+
+```bash
+infisical login --domain=https://secrets.rebuildup.dev
+```
+
+相当のloginを行う。`.infisical.json` はcommit済みなので、projectの再選択は発生しない。
 
 ### Verify
 
@@ -79,7 +85,7 @@ git submodule status --recursive
 - Keep only configuration that I actually use or need to reproduce.
 - `home/` mirrors `$HOME`; managed files are linked individually into the real home directory.
 - Linking is idempotent and non-destructive. Existing unmanaged targets are never overwritten automatically.
-- Secret values are not Git state. Infisical is the canonical secret source of truth.
+- Secret values are not Git state. The self-hosted Infisical instance at `https://secrets.rebuildup.dev` is the canonical secret source of truth.
 - Prefer process-scoped `infisical run` injection over global exports or persistent plaintext `.env` files.
 - Git identity is machine/user-local state in `~/.gitconfig.local`; do not write it into the managed `~/.gitconfig`.
 - GitHub HTTPS authentication uses GitHub CLI as Git's credential helper rather than account-password authentication.
@@ -90,7 +96,9 @@ git submodule status --recursive
 
 ```text
 .
-├── .infisical.json       # project/default-environment binding; created by infisical init
+├── .infisical.json       # tracked self-host project binding
+├── config/
+│   └── infisical.sh      # non-secret self-host site/API/project metadata
 ├── agents/               # pinned private agent-config submodules
 │   ├── claude/
 │   ├── codex/
@@ -111,7 +119,16 @@ git submodule status --recursive
 └── AGENTS.md
 ```
 
-`.infisical.json` is committed non-secret project binding metadata. A new machine reuses this binding, so normal setup only needs Infisical user login; project selection is not repeated.
+`.infisical.json` and `config/infisical.sh` are committed non-secret metadata.
+
+Canonical binding:
+
+- site: `https://secrets.rebuildup.dev`
+- API: `https://secrets.rebuildup.dev/api`
+- project: `d4c2fc09-a923-4a38-9cf4-b51769aadb76`
+- environment: `dev`
+
+A new machine reuses this binding. Normal setup only needs user authentication against the self-hosted instance; `infisical init` is not part of the normal bootstrap.
 
 ## Agent configuration
 
@@ -141,9 +158,9 @@ See [ADR-0005](docs/adr/ADR-0005.md).
 
 ## Secret model
 
-Infisical owns secret values, versions, access policy, audit history, and rotation. The repository does not contain encrypted secret payloads either.
+The self-hosted Infisical instance at `https://secrets.rebuildup.dev` owns secret values, versions, access policy, audit history, and rotation. The repository does not contain encrypted secret payloads either.
 
-Local development uses the Infisical CLI login session. Automated workloads use dedicated Machine Identities scoped to the project they need; prefer OIDC or platform-native workload identity over long-lived static credentials.
+Local development uses an Infisical CLI user session authenticated against `https://secrets.rebuildup.dev`. Automated workloads use dedicated Machine Identities on the same instance, scoped to the project they need; prefer OIDC or platform-native workload identity over long-lived static credentials.
 
 The following must never be committed:
 
@@ -159,7 +176,7 @@ The following must never be committed:
 
 A secret update is **not a Git operation**.
 
-Use the Infisical dashboard or the Infisical CLI to create/update/delete values. There is no dotfiles commit or push after a value change; Infisical provides its own version and audit history.
+Use the self-hosted dashboard at `https://secrets.rebuildup.dev` or the Infisical CLI to create/update/delete values. There is no dotfiles commit or push after a value change; Infisical provides its own version and audit history.
 
 Avoid putting secret values directly into reusable shell history. For interactive manual edits, the dashboard is the default path unless a purpose-built non-history CLI flow is required.
 
@@ -171,7 +188,7 @@ Run a command with the secrets from the bound dotfiles Infisical project injecte
 ./script/with-secrets command arg1 arg2
 ```
 
-There is no runtime environment/path selector in this wrapper. The `.infisical.json` project binding is the scope boundary, and `with-secrets` simply delegates to `infisical run --project-config-dir=~/.dotfiles -- ...` without narrowing it further.
+There is no runtime environment/path selector at call time. The dotfiles secret project uses the canonical `dev` environment. `config/infisical.sh` pins the API URL, project ID, and environment, and `with-secrets` delegates with explicit `--projectId` and `--env=dev`. The wrapper does not narrow secrets by path.
 
 Project-specific secrets belong to that project's own Infisical project and `.infisical.json`. If secret sets become too broad, split the ownership at the project boundary instead of adding a secret-selection step to every command.
 
@@ -211,4 +228,5 @@ The current common Git baseline includes:
 - [`ADR-0003`](docs/adr/ADR-0003.md) — superseded SOPS + age design
 - [`ADR-0004`](docs/adr/ADR-0004.md) — Infisical secret source of truth
 - [`ADR-0005`](docs/adr/ADR-0005.md) — sibling agent-config submodules and shared portable assets
+- [`ADR-0006`](docs/adr/ADR-0006.md) — self-hosted Infisical control plane
 - [`dotfiles survey`](docs/research/dotfiles-survey.md)

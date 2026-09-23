@@ -10,6 +10,7 @@ home="$tmp/home"
 fake_bin="$tmp/bin"
 gh_log="$tmp/gh.log"
 infisical_log="$tmp/infisical.log"
+infisical_state="$tmp/infisical-authenticated"
 mkdir -p "$repo" "$home" "$fake_bin"
 
 git -C "$source_root" archive HEAD | tar -x -C "$repo"
@@ -18,10 +19,6 @@ git -C "$repo" config user.name 'Test Committer'
 git -C "$repo" config user.email 'committer@example.invalid'
 git -C "$repo" add .
 git -C "$repo" commit -qm 'test fixture'
-
-# Exercise the fresh-machine path even though the real repository now commits
-# non-secret Infisical project binding metadata.
-rm -f "$repo/.infisical.json"
 
 cat >> "$repo/home/.gitconfig" <<'EOF'
 
@@ -46,20 +43,19 @@ EOF
 cat > "$fake_bin/infisical" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-printf '%s\n' "$*" >> "$FAKE_INFISICAL_LOG"
+printf '%s|%s\n' "${INFISICAL_API_URL:-unset}" "$*" >> "$FAKE_INFISICAL_LOG"
 
 case "${1:-}" in
   --version)
     printf '%s\n' 'infisical version test'
     ;;
   login)
-    ;;
-  init)
-    cat > .infisical.json <<'JSON'
-{"workspaceId":"test-project","defaultEnvironment":"dev"}
-JSON
+    : > "$FAKE_INFISICAL_STATE"
     ;;
   run)
+    if [[ ! -f "$FAKE_INFISICAL_STATE" ]]; then
+      exit 1
+    fi
     ;;
   *)
     ;;
@@ -68,7 +64,7 @@ EOF
 
 chmod +x "$fake_bin/gh" "$fake_bin/infisical"
 
-HOME="$home" PATH="$fake_bin:$PATH" FAKE_GH_LOG="$gh_log" FAKE_INFISICAL_LOG="$infisical_log" DOTFILES_GIT_NAME='Fallback User' DOTFILES_GIT_EMAIL='fallback@example.invalid' DOTFILES_ALLOW_INTERACTIVE_AUTH=1 DOTFILES_SKIP_AGENT_SUBMODULES=1 "$repo/script/bootstrap"
+HOME="$home" PATH="$fake_bin:$PATH" FAKE_GH_LOG="$gh_log" FAKE_INFISICAL_LOG="$infisical_log" FAKE_INFISICAL_STATE="$infisical_state" DOTFILES_GIT_NAME='Fallback User' DOTFILES_GIT_EMAIL='fallback@example.invalid' DOTFILES_ALLOW_INTERACTIVE_AUTH=1 DOTFILES_SKIP_AGENT_SUBMODULES=1 "$repo/script/bootstrap"
 
 if [[ "$(git config --file "$home/.gitconfig.local" --get user.name)" != 'Migrated User' ]]; then
   printf 'bootstrap did not migrate Git user.name to local config\n' >&2
@@ -101,37 +97,42 @@ if git config --file "$repo/home/.gitconfig" --get credential.https://github.com
   exit 1
 fi
 
-if ! grep -Fxq 'login' "$infisical_log"; then
-  printf 'bootstrap did not start Infisical user login for an unbound repo\n' >&2
+expected_site='https://secrets.rebuildup.dev'
+expected_api='https://secrets.rebuildup.dev/api'
+expected_project='d4c2fc09-a923-4a38-9cf4-b51769aadb76'
+expected_environment='dev'
+
+if ! grep -Fxq "$expected_api|login --domain=$expected_site" "$infisical_log"; then
+  printf 'bootstrap did not login to the pinned self-hosted Infisical domain\n' >&2
   exit 1
 fi
 
-if ! grep -Fxq 'init' "$infisical_log"; then
-  printf 'bootstrap did not initialize Infisical project binding\n' >&2
+if grep -Fq '|init' "$infisical_log"; then
+  printf 'bootstrap unexpectedly re-initialized the tracked Infisical project binding\n' >&2
   exit 1
 fi
 
-if [[ ! -f "$repo/.infisical.json" ]]; then
-  printf 'bootstrap did not create .infisical.json project metadata\n' >&2
+if ! grep -Eq "\"workspaceId\"[[:space:]]*:[[:space:]]*\"$expected_project\"" "$repo/.infisical.json"; then
+  printf 'tracked Infisical project binding does not match the self-hosted project\n' >&2
   exit 1
 fi
 
-if ! grep -Fq 'run --project-config-dir=' "$infisical_log"; then
-  printf 'bootstrap did not validate Infisical runtime access\n' >&2
+if ! grep -Fq "$expected_api|run --projectId=$expected_project --env=$expected_environment --project-config-dir=" "$infisical_log"; then
+  printf 'bootstrap did not validate the explicit self-hosted Infisical project/environment\n' >&2
   exit 1
 fi
 
-HOME="$home" PATH="$fake_bin:$PATH" FAKE_INFISICAL_LOG="$infisical_log" DOTFILES_INFISICAL_ENV=ignored DOTFILES_INFISICAL_PATH=/ignored "$repo/script/with-secrets" true
+HOME="$home" PATH="$fake_bin:$PATH" FAKE_INFISICAL_LOG="$infisical_log" FAKE_INFISICAL_STATE="$infisical_state" DOTFILES_INFISICAL_ENV=ignored DOTFILES_INFISICAL_PATH=/ignored "$repo/script/with-secrets" true
 
 last_infisical_call="$(tail -n 1 "$infisical_log")"
 
-if [[ "$last_infisical_call" != run\ --project-config-dir=*\ --\ true ]]; then
-  printf 'with-secrets did not delegate directly to bound-project infisical run: %s\n' "$last_infisical_call" >&2
+if [[ "$last_infisical_call" != "$expected_api|run --projectId=$expected_project --env=$expected_environment --project-config-dir="*' -- true' ]]; then
+  printf 'with-secrets did not delegate to the explicit self-hosted project/environment: %s\n' "$last_infisical_call" >&2
   exit 1
 fi
 
-if [[ "$last_infisical_call" == *'--env='* || "$last_infisical_call" == *'--path='* ]]; then
-  printf 'with-secrets unexpectedly applied runtime environment/path selectors\n' >&2
+if [[ "$last_infisical_call" == *'--path='* ]]; then
+  printf 'with-secrets unexpectedly narrowed secrets by path\n' >&2
   exit 1
 fi
 
