@@ -165,6 +165,37 @@ refresh_local_gitignore_override() {
   mv "$temp" "$local_ignore"
 }
 
+
+is_wsl() {
+  [[ -n "${WSL_DISTRO_NAME:-}" || -n "${WSL_INTEROP:-}" ]] ||
+    { [[ -r /proc/sys/kernel/osrelease ]] && grep -qi microsoft /proc/sys/kernel/osrelease; }
+}
+
+configure_infisical_vault() {
+  local vault_status
+
+  if ! is_wsl; then
+    return
+  fi
+
+  vault_status="$(infisical vault 2>&1 || true)"
+  if grep -Fq 'currently using [file] vault' <<<"$vault_status"; then
+    printf 'ok      Infisical WSL vault backend file\n'
+    return
+  fi
+
+  printf 'configuring Infisical file vault for WSL (avoids Secret Service / D-Bus dependency)\n'
+  infisical vault set file
+
+  vault_status="$(infisical vault 2>&1 || true)"
+  if ! grep -Fq 'currently using [file] vault' <<<"$vault_status"; then
+    printf 'failed  Infisical vault backend did not switch to file on WSL\n%s\n' "$vault_status" >&2
+    exit 1
+  fi
+
+  printf 'ok      Infisical WSL vault backend file\n'
+}
+
 sync_agent_submodules() {
   if [[ "${DOTFILES_SKIP_AGENT_SUBMODULES:-0}" == "1" ]]; then
     printf 'skip    agent config submodules (DOTFILES_SKIP_AGENT_SUBMODULES=1)\n'
@@ -269,6 +300,8 @@ printf 'ok      GitHub HTTPS credential helper stored in %s\n' "$local_git_confi
 # fetch the pinned submodule commits. Fresh clones intentionally do not require
 # --recurse-submodules.
 sync_agent_submodules
+
+configure_infisical_vault
 
 if [[ ! -f "$infisical_config" ]]; then
   printf 'missing tracked Infisical project binding: %s\n' "$infisical_config" >&2
