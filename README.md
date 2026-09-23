@@ -101,7 +101,7 @@ See [ADR-0005](docs/adr/ADR-0005.md).
 
 Infisical owns secret values, versions, access policy, audit history, and rotation. The repository does not contain encrypted secret payloads either.
 
-Human local development uses the Infisical CLI login session. Automated workloads should use dedicated Machine Identities scoped to the required project/environment/path; prefer OIDC or platform-native workload identity over long-lived static credentials.
+Local development uses the Infisical CLI login session. Automated workloads use dedicated Machine Identities scoped to the project they need; prefer OIDC or platform-native workload identity over long-lived static credentials.
 
 The following must never be committed:
 
@@ -123,23 +123,15 @@ Avoid putting secret values directly into reusable shell history. For interactiv
 
 ### Using secrets
 
-Run a command with the dotfiles Infisical project injected into only that process:
+Run a command with the secrets from the bound dotfiles Infisical project injected into only that process:
 
 ```bash
 ./script/with-secrets command arg1 arg2
 ```
 
-Optional scope overrides:
+There is no runtime environment/path selector in this wrapper. The `.infisical.json` project binding is the scope boundary, and `with-secrets` simply delegates to `infisical run --project-config-dir=~/.dotfiles -- ...` without narrowing it further.
 
-```bash
-DOTFILES_INFISICAL_ENV=dev \
-DOTFILES_INFISICAL_PATH=/tools \
-./script/with-secrets command
-```
-
-The wrapper uses `infisical run --project-config-dir=~/.dotfiles -- ...`, so the launched command keeps the caller's working directory while project binding is resolved from this repository.
-
-Project-specific applications should normally keep their own `.infisical.json` and call `infisical run` directly rather than depending on the global dotfiles project.
+Project-specific secrets belong to that project's own Infisical project and `.infisical.json`. If secret sets become too broad, split the ownership at the project boundary instead of adding a secret-selection step to every command.
 
 ## SOPS migration history
 
