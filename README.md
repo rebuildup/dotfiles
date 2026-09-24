@@ -114,7 +114,10 @@ git submodule status --recursive
 │   ├── test-workflow     # bootstrap / Infisical regression test
 │   ├── secrets-doctor    # validate Infisical project access
 │   ├── with-secrets      # process-scoped Infisical runtime injection
-│   └── check-secrets     # reject secret material / legacy SOPS state in Git
+│   ├── check-secrets     # reject secret material / legacy SOPS state in Git
+│   └── agent/            # provider-specific runtime entrypoints
+│       ├── mimo          # Xiaomi MiMo via Anthropic Compatibility Protocol
+│       └── claude-mimo   # Claude Code launcher through mimo
 ├── docs/
 │   ├── adr/
 │   └── research/
@@ -133,6 +136,15 @@ Canonical binding:
 A new machine reuses this binding. Normal setup only needs user authentication against the self-hosted instance; `infisical init` is not part of the normal bootstrap.
 
 ## Agent configuration
+
+Claude Code on this workspace runs through the Xiaomi MiMo provider entrypoint:
+
+```bash
+script/agent/mimo            # defaults to claude
+script/agent/claude-mimo     # explicit Claude Code launcher
+```
+
+`script/agent/mimo` sets non-secret Anthropic-compatible Base URL / model IDs, injects `MIMO_API_KEY` only for that process via `script/with-secrets`, and exposes it to Claude Code as `ANTHROPIC_AUTH_TOKEN` inside the child process. See [`script/agent/README.md`](script/agent/README.md).
 
 Global Claude Code, Codex, and OpenCode repositories are pinned as sibling submodules under `agents/`. A fresh clone does not need `--recurse-submodules`: `script/bootstrap` authenticates GitHub, stores the GitHub credential helper in machine-local `~/.gitconfig.local`, links the stable global Git config, then initializes the exact commits recorded by the parent repository.
 

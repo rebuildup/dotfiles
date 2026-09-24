@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# Provider-specific entrypoint for Xiaomi MiMo.
+#
+# Sets non-secret Anthropic-compatible provider environment, injects the
+# MiMo credential from self-hosted Infisical through script/with-secrets,
+# then converts MIMO_API_KEY to ANTHROPIC_AUTH_TOKEN only inside that
+# process scope.
+#
+# Usage:
+#   script/agent/mimo [command [args...]]
+#
+# Examples:
+#   script/agent/mimo
+#   script/agent/mimo claude --version
+#   script/agent/mimo claude -p 'hello'
+#
+# Notes:
+# - Process-scoped injection only; login shell is intentionally NOT touched.
+# - Secret values never appear in this file, Git, Nix store, or shell rc files.
+# - Canonical secret name remains MIMO_API_KEY in Infisical.
+
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+repo_root="$(cd "$script_dir/../.." && pwd -P)"
+with_secrets="$repo_root/script/with-secrets"
+
+# Non-secret MiMo configuration (official Claude Code integration docs).
+# Anthropic-compatible Base URLs (Token Plan clusters):
+#   Singapore:      https://token-plan-sgp.xiaomimimo.com/anthropic
+#   China:          https://token-plan-cn.xiaomimimo.com/anthropic
+#   Europe:         https://token-plan-ams.xiaomimimo.com/anthropic
+#   Pay-as-you-go:  https://api.xiaomimimo.com/anthropic
+# Active Token Plan cluster for this account: Singapore (verified against
+# official endpoint; credential class tp-*).
+MIMO_TOKEN_PLAN_ANTHROPIC_BASE_URL="https://token-plan-sgp.xiaomimimo.com/anthropic"
+MIMO_PAYG_ANTHROPIC_BASE_URL="https://api.xiaomimimo.com/anthropic"
+MIMO_ANTHROPIC_BASE_URL_DEFAULT="$MIMO_TOKEN_PLAN_ANTHROPIC_BASE_URL"
+MIMO_MODEL="mimo-v2.6-pro"
+
+if [[ "$#" -lt 1 ]]; then
+  set -- claude
+fi
+
+if [[ ! -x "$with_secrets" ]]; then
+  printf 'missing dotfiles wrapper: %s\n' "$with_secrets" >&2
+  exit 1
+fi
+
+# Second entry: secrets are present in this process scope only.
+if [[ -n "${MIMO_API_KEY:-}" ]]; then
+  case "$MIMO_API_KEY" in
+    tp-* | ttp-*) export ANTHROPIC_BASE_URL="$MIMO_TOKEN_PLAN_ANTHROPIC_BASE_URL" ;;
+    sk-*) export ANTHROPIC_BASE_URL="$MIMO_PAYG_ANTHROPIC_BASE_URL" ;;
+    *) export ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL:-$MIMO_ANTHROPIC_BASE_URL_DEFAULT}" ;;
+  esac
+
+  export ANTHROPIC_AUTH_TOKEN="$MIMO_API_KEY"
+  export ANTHROPIC_MODEL="$MIMO_MODEL"
+  export ANTHROPIC_DEFAULT_SONNET_MODEL="$MIMO_MODEL"
+  export ANTHROPIC_DEFAULT_OPUS_MODEL="$MIMO_MODEL"
+  export ANTHROPIC_DEFAULT_HAIKU_MODEL="$MIMO_MODEL"
+
+  # Isolate from Anthropic official API-key auth and any prior provider state.
+  unset ANTHROPIC_API_KEY
+  unset MIMO_API_KEY
+
+  # Drop this entrypoint directory from PATH so a bare `claude` resolves to
+  # the pc-setup/mise-managed binary instead of recursing into a shim.
+  stripped_path=""
+  path_ifs=$IFS
+  IFS=':'
+  for path_element in $PATH; do
+    [[ -z "$path_element" ]] && continue
+    if [[ "$path_element" == "$script_dir" ]]; then
+      continue
+    fi
+    if [[ -z "$stripped_path" ]]; then
+      stripped_path="$path_element"
+    else
+      stripped_path="$stripped_path:$path_element"
+    fi
+  done
+  IFS=$path_ifs
+  export PATH="$stripped_path"
+
+  exec "$@"
+fi
+
+# First entry: apply non-secret provider environment, inject secrets, re-enter.
+exec env \
+  ANTHROPIC_BASE_URL="$MIMO_ANTHROPIC_BASE_URL_DEFAULT" \
+  ANTHROPIC_MODEL="$MIMO_MODEL" \
+  ANTHROPIC_DEFAULT_SONNET_MODEL="$MIMO_MODEL" \
+  ANTHROPIC_DEFAULT_OPUS_MODEL="$MIMO_MODEL" \
+  ANTHROPIC_DEFAULT_HAIKU_MODEL="$MIMO_MODEL" \
+  "$with_secrets" "$0" "$@"
