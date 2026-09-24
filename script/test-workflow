@@ -9,6 +9,7 @@ repo="$tmp/repo"
 home="$tmp/home"
 fake_bin="$tmp/bin"
 gh_log="$tmp/gh.log"
+gh_state="$tmp/gh-authenticated"
 infisical_log="$tmp/infisical.log"
 infisical_state="$tmp/infisical-authenticated"
 infisical_vault_state="$tmp/infisical-vault"
@@ -36,9 +37,20 @@ cat > "$fake_bin/gh" <<'EOF'
 set -euo pipefail
 printf '%s\n' "$*" >> "$FAKE_GH_LOG"
 
-if [[ "$*" == "auth setup-git --hostname github.com" ]]; then
-  git config --global credential.https://github.com.helper '!gh auth git-credential'
-fi
+case "$*" in
+  "auth status --hostname github.com")
+    [[ -f "$FAKE_GH_STATE" ]] || exit 1
+    ;;
+  "auth login --hostname github.com --git-protocol https --web")
+    : > "$FAKE_GH_STATE"
+    git config --global --replace-all credential.https://github.com.helper ''
+    git config --global --add credential.https://github.com.helper '!gh auth git-credential'
+    ;;
+  "auth setup-git --hostname github.com")
+    git config --global --replace-all credential.https://github.com.helper ''
+    git config --global --add credential.https://github.com.helper '!gh auth git-credential'
+    ;;
+esac
 EOF
 
 cat > "$fake_bin/infisical" <<'EOF'
@@ -101,7 +113,7 @@ cat > "$home/.config/git/ignore" <<'EOF'
 *.local-only
 EOF
 
-HOME="$home" PATH="$fake_bin:$PATH" FAKE_GH_LOG="$gh_log" FAKE_INFISICAL_LOG="$infisical_log" FAKE_INFISICAL_STATE="$infisical_state" FAKE_INFISICAL_VAULT_STATE="$infisical_vault_state" WSL_DISTRO_NAME=Ubuntu DOTFILES_GIT_NAME='Fallback User' DOTFILES_GIT_EMAIL='fallback@example.invalid' DOTFILES_ALLOW_INTERACTIVE_AUTH=1 DOTFILES_SKIP_AGENT_SUBMODULES=1 "$repo/script/bootstrap"
+HOME="$home" PATH="$fake_bin:$PATH" FAKE_GH_LOG="$gh_log" FAKE_GH_STATE="$gh_state" FAKE_INFISICAL_LOG="$infisical_log" FAKE_INFISICAL_STATE="$infisical_state" FAKE_INFISICAL_VAULT_STATE="$infisical_vault_state" WSL_DISTRO_NAME=Ubuntu DOTFILES_GIT_NAME='Fallback User' DOTFILES_GIT_EMAIL='fallback@example.invalid' DOTFILES_ALLOW_INTERACTIVE_AUTH=1 DOTFILES_SKIP_AGENT_SUBMODULES=1 "$repo/script/bootstrap"
 
 if [[ ! -L "$home/.gitconfig" || "$(readlink "$home/.gitconfig")" != "$repo/home/.gitconfig" ]]; then
   printf 'bootstrap did not adopt ~/.gitconfig as the managed symlink\n' >&2
@@ -156,6 +168,11 @@ if git config --file "$repo/home/.gitconfig" --get user.name >/dev/null 2>&1 ||
   exit 1
 fi
 
+if ! grep -Fq 'auth login --hostname github.com --git-protocol https --web' "$gh_log"; then
+  printf 'bootstrap did not exercise first-time GitHub authentication\n' >&2
+  exit 1
+fi
+
 if ! grep -Fq 'auth setup-git --hostname github.com' "$gh_log"; then
   printf 'bootstrap did not configure gh as the Git credential helper\n' >&2
   exit 1
@@ -171,7 +188,7 @@ if git config --file "$repo/home/.gitconfig" --get credential.https://github.com
   exit 1
 fi
 
-HOME="$home" PATH="$fake_bin:$PATH" FAKE_GH_LOG="$gh_log" FAKE_INFISICAL_LOG="$infisical_log" FAKE_INFISICAL_STATE="$infisical_state" FAKE_INFISICAL_VAULT_STATE="$infisical_vault_state" WSL_DISTRO_NAME=Ubuntu DOTFILES_ALLOW_INTERACTIVE_AUTH=1 DOTFILES_SKIP_AGENT_SUBMODULES=1 "$repo/script/bootstrap"
+HOME="$home" PATH="$fake_bin:$PATH" FAKE_GH_LOG="$gh_log" FAKE_GH_STATE="$gh_state" FAKE_INFISICAL_LOG="$infisical_log" FAKE_INFISICAL_STATE="$infisical_state" FAKE_INFISICAL_VAULT_STATE="$infisical_vault_state" WSL_DISTRO_NAME=Ubuntu DOTFILES_ALLOW_INTERACTIVE_AUTH=1 DOTFILES_SKIP_AGENT_SUBMODULES=1 "$repo/script/bootstrap"
 
 if [[ "$(find "$home" -maxdepth 1 -name '.gitconfig.pre-dotfiles*' -type f | wc -l)" -ne 1 ]]; then
   printf 'bootstrap created duplicate ~/.gitconfig migration backups on rerun\n' >&2

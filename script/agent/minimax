@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Provider-specific entrypoint for the MiniMax (transitional / legacy) AI
+# provider. Per ADR-0008, MiniMax is treated as transitional; this wrapper
+# injects MiniMax-shaped environment variables on top of Infisical runtime
+# injection and execs the requested command under that scope.
+#
+# Usage:
+#   script/agent/minimax command [args...]
+#
+# Example:
+#   script/agent/minimax claude --version
+#   script/agent/minimax codex --version
+#
+# Notes:
+# - Process-scoped injection only; login shell is intentionally NOT
+#   touched. This keeps the Claude common configuration provider-neutral.
+# - All secret values are sourced from the dotfiles self-hosted Infisical
+#   project through `script/with-secrets`.
+# - MiMo and any other provider will get its own entrypoint alongside this
+#   one. No new MiniMax canonical aliases should be added here.
+
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+repo_root="$(cd "$script_dir/../.." && pwd -P)"
+with_secrets="$repo_root/script/with-secrets"
+
+if [[ "$#" -lt 1 ]]; then
+  printf 'usage: %s command [args...]\n' "$0" >&2
+  exit 2
+fi
+
+if [[ ! -x "$with_secrets" ]]; then
+  printf 'missing dotfiles wrapper: %s\n' "$with_secrets" >&2
+  exit 1
+fi
+
+exec env \
+  ANTHROPIC_BASE_URL="https://api.minimax.io/anthropic" \
+  ANTHROPIC_MODEL="MiniMax-M3" \
+  ANTHROPIC_SMALL_FAST_MODEL="MiniMax-M2.7" \
+  ANTHROPIC_DEFAULT_SONNET_MODEL="MiniMax-M3" \
+  ANTHROPIC_DEFAULT_OPUS_MODEL="MiniMax-M3" \
+  ANTHROPIC_DEFAULT_HAIKU_MODEL="MiniMax-M2.7" \
+  API_TIMEOUT_MS="300000000" \
+  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="1" \
+  CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY="32" \
+  CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS="1" \
+  CLAUDE_AUTO_BACKGROUND_TASKS="1" \
+  CLAUDE_CODE_FORK_SUBAGENT="1" \
+  CLAUDE_CODE_DISABLE_AUTO_MEMORY="0" \
+  CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT="1" \
+  "$with_secrets" "$@"
