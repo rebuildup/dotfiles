@@ -278,9 +278,10 @@ git config --file "$local_git_config" user.email "$git_email"
 printf 'ok      Git identity stored in %s\n' "$local_git_config"
 
 if ! gh auth status --hostname github.com >/dev/null 2>&1; then
-  if [[ -t 0 ]]; then
+  if [[ -t 0 || "${DOTFILES_ALLOW_INTERACTIVE_AUTH:-0}" == "1" ]]; then
     printf 'GitHub authentication is required; starting browser login.\n'
-    gh auth login --hostname github.com --git-protocol https --web
+    GIT_CONFIG_GLOBAL="$local_git_config" \
+      gh auth login --hostname github.com --git-protocol https --web
   else
     printf 'GitHub authentication is missing. Run: gh auth login --hostname github.com --git-protocol https --web\n' >&2
     exit 1
