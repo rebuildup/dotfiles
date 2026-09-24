@@ -14,6 +14,9 @@ One executable file per provider, named after the provider id:
 A provider entrypoint:
 
 1. Sets the provider URL and model names as process-scoped `env` values.
+   Claude Code's native slots map as: default / Sonnet / Haiku →
+   `mimo-v2.6-flash` (common), Opus → `mimo-v2.6-pro[1m]` (upper tier,
+   1M context window).
 2. Execs the dotfiles `script/with-secrets` wrapper so secrets are injected
    from the self-hosted Infisical project.
 3. Converts the provider-specific secret name (for example `MIMO_API_KEY`)

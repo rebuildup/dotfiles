@@ -33,10 +33,17 @@ with_secrets="$repo_root/script/with-secrets"
 #   Pay-as-you-go:  https://api.xiaomimimo.com/anthropic
 # Active Token Plan cluster for this account: Singapore (verified against
 # official endpoint; credential class tp-*).
+#
+# Model mapping into Claude Code's native slots:
+#   default / Sonnet / Haiku -> mimo-v2.6-flash   (common driver)
+#   Opus                     -> mimo-v2.6-pro[1m] (upper tier, 1M context)
+# The [1m] suffix is consumed by Claude Code for local context-window
+# sizing; the Anthropic-compatible API receives mimo-v2.6-pro.
 MIMO_TOKEN_PLAN_ANTHROPIC_BASE_URL="https://token-plan-sgp.xiaomimimo.com/anthropic"
 MIMO_PAYG_ANTHROPIC_BASE_URL="https://api.xiaomimimo.com/anthropic"
 MIMO_ANTHROPIC_BASE_URL_DEFAULT="$MIMO_TOKEN_PLAN_ANTHROPIC_BASE_URL"
-MIMO_MODEL="mimo-v2.6-pro"
+MIMO_MODEL_DEFAULT="mimo-v2.6-flash"
+MIMO_MODEL_UPPER="mimo-v2.6-pro[1m]"
 
 if [[ "$#" -lt 1 ]]; then
   set -- claude
@@ -56,10 +63,10 @@ if [[ -n "${MIMO_API_KEY:-}" ]]; then
   esac
 
   export ANTHROPIC_AUTH_TOKEN="$MIMO_API_KEY"
-  export ANTHROPIC_MODEL="$MIMO_MODEL"
-  export ANTHROPIC_DEFAULT_SONNET_MODEL="$MIMO_MODEL"
-  export ANTHROPIC_DEFAULT_OPUS_MODEL="$MIMO_MODEL"
-  export ANTHROPIC_DEFAULT_HAIKU_MODEL="$MIMO_MODEL"
+  export ANTHROPIC_MODEL="$MIMO_MODEL_DEFAULT"
+  export ANTHROPIC_DEFAULT_SONNET_MODEL="$MIMO_MODEL_DEFAULT"
+  export ANTHROPIC_DEFAULT_HAIKU_MODEL="$MIMO_MODEL_DEFAULT"
+  export ANTHROPIC_DEFAULT_OPUS_MODEL="$MIMO_MODEL_UPPER"
 
   # Isolate from Anthropic official API-key auth and any prior provider state.
   unset ANTHROPIC_API_KEY
@@ -90,8 +97,8 @@ fi
 # First entry: apply non-secret provider environment, inject secrets, re-enter.
 exec env \
   ANTHROPIC_BASE_URL="$MIMO_ANTHROPIC_BASE_URL_DEFAULT" \
-  ANTHROPIC_MODEL="$MIMO_MODEL" \
-  ANTHROPIC_DEFAULT_SONNET_MODEL="$MIMO_MODEL" \
-  ANTHROPIC_DEFAULT_OPUS_MODEL="$MIMO_MODEL" \
-  ANTHROPIC_DEFAULT_HAIKU_MODEL="$MIMO_MODEL" \
+  ANTHROPIC_MODEL="$MIMO_MODEL_DEFAULT" \
+  ANTHROPIC_DEFAULT_SONNET_MODEL="$MIMO_MODEL_DEFAULT" \
+  ANTHROPIC_DEFAULT_HAIKU_MODEL="$MIMO_MODEL_DEFAULT" \
+  ANTHROPIC_DEFAULT_OPUS_MODEL="$MIMO_MODEL_UPPER" \
   "$with_secrets" "$0" "$@"
