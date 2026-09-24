@@ -117,6 +117,7 @@ git submodule status --recursive
 │   ├── check-secrets     # reject secret material / legacy SOPS state in Git
 │   └── agent/            # provider-specific runtime entrypoints
 │       ├── mimo          # Xiaomi MiMo via Anthropic Compatibility Protocol
+│       ├── claude        # PATH shim: bare claude -> mimo
 │       └── claude-mimo   # Claude Code launcher through mimo
 ├── docs/
 │   ├── adr/
@@ -142,6 +143,7 @@ Claude Code on this workspace runs through the Xiaomi MiMo provider entrypoint:
 ```bash
 script/agent/mimo            # defaults to claude
 script/agent/claude-mimo     # explicit Claude Code launcher
+script/agent/claude --version # same path as bare `claude` when agent dir is first on PATH
 ```
 
 `script/agent/mimo` sets non-secret Anthropic-compatible Base URL / model IDs, injects `MIMO_API_KEY` only for that process via `script/with-secrets`, and exposes it to Claude Code as `ANTHROPIC_AUTH_TOKEN` inside the child process. See [`script/agent/README.md`](script/agent/README.md).

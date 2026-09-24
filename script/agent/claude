@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# PATH-level Claude Code entry: always route through the MiMo provider entrypoint.
+# shell-init also defines a claude() function; this shim covers non-function PATH lookup.
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+exec "$script_dir/mimo" claude "$@"

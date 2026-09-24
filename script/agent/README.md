@@ -9,6 +9,7 @@ alias is set.
 One executable file per provider, named after the provider id:
 
 - `mimo` — Xiaomi MiMo via the Anthropic Compatibility Protocol.
+- `claude` — PATH shim: bare `claude` always enters `mimo` (covers shells without the pc-setup `claude()` function).
 - `claude-mimo` — convenience launcher for Claude Code through `mimo`.
 
 A provider entrypoint:
@@ -38,4 +39,5 @@ A provider entrypoint:
 script/agent/mimo              # defaults to claude
 script/agent/mimo claude -p 'hello'
 script/agent/claude-mimo --version
+script/agent/claude --version  # same as claude when agent dir is first on PATH
 ```
