@@ -13,8 +13,7 @@ transitional / legacy provider).
 One executable file per provider, named after the provider id:
 
 - `minimax` — transitional / legacy provider. Active until retirement.
-- `mimo` — placeholder for the future provider. Only added when MiMo
-  adoption begins; never before.
+- `mimo` — Xiaomi MiMo provider. Canonical Claude Code path.
 
 A provider entrypoint:
 
@@ -27,12 +26,15 @@ A provider entrypoint:
 ## What does NOT go here
 
 - Login-shell global exports. The `~/.bashrc`-level exports belong in
-  the user's host, not in this repository.
+  the user's host, not in this repository. Interactive shells may
+  delegate `claude` through `config/agent-init.bash` without exporting
+  provider URL / model / credential state.
 - Provider-specific Claude Code values that masquerade as `ANTHROPIC_*`
-  canonical names. If a downstream consumer expects `ANTHROPIC_AUTH_TOKEN`,
-  the wrapper sets it for the provider from a `MINIMAX_*` (or equivalent)
-  source. The fact that this happens here, not in the common layer, is
-  the whole point of `docs/adr/0008`.
+  canonical names in the common layer. If a downstream consumer expects
+  `ANTHROPIC_AUTH_TOKEN`, the provider wrapper remaps it after
+  `script/with-secrets` injection (for example MiMo:
+  `MIMO_API_KEY` → `ANTHROPIC_AUTH_TOKEN`). The fact that this happens
+  here, not in the common layer, is the whole point of `docs/adr/0008`.
 - Plaintext secrets. All secrets are sourced from Infisical via
   `script/with-secrets`.
 
@@ -44,6 +46,17 @@ deliberately removes.
 
 Per-provider wrappers keep the common layer truly provider-neutral, at
 the cost of one extra shell entrypoint per provider.
+
+## Invocation
+
+```bash
+script/agent/mimo claude
+script/agent/mimo claude -p 'say ok'
+script/agent/minimax claude --version
+```
+
+Interactive shells that source `config/agent-init.bash` may call
+`claude` directly; the function delegates to `script/agent/mimo`.
 
 ## Migration to a future provider
 

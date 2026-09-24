@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Provider-specific entrypoint for the MiMo (Xiaomi) AI provider.
+# Per ADR-0008, this wrapper injects MiMo-shaped environment variables
+# on top of Infisical runtime injection and execs the requested command
+# under that scope.
+#
+# Usage:
+#   script/agent/mimo command [args...]
+#
+# Example:
+#   script/agent/mimo claude --version
+#   script/agent/mimo claude -p 'say ok'
+#
+# Notes:
+# - Process-scoped injection only; login shell is intentionally NOT
+#   touched. Interactive shells may delegate here via config/agent-init.bash.
+# - All secret values are sourced from the dotfiles self-hosted Infisical
+#   project through `script/with-secrets`.
+# - Infisical injects ANTHROPIC_AUTH_TOKEN (legacy MiniMax alias) and
+#   overrides any pre-set value, so ANTHROPIC_AUTH_TOKEN is reassigned
+#   from MIMO_API_KEY after `with-secrets` injection.
+# - MIMO_API_KEY must expand inside the child shell after injection;
+#   keep comments out of the exec line continuation.
+
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+repo_root="$(cd "$script_dir/../.." && pwd -P)"
+with_secrets="$repo_root/script/with-secrets"
+
+if [[ "$#" -lt 1 ]]; then
+  printf 'usage: %s command [args...]\n' "$0" >&2
+  exit 2
+fi
+
+if [[ ! -x "$with_secrets" ]]; then
+  printf 'missing dotfiles wrapper: %s\n' "$with_secrets" >&2
+  exit 1
+fi
+
+# shellcheck disable=SC2016
+exec "$with_secrets" env \
+  ANTHROPIC_BASE_URL="https://token-plan-sgp.xiaomimimo.com/anthropic" \
+  ANTHROPIC_MODEL="mimo-v2.6-flash" \
+  ANTHROPIC_SMALL_FAST_MODEL="mimo-v2.6-flash" \
+  ANTHROPIC_DEFAULT_SONNET_MODEL="mimo-v2.6-pro" \
+  ANTHROPIC_DEFAULT_OPUS_MODEL="mimo-v2.6-pro[1m]" \
+  ANTHROPIC_DEFAULT_HAIKU_MODEL="mimo-v2.6-flash" \
+  API_TIMEOUT_MS="300000000" \
+  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="1" \
+  CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY="32" \
+  CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS="1" \
+  CLAUDE_AUTO_BACKGROUND_TASKS="1" \
+  CLAUDE_CODE_FORK_SUBAGENT="1" \
+  CLAUDE_CODE_DISABLE_AUTO_MEMORY="0" \
+  CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT="1" \
+  bash -c 'export ANTHROPIC_AUTH_TOKEN="${MIMO_API_KEY:?MIMO_API_KEY missing}"; exec "$@"' bash "$@"

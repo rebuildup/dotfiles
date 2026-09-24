@@ -18,7 +18,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Check shell syntax
-        run: bash -n script/link script/check script/test script/bootstrap script/secrets-doctor script/with-secrets script/check-secrets script/test-workflow
+        run: bash -n script/link script/check script/test script/bootstrap script/secrets-doctor script/with-secrets script/check-secrets script/test-workflow script/agent/minimax script/agent/mimo config/agent-init.bash
       - name: Test symlink behavior
         run: ./script/test
       - name: Test bootstrap and Infisical workflow
