@@ -19,3 +19,24 @@ This repository manages personal CLI configuration. Preserve these project-local
 - Before presenting a change as ready, run `./script/test`, `./script/test-workflow`, `./script/check-secrets`, and relevant `./script/check` / `./script/secrets-doctor` validation.
 
 Project-wide delivery, authority, evidence, and review rules follow the current `rebuildup/project-init` operating profile.
+
+
+## Constitution / operating profile
+
+- 最上位 contract: [`constitution/CONSTITUTION.md`](constitution/CONSTITUTION.md)
+- current Operating Model: [`organization/profiles/release-driven-solo.md`](organization/profiles/release-driven-solo.md)
+- 既存の project-specific invariant / ADR は、Constitution と両立する限り generic upstream Practice より具体的な authority として保持する。
+
+
+## Agent Skills lifecycle
+
+project-init 由来の Agent Skills は **project-local** に管理し、global install を canonical にしない。
+
+- 初回導入 / 全体 reconcile: `bunx skills add rebuildup/project-init --skill '*' --agent claude-code opencode codex -y`
+- fresh clone から lock を復元: `bunx skills install`
+- 継続更新: `bunx skills update -p -y`
+- `skills-lock.json` は `skills` CLI が生成・更新する source/freshness metadata として commit する。手で hash / source entry を捏造しない。
+- upstream-managed Skill 本文は手編集しない。project 固有の refinement / override は別の project-local Skill、adapter、ADR、docs に置き、次回 update で上書きされない構造にする。
+- update 後は Git diff と applicable quality gate を確認し、upstream 更新を無条件に current project policy とみなさない。
+
+Bun はここでは Agent Skills 管理用の project tooling であり、product runtime / package manager の既存 decision を自動的に置換しない。
