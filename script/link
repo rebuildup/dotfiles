@@ -24,7 +24,7 @@ while IFS= read -r -d '' source; do
     printf 'conflict %s already exists and is unmanaged\n' "$target" >&2
     status=1
   fi
-done < <(find "$source_root" -type f -print0)
+done < <(find "$source_root" \( -type f -o -type l \) -print0)
 
 if [[ "$status" -ne 0 ]]; then
   exit "$status"
@@ -42,4 +42,4 @@ while IFS= read -r -d '' source; do
   mkdir -p "$(dirname "$target")"
   ln -s "$source" "$target"
   printf 'linked  %s -> %s\n' "$target" "$source"
-done < <(find "$source_root" -type f -print0)
+done < <(find "$source_root" \( -type f -o -type l \) -print0)

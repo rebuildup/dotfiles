@@ -27,6 +27,6 @@ while IFS= read -r -d '' source; do
   fi
 
   printf 'ok      %s\n' "$target"
-done < <(find "$source_root" -type f -print0)
+done < <(find "$source_root" \( -type f -o -type l \) -print0)
 
 exit "$status"
