@@ -132,6 +132,12 @@ Canonical binding:
 
 A new machine reuses this binding. Normal setup only needs user authentication against the self-hosted instance; `infisical init` is not part of the normal bootstrap.
 
+## Agent accounts (mise)
+
+The native `claude` command uses the official Claude Code login. API account selection for Claude Code, Pi, OpenCode and DSH is opt-in via global mise tasks + existing Infisical runtime injection, without another launcher or shell override.
+
+See [mise agent account tasks](docs/agent-mise.md). For example `mise run agent:pi:deepseek` or `mise run agent:claude:openrouter` from any project.
+
 ## Agent configuration
 
 Global Claude Code, Codex, and OpenCode repositories are pinned as sibling submodules under `agents/`. A fresh clone does not need `--recurse-submodules`: `script/bootstrap` authenticates GitHub, stores the GitHub credential helper in machine-local `~/.gitconfig.local`, links the stable global Git config, then initializes the exact commits recorded by the parent repository.
