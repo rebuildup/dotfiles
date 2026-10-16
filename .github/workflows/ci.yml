@@ -18,25 +18,24 @@ jobs:
         with:
           persist-credentials: false
       - name: Check shell syntax
-        run: bash -n script/link script/check script/test script/bootstrap script/secrets-doctor script/with-secrets script/check-secrets script/test-workflow script/agent/minimax script/agent/mimo config/agent-init.bash
+        run: bash -n script/link script/check script/test script/bootstrap script/secrets-doctor script/with-secrets script/check-secrets script/test-workflow script/agent/minimax script/agent/mimo home/.local/bin/agent config/agent-init.bash
       - name: Test symlink behavior
         run: ./script/test
       - name: Test bootstrap and Infisical workflow
         run: ./script/test-workflow
-      - name: Validate global mise agent tasks
+      - name: Validate agent launcher config
         run: |
           python3 - <<'PY'
           import pathlib
-          import subprocess
-          import tomllib
 
-          file = pathlib.Path("home/.config/mise/conf.d/agent-routes.toml")
-          tasks = tomllib.loads(file.read_text())["tasks"]
-          assert len(tasks) == 10
-          for name, task in tasks.items():
-              assert task["dir"] == "{{ cwd }}", name
-              subprocess.run(["bash", "-n"], input=task["run"], text=True, check=True)
-          print(f"validated {len(tasks)} global mise tasks")
+          for name in ("script/agent-launcher", "script/test-agent"):
+              compile(pathlib.Path(name).read_text(), name, "exec")
+              print(f"compiled {name}")
           PY
+          ./script/agent-launcher check
+          ./script/agent-launcher list > /dev/null
+          ./script/agent-launcher models zen > /dev/null
+      - name: Test agent launcher (mock harnesses)
+        run: ./script/test-agent
       - name: Guard secret material
         run: ./script/check-secrets

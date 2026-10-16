@@ -132,11 +132,11 @@ Canonical binding:
 
 A new machine reuses this binding. Normal setup only needs user authentication against the self-hosted instance; `infisical init` is not part of the normal bootstrap.
 
-## Agent accounts (mise)
+## Agent launcher (`agent`)
 
-The native `claude` command uses the official Claude Code login. API account selection for Claude Code, Pi, OpenCode and DSH is opt-in via global mise tasks + existing Infisical runtime injection, without another launcher or shell override.
+The native `claude` command keeps the official Claude Code login and is never wrapped, aliased or overridden. Routes to other API providers (OpenRouter, DeepSeek, MiniMax, OpenCode Zen) are explicit and opt-in through the unified `agent` launcher: one declarative config (`config/agents.toml`), one thin executable (`script/agent-launcher`, linked to `~/.local/bin/agent` by `script/link`) that reads the TOML, builds a filtered process-scoped environment through the existing Infisical wrapper (`script/with-secrets`) and execs the native harness CLI.
 
-See [mise agent account tasks](docs/agent-mise.md). For example `mise run agent:pi:deepseek` or `mise run agent:claude:openrouter` from any project.
+See [agent launcher](docs/agent-launcher.md). For example `agent list`, `agent claude deepseek -- -p 'say ok'` or `agent opencode zen`.
 
 ## Agent configuration
 
