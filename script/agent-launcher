@@ -1,0 +1,897 @@
+#!/usr/bin/env python3
+"""agent — unified launcher for AI coding harnesses.
+
+Reads the declarative config (config/agents.toml) and starts exactly one
+harness with exactly one provider:
+
+    agent <harness> <provider> [--model <id>] [-- <harness args>...]
+    agent list | models <provider> | check | help
+
+Design contract:
+  * Thin: parse TOML -> build environment -> exec the native CLI.
+  * No hardcoded model ids, endpoints or credential env names; they all
+    come from config/agents.toml (this file only contains adapters, i.e.
+    how a harness selects a provider/model with its verified native CLI).
+  * Model resolution: --model > route default > provider default >
+    harness-native default (only for passthrough harnesses, where model
+    selection stays native). Anything else fails before a process starts.
+  * Credentials come from script/with-secrets (Infisical) process-scoped.
+    The environment is filtered so other providers' secrets never reach
+    the harness process, and no secret value is ever placed in argv.
+  * No implicit provider switching, no silent model fallback, no quota
+    failover. Plain `claude` remains native and untouched.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import sys
+import tomllib
+from dataclasses import dataclass, field
+
+PROGRAM = "agent"
+EXIT_USAGE = 2
+EXIT_RUNTIME = 1
+
+ADAPTERS = ("anthropic", "opencode", "pi", "passthrough")
+
+USAGE = """\
+usage:
+  agent <harness> <provider> [--model <id>] [-- <harness args>...]
+  agent list
+  agent models <provider>
+  agent check
+  agent help
+
+subcommands:
+  agent help                 show this help
+  agent list                 show every configured harness/provider route
+  agent models <provider>    show a provider's credential names and models
+  agent check                validate config/agents.toml (used by CI)
+
+run options:
+  --model <id>, -m <id>      model for this process only (never persisted)
+  --                         everything after it goes to the harness verbatim
+  --help, -h                 show this help (after a route: harness -- --help
+                             is the way to ask the harness itself)
+
+model resolution for a run:
+  --model  >  route default  >  provider default  >  harness-native default
+  (harness-native applies only to passthrough harnesses such as dsh)
+
+examples:
+  agent opencode zen
+  agent opencode zen -- run "explain this repo"
+  agent claude deepseek -- -p "say ok"
+  agent claude minimax --model MiniMax-M2.5 -- -p "say ok"
+  agent pi openrouter -- -p "hello"
+  agent dsh deepseek -- web
+  claude                       # plain claude keeps official native auth
+
+config: {config_path}
+credentials: {with_secrets} (Infisical, process-scoped)
+"""
+
+
+class AgentError(Exception):
+    """User-facing failure with an exit code."""
+
+    def __init__(self, message: str, code: int = EXIT_USAGE):
+        super().__init__(message)
+        self.code = code
+
+
+@dataclass
+class Provider:
+    key: str
+    label: str
+    base_url: str | None
+    secret: str | None
+    env: str | None
+    default_model: str | None
+    require_model: bool
+    models: list[str]
+    opencode_id: str
+    pi_id: str
+
+
+@dataclass
+class Harness:
+    key: str
+    label: str
+    command: str
+    adapter: str
+    env: dict
+
+
+@dataclass
+class Route:
+    key: str
+    harness: str
+    provider: str
+    default_model: str | None
+    models: list[str] | None
+    require_model: bool
+    note: str
+
+
+@dataclass
+class Config:
+    path: str
+    drop_env: list[str]
+    providers: dict[str, Provider]
+    harnesses: dict[str, Harness]
+    routes: dict[str, Route]
+
+
+@dataclass
+class Plan:
+    """Everything needed to start the harness (no secret values in it)."""
+
+    command: list[str]
+    keep: set[str]
+    copy: list[tuple[str, str]] = field(default_factory=list)
+    unset: list[str] = field(default_factory=list)
+    assign: list[tuple[str, str]] = field(default_factory=list)
+    # (env_name, secret_name) that must hold a credential before exec
+    require_cred: list[tuple[str, str]] = field(default_factory=list)
+    drop: list[str] = field(default_factory=list)
+    baseline: list[str] | None = None  # None = current process env
+
+
+def repo_root() -> str:
+    return os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+
+
+def config_path() -> str:
+    return os.environ.get("AGENT_CONFIG") or os.path.join(
+        repo_root(), "config", "agents.toml"
+    )
+
+
+def with_secrets_path() -> str:
+    return os.environ.get("AGENT_WITH_SECRETS") or os.path.join(
+        repo_root(), "script", "with-secrets"
+    )
+
+
+def _require_str(data: dict, key: str, where: str) -> str:
+    value = data.get(key)
+    if not isinstance(value, str) or not value:
+        raise AgentError(f"{where}: missing or invalid string '{key}'")
+    return value
+
+
+def _optional_str(data: dict, key: str, where: str) -> str | None:
+    value = data.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise AgentError(f"{where}: '{key}' must be a non-empty string")
+    return value
+
+
+def _string_list(value, where: str, key: str) -> list[str]:
+    if not isinstance(value, list) or any(
+        not isinstance(item, str) or not item for item in value
+    ):
+        raise AgentError(f"{where}: '{key}' must be a list of non-empty strings")
+    if len(set(value)) != len(value):
+        raise AgentError(f"{where}: '{key}' contains duplicate entries")
+    return list(value)
+
+
+def load_config(path: str | None = None) -> Config:
+    path = path or config_path()
+    try:
+        with open(path, "rb") as handle:
+            raw = tomllib.load(handle)
+    except FileNotFoundError:
+        raise AgentError(f"config not found: {path}")
+    except tomllib.TOMLDecodeError as exc:
+        raise AgentError(f"invalid TOML in {path}: {exc}")
+
+    defaults = raw.get("defaults", {})
+    if not isinstance(defaults, dict):
+        raise AgentError("defaults: table expected")
+    drop_env = _string_list(defaults.get("drop_env", []), "defaults", "drop_env")
+
+    providers: dict[str, Provider] = {}
+    for key, table in raw.get("providers", {}).items():
+        where = f"providers.{key}"
+        if not isinstance(table, dict):
+            raise AgentError(f"{where}: table expected")
+        secret = _optional_str(table, "secret", where)
+        env = _optional_str(table, "env", where) or secret
+        models = _string_list(table.get("models", []), where, "models")
+        default_model = _optional_str(table, "default_model", where)
+        require_model = table.get("require_model", False)
+        if not isinstance(require_model, bool):
+            raise AgentError(f"{where}: 'require_model' must be a boolean")
+        if default_model and require_model:
+            raise AgentError(
+                f"{where}: require_model = true contradicts default_model"
+                f" = {default_model!r}"
+            )
+        if default_model and models and default_model not in models:
+            raise AgentError(
+                f"{where}: default_model {default_model!r} is not in models {models}"
+            )
+        providers[key] = Provider(
+            key=key,
+            label=_require_str(table, "label", where),
+            base_url=_optional_str(table, "base_url", where),
+            secret=secret,
+            env=env,
+            default_model=default_model,
+            require_model=require_model,
+            models=models,
+            opencode_id=_optional_str(table, "opencode_id", where) or key,
+            pi_id=_optional_str(table, "pi_id", where) or key,
+        )
+    if not providers:
+        raise AgentError("config declares no providers")
+
+    harnesses: dict[str, Harness] = {}
+    for key, table in raw.get("harnesses", {}).items():
+        where = f"harnesses.{key}"
+        if not isinstance(table, dict):
+            raise AgentError(f"{where}: table expected")
+        adapter = _require_str(table, "adapter", where)
+        if adapter not in ADAPTERS:
+            raise AgentError(
+                f"{where}: unknown adapter {adapter!r} (expected one of {', '.join(ADAPTERS)})"
+            )
+        env = table.get("env", {})
+        if not isinstance(env, dict) or any(
+            not isinstance(name, str) or not isinstance(value, str)
+            for name, value in env.items()
+        ):
+            raise AgentError(f"{where}: env must map string -> string (names only)")
+        if adapter == "anthropic":
+            required = (
+                "base_url",
+                "auth_token",
+                "api_key",
+                "model",
+                "small_fast_model",
+                "default_opus",
+                "default_sonnet",
+                "default_haiku",
+            )
+            missing = [name for name in required if name not in env]
+            if missing:
+                raise AgentError(
+                    f"{where}: adapter anthropic requires env names {missing}"
+                )
+        if adapter == "opencode" and "config_content" not in env:
+            raise AgentError(
+                f"{where}: adapter opencode requires env name 'config_content'"
+            )
+        harnesses[key] = Harness(
+            key=key,
+            label=_require_str(table, "label", where),
+            command=_require_str(table, "command", where),
+            adapter=adapter,
+            env=env,
+        )
+    if not harnesses:
+        raise AgentError("config declares no harnesses")
+
+    routes: dict[str, Route] = {}
+    for key, table in raw.get("routes", {}).items():
+        where = f"routes.{key!r}"
+        if not isinstance(table, dict):
+            raise AgentError(f"{where}: table expected")
+        if "." not in key:
+            raise AgentError(f"{where}: key must be '<harness>.<provider>'")
+        harness_key, provider_key = key.split(".", 1)
+        if harness_key not in harnesses:
+            raise AgentError(f"{where}: unknown harness {harness_key!r}")
+        if provider_key not in providers:
+            raise AgentError(f"{where}: unknown provider {provider_key!r}")
+        route_models = table.get("models")
+        if route_models is not None:
+            route_models = _string_list(route_models, where, "models")
+        require_model = table.get("require_model", False)
+        if not isinstance(require_model, bool):
+            raise AgentError(f"{where}: 'require_model' must be a boolean")
+        route = Route(
+            key=key,
+            harness=harness_key,
+            provider=provider_key,
+            default_model=_optional_str(table, "default_model", where),
+            models=route_models,
+            require_model=require_model,
+            note=_optional_str(table, "note", where) or "",
+        )
+        _validate_route_defaults(route, providers[provider_key])
+        routes[key] = route
+    if not routes:
+        raise AgentError("config declares no routes")
+
+    # Every claude-anthropic route needs an Anthropic-compatible endpoint.
+    for route in routes.values():
+        harness = harnesses[route.harness]
+        provider = providers[route.provider]
+        if harness.adapter == "anthropic" and not provider.base_url:
+            raise AgentError(
+                f"routes.{route.key}: adapter anthropic needs provider "
+                f"{provider.key!r} to declare base_url"
+            )
+
+    return Config(
+        path=path,
+        drop_env=drop_env,
+        providers=providers,
+        harnesses=harnesses,
+        routes=routes,
+    )
+
+
+def effective_models(route: Route, provider: Provider) -> list[str]:
+    if route.models is not None:
+        return route.models
+    return provider.models
+
+
+def route_requires_model(route: Route, provider: Provider) -> bool:
+    return route.require_model or provider.require_model
+
+
+def route_default_model(route: Route, provider: Provider) -> str | None:
+    return route.default_model or provider.default_model
+
+
+def _validate_route_defaults(route: Route, provider: Provider) -> None:
+    where = f"routes.{route.key!r}"
+    default = route_default_model(route, provider)
+    models = effective_models(route, provider)
+    if route_requires_model(route, provider):
+        if default:
+            raise AgentError(
+                f"{where}: require_model = true but a default model {default!r} exists"
+            )
+        if not models:
+            raise AgentError(
+                f"{where}: require_model = true needs a models list to validate --model"
+            )
+        return
+    if not default:
+        raise AgentError(
+            f"{where}: no default model and require_model is not set; "
+            f"declare route.default_model, provider.default_model or require_model = true"
+        )
+    if models and default not in models:
+        raise AgentError(f"{where}: default model {default!r} is not in models {models}")
+
+
+def resolve_model(route: Route, provider: Provider, cli_model: str | None) -> str:
+    if cli_model:
+        model = cli_model
+    else:
+        if os.environ.get("AGENT_MODEL"):
+            print(
+                "agent: warning: AGENT_MODEL is no longer read; use --model",
+                file=sys.stderr,
+            )
+        model = route_default_model(route, provider)
+        if model is None:
+            raise AgentError(
+                f"route {route.key!r} requires an explicit model; "
+                f"pass --model <id>. Known models: "
+                f"{', '.join(effective_models(route, provider))}"
+            )
+    models = effective_models(route, provider)
+    if models and model not in models:
+        raise AgentError(
+            f"unknown model {model!r} for route {route.key!r}; known models:\n  "
+            + "\n  ".join(models)
+            + "\nModels are declared in config/agents.toml (edit it to add one)."
+        )
+    return model
+
+
+def parse_args(argv: list[str]):
+    """Parse argv without touching the config.
+
+    Returns one of:
+      ("help",) ("version",) ("list",) ("check",) ("models", provider)
+      ("run", harness, provider, model, passthru)
+    """
+    head = argv[0]
+    if head in ("help", "--help", "-h"):
+        if len(argv) > 1:
+            raise AgentError(f"unexpected arguments for 'help': {' '.join(argv[1:])}")
+        return ("help",)
+    if head in ("--version", "-V"):
+        return ("version",)
+    if head == "list":
+        if argv[1:]:
+            raise AgentError(f"unexpected arguments for 'list': {' '.join(argv[1:])}")
+        return ("list",)
+    if head == "check":
+        if argv[1:]:
+            raise AgentError(f"unexpected arguments for 'check': {' '.join(argv[1:])}")
+        return ("check",)
+    if head == "models":
+        if len(argv) != 2:
+            raise AgentError("usage: agent models <provider>")
+        return ("models", argv[1])
+
+    harness_key = head
+    if len(argv) < 2:
+        raise AgentError(
+            f"missing provider for harness {harness_key!r}; "
+            f"usage: agent {harness_key} <provider> [--model <id>] [-- <args>]"
+        )
+    if argv[1] in ("--help", "-h", "help"):
+        return ("help",)
+    provider_key = argv[1]
+
+    model: str | None = None
+    passthru: list[str] = []
+    rest = argv[2:]
+    index = 0
+    while index < len(rest):
+        token = rest[index]
+        if token == "--":
+            passthru = rest[index + 1:]
+            break
+        if token in ("--model", "-m"):
+            if index + 1 >= len(rest):
+                raise AgentError(f"{token} requires a value")
+            model = rest[index + 1]
+            index += 2
+            continue
+        if token in ("--help", "-h"):
+            return ("help",)
+        raise AgentError(
+            f"unexpected argument {token!r}; pass harness arguments after '--' "
+            f"(e.g. agent {harness_key} {provider_key} -- <args>)"
+        )
+    return ("run", harness_key, provider_key, model, passthru)
+
+
+FORBIDDEN_PASSTHRU = {
+    "--model": "use the launcher's --model instead",
+    "-m": "use the launcher's --model instead",
+    "--provider": "the provider is chosen as: agent <harness> <provider>",
+    "--api-key": "credentials come from Infisical via script/with-secrets",
+    "--fallback-model": "automatic model fallback is intentionally unsupported",
+}
+
+
+def check_passthru(passthru: list[str], harness: Harness) -> None:
+    for token in passthru:
+        reason = FORBIDDEN_PASSTHRU.get(token)
+        if reason:
+            raise AgentError(
+                f"harness argument {token!r} is not allowed for adapter "
+                f"{harness.adapter!r}: {reason}"
+            )
+
+
+def build_plan(
+    config: Config, harness: Harness, provider: Provider, route: Route, model: str | None,
+    passthru: list[str],
+) -> Plan:
+    check_passthru(passthru, harness)
+
+    keep: set[str] = set()
+    copy: list[tuple[str, str]] = []
+    require_cred: list[tuple[str, str]] = []
+    if provider.secret or provider.env:
+        env_name = provider.env or provider.secret
+        secret_name = provider.secret or provider.env
+        assert env_name and secret_name
+        keep.update({env_name, secret_name})
+        require_cred.append((env_name, secret_name))
+        if env_name != secret_name:
+            # stage 2 copies the secret value into the env name the harness reads
+            copy.append((env_name, secret_name))
+
+    plan = Plan(
+        command=[harness.command] + list(passthru),
+        keep=keep,
+        copy=copy,
+        require_cred=require_cred,
+        drop=list(config.drop_env),
+        baseline=None,
+    )
+
+    if harness.adapter == "anthropic":
+        _plan_anthropic(plan, harness, provider, route, model)
+    elif harness.adapter == "opencode":
+        _plan_opencode(plan, harness, provider, model)
+    elif harness.adapter == "pi":
+        _plan_pi(plan, harness, provider, model)
+    elif harness.adapter == "passthrough":
+        # Model selection stays native for passthrough harnesses; --model is
+        # rejected in cmd_run before we get here.
+        pass
+    else:  # pragma: no cover - guarded by load_config
+        raise AgentError(f"unknown adapter {harness.adapter!r}")
+    return plan
+
+
+def _plan_anthropic(
+    plan: Plan, harness: Harness, provider: Provider, route: Route, model: str | None
+) -> None:
+    if model is None:  # defensive; routes validate their defaults
+        raise AgentError(f"route {route.key!r} resolved no model")
+    if not provider.base_url:
+        raise AgentError(f"provider {provider.key!r} has no base_url for adapter anthropic")
+    if not provider.env:
+        raise AgentError(f"provider {provider.key!r} declares no credential env name")
+    env = harness.env
+    plan.unset.append(env["api_key"])
+    plan.assign.extend(
+        [
+            (env["base_url"], provider.base_url),
+            (env["auth_token"], "@" + provider.env),
+            (env["model"], model),
+            (env["small_fast_model"], model),
+            # Single-model routes map every model role (including subagents,
+            # which follow ANTHROPIC_DEFAULT_HAIKU_MODEL) to the route model;
+            # CLAUDE_CODE_SUBAGENT_MODEL stays unset because it is not needed.
+            (env["default_opus"], model),
+            (env["default_sonnet"], model),
+            (env["default_haiku"], model),
+        ]
+    )
+
+
+def _plan_opencode(
+    plan: Plan, harness: Harness, provider: Provider, model: str | None
+) -> None:
+    if model is None:
+        raise AgentError("resolved no model for adapter opencode")
+    config_env = harness.env["config_content"]
+    content: dict = {}
+    existing = os.environ.get(config_env)
+    if existing:
+        try:
+            parsed = json.loads(existing)
+        except ValueError:
+            print(
+                f"agent: warning: existing {config_env} is not valid JSON; replacing it",
+                file=sys.stderr,
+            )
+            parsed = None
+        if isinstance(parsed, dict):
+            content = parsed
+        elif parsed is not None:
+            print(
+                f"agent: warning: existing {config_env} is not an object; replacing it",
+                file=sys.stderr,
+            )
+    # v2: the global `--model` flag does not exist (it prints help), so the
+    # model is selected through the inline config override, which merges last
+    # over global/project config.
+    content["model"] = f"{provider.opencode_id}/{model}"
+    plan.assign.append((config_env, json.dumps(content, separators=(",", ":"))))
+
+    # A running background `opencode` service loads config and credentials
+    # from ITS OWN environment, so without a private server both the model
+    # above and the provider credential would be ignored (verified: the
+    # service keeps answering with the global config model and reports
+    # "Model unavailable" for providers it never saw a key for). Force
+    # process-scoped `--standalone` unless the caller chose a server mode.
+    passthru = plan.command[1:]
+    if "--standalone" in passthru or "--server" in passthru:
+        return
+    if passthru and not passthru[0].startswith("-"):
+        subcommand = passthru[0]
+        if subcommand in ("run", "mini"):  # subcommands that accept the flag
+            plan.command = [plan.command[0], subcommand, "--standalone"] + passthru[1:]
+        # other subcommands (models, auth, ...) do not launch a session and
+        # are passed through untouched
+        return
+    plan.command = [plan.command[0], "--standalone"] + passthru
+
+
+def _plan_pi(plan: Plan, harness: Harness, provider: Provider, model: str | None) -> None:
+    if model is None:
+        raise AgentError("resolved no model for adapter pi")
+    plan.command = [harness.command, "--provider", provider.pi_id, "--model", model] + plan.command[1:]
+
+
+def needs_injection(plan: Plan) -> bool:
+    for env_name, secret_name in plan.require_cred:
+        if os.environ.get(env_name) or os.environ.get(secret_name):
+            continue
+        return True
+    return False
+
+
+def start_via_with_secrets(plan: Plan, baseline: list[str]) -> "NoReturn":  # noqa: F821
+    wrapper = with_secrets_path()
+    if not os.access(wrapper, os.X_OK):
+        raise AgentError(f"missing dotfiles wrapper: {wrapper}", EXIT_RUNTIME)
+    payload = [sys.executable, os.path.realpath(__file__), "__exec"]
+    payload += ["--baseline", ",".join(baseline)]
+    payload += ["--keep", ",".join(sorted(plan.keep))]
+    payload += ["--drop", ",".join(sorted(set(plan.drop)))]
+    for name in plan.unset:
+        payload += ["--unset", name]
+    for dst, src in plan.copy:
+        payload += ["--copy", f"{dst}={src}"]
+    for name, value in plan.assign:
+        payload += ["--assign", f"{name}={value}"]
+    for env_name, secret_name in plan.require_cred:
+        payload += ["--cred", f"{env_name}={secret_name}"]
+    payload += ["--"] + plan.command
+    os.execv(wrapper, [wrapper] + payload)
+
+
+def finalize(plan: Plan) -> "NoReturn":  # noqa: F821
+    baseline = set(plan.baseline or os.environ.keys())
+    keep = set(plan.keep)
+    drop = set(plan.drop)
+
+    env = {}
+    for name, value in os.environ.items():
+        if name in keep:
+            env[name] = value
+        elif name in drop:
+            continue
+        elif name not in baseline:
+            # injected by script/with-secrets but not selected by this route
+            continue
+        else:
+            env[name] = value
+
+    for name in plan.unset:
+        env.pop(name, None)
+
+    for dst, src in plan.copy:
+        value = env.get(dst) or env.get(src)
+        if value:
+            env[dst] = value
+
+    for env_name, secret_name in plan.require_cred:
+        if not env.get(env_name) and not env.get(secret_name):
+            raise AgentError(
+                f"missing credential: set {env_name} or provide Infisical secret "
+                f"{secret_name} in environment `dev` (script/with-secrets)",
+                EXIT_RUNTIME,
+            )
+
+    for name, value in plan.assign:
+        if value.startswith("@"):
+            source = value[1:]
+            resolved = env.get(source)
+            if not resolved:
+                raise AgentError(
+                    f"missing credential {source} for {name}", EXIT_RUNTIME
+                )
+            env[name] = resolved
+        else:
+            env[name] = value
+
+    command = plan.command
+    resolved_cmd = shutil.which(command[0], path=env.get("PATH"))
+    if not resolved_cmd:
+        raise AgentError(
+            f"harness not found: {command[0]} (install it via pc-setup/mise)",
+            EXIT_RUNTIME,
+        )
+    os.execve(resolved_cmd, command, env)
+
+
+def cmd_exec(argv: list[str]) -> "NoReturn":  # noqa: F821
+    baseline: list[str] | None = None
+    keep: set[str] = set()
+    drop: list[str] = []
+    unset: list[str] = []
+    copy: list[tuple[str, str]] = []
+    assign: list[tuple[str, str]] = []
+    cred: list[tuple[str, str]] = []
+    command: list[str] = []
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if token == "--":
+            command = argv[index + 1 :]
+            break
+        if token == "--baseline":
+            baseline = argv[index + 1].split(",") if argv[index + 1] else []
+        elif token == "--keep":
+            keep = set(argv[index + 1].split(",")) if argv[index + 1] else set()
+        elif token == "--drop":
+            drop = argv[index + 1].split(",") if argv[index + 1] else []
+        elif token == "--unset":
+            unset.append(argv[index + 1])
+        elif token == "--copy":
+            dst, src = argv[index + 1].split("=", 1)
+            copy.append((dst, src))
+        elif token == "--assign":
+            name, value = argv[index + 1].split("=", 1)
+            assign.append((name, value))
+        elif token == "--cred":
+            env_name, secret_name = argv[index + 1].split("=", 1)
+            cred.append((env_name, secret_name))
+        else:
+            raise AgentError(f"__exec: unexpected token {token!r}")
+        index += 2
+    if not command:
+        raise AgentError("__exec: no command given")
+    if baseline is None:
+        raise AgentError("__exec: --baseline is required")
+    finalize(
+        Plan(
+            command=command,
+            keep=keep,
+            copy=copy,
+            unset=unset,
+            assign=assign,
+            require_cred=cred,
+            drop=drop,
+            baseline=baseline,
+        )
+    )
+
+
+def usage_text() -> str:
+    return USAGE.format(config_path=config_path(), with_secrets=with_secrets_path())
+
+
+def select_route(config: Config, harness_key: str, provider_key: str):
+    harness = config.harnesses.get(harness_key)
+    if harness is None:
+        known = ", ".join(sorted(config.harnesses))
+        raise AgentError(f"unknown harness {harness_key!r}; known harnesses: {known}")
+    provider = config.providers.get(provider_key)
+    if provider is None:
+        known = ", ".join(sorted(config.providers))
+        raise AgentError(f"unknown provider {provider_key!r}; known providers: {known}")
+    route = config.routes.get(f"{harness_key}.{provider_key}")
+    if route is None:
+        available = sorted(
+            key.split(".", 1)[1] for key in config.routes if key.startswith(harness_key + ".")
+        )
+        raise AgentError(
+            f"no route for harness {harness_key!r} with provider {provider_key!r}; "
+            f"available providers for {harness_key!r}: {', '.join(available) or '(none)'}"
+        )
+    return harness, provider, route
+
+
+def cmd_run(config: Config, harness_key: str, provider_key: str, cli_model: str | None,
+            passthru: list[str]) -> "NoReturn":  # noqa: F821
+    harness, provider, route = select_route(config, harness_key, provider_key)
+    if harness.adapter == "passthrough":
+        if cli_model is not None:
+            raise AgentError(
+                f"harness {harness_key!r} (adapter passthrough) does not accept "
+                f"--model via {PROGRAM}; select the model inside the harness"
+            )
+        model: str | None = None
+    else:
+        model = resolve_model(route, provider, cli_model)
+    plan = build_plan(config, harness, provider, route, model, passthru)
+
+    if shutil.which(harness.command) is None:
+        raise AgentError(
+            f"harness not found: {harness.command} (install it via pc-setup/mise)",
+            EXIT_RUNTIME,
+        )
+
+    if needs_injection(plan):
+        start_via_with_secrets(plan, sorted(os.environ.keys()))
+    finalize(plan)
+
+
+def cmd_list(config: Config) -> int:
+    header = f"{'ROUTE':<24} {'DEFAULT MODEL':<28} NOTES"
+    print(header)
+    print("-" * len(header))
+    for key in sorted(config.routes):
+        route = config.routes[key]
+        provider = config.providers[route.provider]
+        default = route_default_model(route, provider)
+        cell = default if default is not None else "--model required"
+        notes = route.note or ""
+        if default is None:
+            notes = f"(explicit --model) {notes}".rstrip()
+        print(f"{key:<24} {cell:<28} {notes}".rstrip())
+    print()
+    print("models per route are validated against config/agents.toml; run")
+    print("'agent models <provider>' for credential names and the full list.")
+    return 0
+
+
+def cmd_models(config: Config, provider_key: str) -> int:
+    provider = config.providers.get(provider_key)
+    if provider is None:
+        known = ", ".join(sorted(config.providers))
+        raise AgentError(f"unknown provider {provider_key!r}; known providers: {known}")
+    print(f"provider: {provider.key} ({provider.label})")
+    if provider.base_url:
+        print(f"anthropic endpoint: {provider.base_url}")
+    if provider.secret:
+        print(f"credential: Infisical secret {provider.secret} -> env {provider.env}")
+    else:
+        print("credential: harness-native login (no Infisical secret)")
+    if provider.models:
+        print(f"opencode model id example: {provider.opencode_id}/{provider.models[0]}")
+    else:
+        print(f"opencode model id format: {provider.opencode_id}/<model>")
+    print(f"pi provider id: {provider.pi_id}")
+    routes = sorted((r for r in config.routes.values() if r.provider == provider_key),
+                    key=lambda r: r.key)
+    print("routes:")
+    for route in routes:
+        harness = config.harnesses[route.harness]
+        default = route_default_model(route, provider)
+        suffix = f" (default {default})" if default else " (--model required)"
+        print(f"  {route.key:<22} [{harness.adapter}]{suffix}")
+        if route.note:
+            print(f"    note: {route.note}")
+        if route.models is not None and route.models != provider.models:
+            print("    models (route overrides provider):")
+            for model in route.models:
+                print(f"      {model}")
+    print("models:")
+    for model in provider.models:
+        markers = []
+        if model == provider.default_model:
+            markers.append("provider default")
+        for route in routes:
+            if model == route_default_model(route, provider):
+                markers.append(f"default for {route.harness}")
+            if route.models is not None and model not in route.models:
+                if f"not for {route.harness}" not in markers:
+                    markers.append(f"not for {route.harness}")
+        suffix = f"   [{'; '.join(markers)}]" if markers else ""
+        print(f"  {model}{suffix}")
+    if not provider.models:
+        print("  (none declared; any id passes through unvalidated)")
+    return 0
+
+
+def cmd_check(config: Config) -> int:
+    print(
+        f"config OK: {config.path} "
+        f"({len(config.providers)} providers, {len(config.harnesses)} harnesses, "
+        f"{len(config.routes)} routes)"
+    )
+    return 0
+
+
+def main(argv: list[str]) -> int:
+    if argv and argv[0] == "__exec":
+        cmd_exec(argv[1:])
+    if not argv:
+        print(usage_text(), file=sys.stderr, end="")
+        return EXIT_USAGE
+    action = parse_args(argv)
+    if action[0] == "help":
+        print(usage_text(), end="")
+        return 0
+    if action[0] == "version":
+        print(f"{PROGRAM} (dotfiles launcher, config: {config_path()})")
+        return 0
+    config = load_config()
+    if action[0] == "list":
+        return cmd_list(config)
+    if action[0] == "check":
+        return cmd_check(config)
+    if action[0] == "models":
+        return cmd_models(config, action[1])
+    _, harness_key, provider_key, model, passthru = action
+    cmd_run(config, harness_key, provider_key, model, passthru)
+    return 0  # pragma: no cover - exec replaces the process
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except AgentError as error:
+        print(f"{PROGRAM}: {error}", file=sys.stderr)
+        sys.exit(error.code)
+    except KeyboardInterrupt:
+        sys.exit(130)
