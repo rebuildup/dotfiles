@@ -40,6 +40,9 @@ set -euo pipefail
 if [[ -n "${AGENT_TEST_MARKER:-}" ]]; then
   : > "$AGENT_TEST_MARKER"
 fi
+if [[ -n "${AGENT_TEST_WRAPPER_ARGV:-}" ]]; then
+  printf '%s\\n' "$@" > "$AGENT_TEST_WRAPPER_ARGV"
+fi
 export FAKE_INFISICAL_INJECTED=yes
 export DEEPSEEK_API_KEY=secret-deepseek
 export OPENROUTER_API_KEY=secret-openrouter
@@ -68,6 +71,13 @@ secret = "DEEPSEEK_API_KEY"
 env = "DEEPSEEK_API_KEY"
 default_model = "provider-model"
 models = ["provider-model", "route-model", "cli-model"]
+
+[providers.p2]
+label = "P2"
+secret = "CUSTOMP_API_KEY"
+env = "CUSTOMP_API_KEY"
+default_model = "provider-model"
+models = ["provider-model"]
 
 [harnesses.h1]
 label = "H1"
@@ -112,6 +122,7 @@ class Fixture:
         self.bindir.mkdir()
         self.out = self.tmp / "child.env"
         self.marker = self.tmp / "wrapper.ran"
+        self.wrapper_argv = self.tmp / "wrapper.argv"
         self.wrapper = self.tmp / "with-secrets"
         self.write_wrapper(FAKE_WITH_SECRETS)
         for harness in HARNESSES:
@@ -130,6 +141,7 @@ class Fixture:
             "AGENT_WITH_SECRETS": str(self.wrapper),
             "AGENT_TEST_OUT": str(self.out),
             "AGENT_TEST_MARKER": str(self.marker),
+            "AGENT_TEST_WRAPPER_ARGV": str(self.wrapper_argv),
         }
         if extra:
             env.update(extra)
@@ -141,6 +153,8 @@ class Fixture:
             self.out.unlink()
         if self.marker.exists():
             self.marker.unlink()
+        if self.wrapper_argv.exists():
+            self.wrapper_argv.unlink()
         env = self.base_env(env_extra)
         if config is not None:
             env["AGENT_CONFIG"] = str(config)
@@ -336,6 +350,12 @@ def test_opencode_zen(fixture: Fixture) -> None:
     content = json.loads(env["OPENCODE_CONFIG_CONTENT"])
     check(content["model"] == "opencode/mimo-v2.6-flash-free", content)
     check(content.get("permission") == "allow", "existing inline config must merge")
+    # the wrapper stage must never see the caller's inline config (it may
+    # contain provider apiKey values): only the model id crosses argv
+    check(fixture.marker.exists(), "with-secrets wrapper was not used")
+    wrapper_text = fixture.wrapper_argv.read_text() if fixture.wrapper_argv.exists() else ""
+    check('"permission"' not in wrapper_text,
+          f"caller inline config leaked into wrapper argv: {wrapper_text[:200]}")
 
     result = fixture.run(
         ["opencode", "zen", "--", "run", "hello world"], config=REAL_CONFIG
@@ -413,7 +433,9 @@ def test_dsh_passthrough(fixture: Fixture) -> None:
 def test_forbidden_passthru_flags(fixture: Fixture) -> None:
     cases = [
         (["pi", "openrouter", "--", "--model", "x"], "--model"),
+        (["claude", "deepseek", "--", "--model=deepseek-v4-pro"], "--model"),
         (["claude", "openrouter", "--", "--fallback-model", "x"], "--fallback-model"),
+        (["claude", "openrouter", "--", "--fallback-model=x"], "--fallback-model"),
         (["pi", "openrouter", "--", "--api-key", "x"], "--api-key"),
         (["pi", "deepseek", "--", "--provider", "openrouter"], "--provider"),
     ]
@@ -443,6 +465,28 @@ def test_model_precedence(fixture: Fixture) -> None:
     check(result.returncode == 0, result.stderr)
     _, env = fixture.child()
     check(env.get("ANTHROPIC_MODEL") == "cli-model", "-m must work")
+
+
+def test_fast_path_drops_declared_provider_creds(fixture: Fixture) -> None:
+    """All secrets preset: no wrapper, but other providers' creds still drop."""
+    config = fixture.tmp / "precedence.toml"
+    config.write_text(PRECEDENCE_CONFIG)
+    result = fixture.run(
+        ["h1", "p1"],
+        env_extra={
+            "DEEPSEEK_API_KEY": "preset-p1",
+            "CUSTOMP_API_KEY": "preset-p2",
+        },
+        config=config,
+    )
+    check(result.returncode == 0, result.stderr)
+    _, env = fixture.child()
+    check(env.get("DEEPSEEK_API_KEY") == "preset-p1",
+          "selected provider secret must survive")
+    check("CUSTOMP_API_KEY" not in env,
+          "declared provider secret must be dropped on the fast path")
+    check(not fixture.marker.exists(),
+          "fast path must not invoke with-secrets")
 
 
 def test_agent_model_env_warns(fixture: Fixture) -> None:
@@ -595,6 +639,7 @@ TESTS = [
     test_dsh_passthrough,
     test_forbidden_passthru_flags,
     test_model_precedence,
+    test_fast_path_drops_declared_provider_creds,
     test_agent_model_env_warns,
     test_missing_harness,
     test_invalid_configs,

@@ -37,6 +37,10 @@ EXIT_RUNTIME = 1
 
 ADAPTERS = ("anthropic", "opencode", "pi", "passthrough")
 
+# argv-safe assign marker handled inside the child stage: only the model id
+# crosses argv, the surrounding config is merged from the environment.
+MODEL_MARKER = "@@model:"
+
 USAGE = """\
 usage:
   agent <harness> <provider> [--model <id>] [-- <harness args>...]
@@ -466,7 +470,10 @@ FORBIDDEN_PASSTHRU = {
 
 def check_passthru(passthru: list[str], harness: Harness) -> None:
     for token in passthru:
-        reason = FORBIDDEN_PASSTHRU.get(token)
+        # Match `--flag` and `--flag=value` forms alike so an inline value
+        # cannot smuggle a forbidden selector past this filter.
+        flag = token.split("=", 1)[0] if token.startswith("-") else token
+        reason = FORBIDDEN_PASSTHRU.get(flag)
         if reason:
             raise AgentError(
                 f"harness argument {token!r} is not allowed for adapter "
@@ -493,12 +500,22 @@ def build_plan(
             # stage 2 copies the secret value into the env name the harness reads
             copy.append((env_name, secret_name))
 
+    # Every credential name declared anywhere in the config is dropped by
+    # default; the route's own keep-set always wins over it. This keeps a
+    # newly added provider's shell value out of unrelated harness processes
+    # even on the fast path (no script/with-secrets round trip).
+    provider_creds = {
+        name
+        for provider in config.providers.values()
+        for name in (provider.secret, provider.env)
+        if name
+    }
     plan = Plan(
         command=[harness.command] + list(passthru),
         keep=keep,
         copy=copy,
         require_cred=require_cred,
-        drop=list(config.drop_env),
+        drop=sorted(set(config.drop_env) | provider_creds),
         baseline=None,
     )
 
@@ -550,29 +567,12 @@ def _plan_opencode(
     if model is None:
         raise AgentError("resolved no model for adapter opencode")
     config_env = harness.env["config_content"]
-    content: dict = {}
-    existing = os.environ.get(config_env)
-    if existing:
-        try:
-            parsed = json.loads(existing)
-        except ValueError:
-            print(
-                f"agent: warning: existing {config_env} is not valid JSON; replacing it",
-                file=sys.stderr,
-            )
-            parsed = None
-        if isinstance(parsed, dict):
-            content = parsed
-        elif parsed is not None:
-            print(
-                f"agent: warning: existing {config_env} is not an object; replacing it",
-                file=sys.stderr,
-            )
     # v2: the global `--model` flag does not exist (it prints help), so the
     # model is selected through the inline config override, which merges last
-    # over global/project config.
-    content["model"] = f"{provider.opencode_id}/{model}"
-    plan.assign.append((config_env, json.dumps(content, separators=(",", ":"))))
+    # over global/project config. Only the *model id* travels in argv; the
+    # merge with an existing OPENCODE_CONFIG_CONTENT happens in finalize(),
+    # because a caller's inline config may itself contain credentials.
+    plan.assign.append((config_env, MODEL_MARKER + f"{provider.opencode_id}/{model}"))
 
     # A running background `opencode` service loads config and credentials
     # from ITS OWN environment, so without a private server both the model
@@ -661,7 +661,29 @@ def finalize(plan: Plan) -> "NoReturn":  # noqa: F821
             )
 
     for name, value in plan.assign:
-        if value.startswith("@"):
+        if value.startswith(MODEL_MARKER):
+            model_id = value[len(MODEL_MARKER):]
+            raw = env.get(name)
+            content: dict = {}
+            if raw:
+                try:
+                    parsed = json.loads(raw)
+                except ValueError:
+                    print(
+                        f"agent: warning: existing {name} is not valid JSON; replacing it",
+                        file=sys.stderr,
+                    )
+                    parsed = None
+                if isinstance(parsed, dict):
+                    content = parsed
+                elif parsed is not None:
+                    print(
+                        f"agent: warning: existing {name} is not an object; replacing it",
+                        file=sys.stderr,
+                    )
+            content["model"] = model_id
+            env[name] = json.dumps(content, separators=(",", ":"))
+        elif value.startswith("@"):
             source = value[1:]
             resolved = env.get(source)
             if not resolved:
