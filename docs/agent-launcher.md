@@ -74,9 +74,12 @@ Every route additionally gets a short command name — `opencode-zen`,
   source of truth. A short name exists only for a configured route; it is
   resolved by **exact match** against those routes, never by splitting a
   name on hyphens (`claude-zen` has no route → clear error, exit 2).
-- **Form**: a symlink to the launcher itself
-  (`~/.local/bin/opencode-zen` → `script/agent-launcher`). No second
-  launcher, no per-shortcut ENV-injection script, no duplicated config.
+- **Form**: on macOS/WSL, a symlink to the launcher itself
+  (`~/.local/bin/opencode-zen` → `script/agent.ts`); on Windows, a minimal
+  `.cmd` entry point generated from the same TOML. No second launcher, no
+  per-shortcut ENV-injection script, no duplicated config. The portable
+  spelling `agent opencode-zen [args…]` resolves identically on every
+  platform and needs no link at all.
 - **Arguments**: harness arguments are passed straight through (no `--`
   needed; a leading `--` is tolerated). The launcher-owned model option in
   this form is `--agent-model <id>` (equals `--model <id>`, this process
@@ -95,15 +98,44 @@ Link management lives in the launcher and is driven by the same TOML:
 ```bash
 agent shortcuts            # list every short name + link status
 agent shortcuts check      # exit non-zero unless every link points at the launcher
-agent shortcuts create     # create the symlinks (idempotent)
-agent shortcuts remove     # remove only the launcher's own symlinks
+agent shortcuts create     # create the entry points (idempotent)
+agent shortcuts remove     # remove only the launcher's own entry points
 ```
 
 `create` refuses to overwrite anything it does not own: an existing file,
-a foreign symlink, or another command with the same name already on `PATH`
-is reported as a conflict and left untouched (exit 1). `remove` deletes
-only symlinks that resolve to this launcher — user files, foreign links
-and the native harness commands are never touched.
+a foreign symlink (or foreign `.cmd`), or another command with the same
+name already on `PATH` is reported as a conflict and left untouched (exit
+1). `remove` deletes only entries that resolve to this launcher — user
+files, foreign links and the native harness commands are never touched.
+
+## Implementation: `script/agent.ts` (Bun + TypeScript)
+
+One implementation serves every platform (ADR-0009):
+
+- **Runtime**: Bun executes `script/agent.ts`; the config is read with
+  `Bun.TOML.parse()` — no dependencies, no Python anywhere in the
+  launcher or its tests. `bun` itself is a machine baseline tool
+  installed by pc-setup (mise), so macOS, WSL/Linux and Windows all have
+  it.
+- **Process model**: Bun has no `execve`, so the harness runs as a single
+  child process with inherited stdio (interactive TUIs, exit codes and
+  Ctrl+C forwarding work; a child killed by a signal reports 128+signal).
+  The two-stage `script/with-secrets` protocol, the per-provider ENV
+  filtering and the model marker are unchanged from the original design.
+- **Entry points**:
+  - macOS/WSL: the `~/.local/bin/agent` shim (bash) runs `bun
+    script/agent.ts`; shortcuts are symlinks to the same file. The invoked
+    symlink name is recovered from the kernel-level argv
+    (`/proc/self/cmdline` on Linux, `ps -o args=` on macOS) because Bun
+    resolves the symlinked `argv[1]`.
+  - Windows native: `script/agent.ps1` (PowerShell, no Bash/WSL/Python),
+    `script/with-secrets.ps1` starts `infisical` natively, and
+    `agent shortcuts create` generates minimal `.cmd` files
+    (`bun "<launcher>" <name> %*`). PowerShell 7.3+ recommended for
+    faithful argument passing (`$PSNativeCommandArgumentPassing =
+    'Standard'`; also set by the entry scripts where supported).
+  - Anywhere: `agent <harness>-<provider>` passes the route name
+    explicitly, so it works in shells where no link exists.
 
 ## Config: `config/agents.toml`
 
@@ -210,16 +242,26 @@ between models or providers.
 Verification is reported in two tiers, matching issue #45's acceptance
 criteria:
 
-- **Mock/syntax**: `./script/test-agent` (27 cases: help/list/models,
-  unknown harness/provider/model, `--model` precedence, MiniMax default vs.
-  `require_model` fail-closed, secret filtering both ways, missing secret,
-  forbidden passthrough flags, shortcut equivalence/args/`--agent-model`/
-  unknown names/link management, native commands staying unwrapped, config
-  validation failures) plus `agent check`, `agent shortcuts` and source
-  compilation in CI.
+- **Mock/syntax**: `bun test script/agent.test.ts` (27 cases:
+  help/list/models, unknown harness/provider/model, `--model` precedence,
+  MiniMax default vs. `require_model` fail-closed, secret filtering both
+  ways, missing secret, forbidden passthrough flags, shortcut
+  equivalence/args/`--agent-model`/unknown names/link management, native
+  commands staying unwrapped, config validation failures) plus
+  `agent check`, `agent shortcuts` and `bun script/agent.ts …` smoke runs
+  in CI.
 - **Real machine E2E**: recorded in the PR/issue after running a cheap
   prompt per combination (`agent <harness> <provider> -- -p '…'`); combos
   run only in the mock tier stay marked unverified here.
+
+Verification status per platform (implementation is identical; what
+differs is which entry-point layer was exercised on a real machine):
+
+| platform | launcher + config + secrets | shortcut symlink form | interactive TUI start | PowerShell entry / `.cmd` |
+| --- | --- | --- | --- | --- |
+| macOS | verified (real routes) | verified (`ps` name recovery) | verified | n/a |
+| WSL/Linux | unverified on a real machine yet (post-merge step) | unverified (`/proc/self/cmdline` path not yet exercised) | unverified | n/a |
+| Windows native | unverified (no Windows machine in this cycle) | n/a (`.cmd` used instead) | unverified | implemented, unverified |
 
 ## Installation and migration (replaces the draft mise tasks)
 
@@ -230,6 +272,7 @@ After review/merge:
 ```bash
 cd ~/.dotfiles
 git pull --ff-only
+command -v bun >/dev/null || echo 'bun required (installed by pc-setup / mise)'
 ./script/link && ./script/check   # links home/.local/bin/agent
 agent check && agent list
 agent shortcuts create            # optional: <harness>-<provider> commands
@@ -237,6 +280,10 @@ agent shortcuts check             # verify (also useful in script/check runs)
 # if you used the draft tasks in a checkout: remove the old task file link
 # (it is gone from home/) and re-run script/link / script/check
 ```
+
+On Windows (PowerShell, no Bash/WSL/Python): run
+`& <checkout>\script\agent.ps1 check`, and `agent.ps1 shortcuts create`
+generates the `.cmd` entry points into `~/.local/bin` (add it to `PATH`).
 
 - `AGENT_MODEL=… mise run agent:…` → `agent <harness> <provider> --model …`.
 - `script/agent/mimo` and `script/agent/minimax` stay as explicit,
@@ -278,10 +325,13 @@ project `d4c2fc09-a923-4a38-9cf4-b51769aadb76` (no new secrets are created):
 ## Tests
 
 ```bash
-./script/agent-launcher check   # config validation
-./script/test-agent             # mock harness + mock Infisical wrapper
+bun script/agent.ts check   # config validation
+bun test script/agent.test.ts   # mock harness + mock Infisical wrapper
 ./script/test && ./script/check-secrets
 ```
 
-CI runs the config validation and `./script/test-agent` on every pull
-request; real prompt runs remain a manual, per-combination step.
+CI installs Bun (pinned `oven-sh/setup-bun`) and runs the config
+validation plus `bun test script/agent.test.ts` on every pull request;
+real prompt runs remain a manual, per-combination step. The mock tests
+spawn bash stubs, so they run on POSIX hosts (CI + macOS); Windows
+behavior is covered by the manual verification above.

@@ -4,4 +4,9 @@
 # the dotfiles repository next to its declarative config (config/agents.toml).
 set -euo pipefail
 
-exec "${HOME}/.dotfiles/script/agent-launcher" "$@"
+if ! command -v bun >/dev/null 2>&1; then
+  printf 'agent: bun is required (install it via pc-setup / mise)\n' >&2
+  exit 1
+fi
+
+exec bun "${HOME}/.dotfiles/script/agent.ts" "$@"

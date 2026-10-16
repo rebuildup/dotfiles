@@ -1,5 +1,5 @@
 # config/agents.toml — declarative harness/provider routes for the unified
-# `agent` launcher (script/agent-launcher).
+# `agent` launcher (script/agent.ts, run by Bun).
 #
 # This file is the source of truth for providers (endpoint, credential
 # secret/env names, models), harnesses (command, adapter) and routes

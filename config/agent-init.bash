@@ -2,7 +2,7 @@
 #
 # `claude` is the native Claude Code CLI, using its own official login.
 # Alternative provider routes are explicit and process-scoped through the
-# unified launcher (config/agents.toml + script/agent-launcher):
+# unified launcher (config/agents.toml + script/agent.ts):
 #   agent list                             # configured routes
 #   agent claude openrouter                # Claude Code via OpenRouter
 #   agent claude deepseek -- -p 'say ok'   # Claude Code via DeepSeek
