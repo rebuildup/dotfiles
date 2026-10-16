@@ -5,7 +5,17 @@ Reads the declarative config (config/agents.toml) and starts exactly one
 harness with exactly one provider:
 
     agent <harness> <provider> [--model <id>] [-- <harness args>...]
-    agent list | models <provider> | check | help
+    agent list | models <provider> | shortcuts [list|check|create|remove]
+        | check | help
+
+    <harness>-<provider> [<harness args>...]     # shortcut form, if the
+                                                 # symlinks exist; model via
+                                                 # --agent-model <id>
+
+Shortcuts are exact route names (`opencode-zen` = `agent opencode zen`)
+resolved against config/agents.toml, provided as symlinks to this script
+(created/removed by `agent shortcuts ...`; native `claude`/`opencode`/`pi`/
+`dsh` are never wrapped or overridden).
 
 Design contract:
   * Thin: parse TOML -> build environment -> exec the native CLI.
@@ -30,6 +40,7 @@ import shutil
 import sys
 import tomllib
 from dataclasses import dataclass, field
+from pathlib import Path
 
 PROGRAM = "agent"
 EXIT_USAGE = 2
@@ -44,16 +55,36 @@ MODEL_MARKER = "@@model:"
 USAGE = """\
 usage:
   agent <harness> <provider> [--model <id>] [-- <harness args>...]
+  <harness>-<provider> [<harness args>...]      # shortcut (agent shortcuts create)
   agent list
   agent models <provider>
+  agent shortcuts [list|check|create|remove]
   agent check
   agent help
 
 subcommands:
   agent help                 show this help
   agent list                 show every configured harness/provider route
+                             (with its shortcut name)
   agent models <provider>    show a provider's credential names and models
+  agent shortcuts            list the shortcut names derived from the routes
+                             and whether each link is in place
+  agent shortcuts check      exit non-zero unless every shortcut link is ours
+  agent shortcuts create     create ~/.local/bin/<harness>-<provider> symlinks
+                             to this launcher (idempotent; never overwrites a
+                             file or command it does not own)
+  agent shortcuts remove     remove only the symlinks that point at this
+                             launcher; other files are left untouched
   agent check                validate config/agents.toml (used by CI)
+
+shortcut form:
+  Invoking <harness>-<provider> (e.g. opencode-zen) is resolved by exact
+  match against the routes in config/agents.toml — never by splitting on
+  hyphens — and behaves exactly like `agent <harness> <provider>`.
+  Arguments go to the harness directly (no '--' needed; a leading '--' is
+  tolerated). The launcher-owned model option is:
+    --agent-model <id>        equals the route's --model <id> (this process
+                              only; never persisted)
 
 run options:
   --model <id>, -m <id>      model for this process only (never persisted)
@@ -326,12 +357,187 @@ def load_config(path: str | None = None) -> Config:
                 f"{provider.key!r} to declare base_url"
             )
 
+    # Shortcut names must be unambiguous: `harness-provider` is derived from
+    # the route key, and two different routes must never map to one name.
+    seen: dict[str, str] = {}
+    for key in routes:
+        harness_key, provider_key = key.split(".", 1)
+        name = shortcut_name(harness_key, provider_key)
+        if name in seen:
+            raise AgentError(
+                f"routes.{key}: shortcut name {name!r} collides with route "
+                f"{seen[name]!r}; rename the harness or provider key"
+            )
+        seen[name] = key
+
     return Config(
         path=path,
         drop_env=drop_env,
         providers=providers,
         harnesses=harnesses,
         routes=routes,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Shortcut form: `<harness>-<provider>` invoked directly (symlink to this
+# script). The name is resolved by exact match against the configured routes,
+# never by splitting on hyphens.
+# ---------------------------------------------------------------------------
+
+SHORTCUT_MODEL_FLAG = "--agent-model"
+
+
+def shortcut_name(harness_key: str, provider_key: str) -> str:
+    return f"{harness_key}-{provider_key}"
+
+
+def shortcut_map(config: Config) -> dict[str, str]:
+    """shortcut name -> route key ("harness.provider"), exact routes only."""
+    mapping: dict[str, str] = {}
+    for key in config.routes:
+        harness_key, provider_key = key.split(".", 1)
+        mapping[shortcut_name(harness_key, provider_key)] = key
+    return mapping
+
+
+def resolve_shortcut(config: Config, name: str):
+    route_key = shortcut_map(config).get(name)
+    if route_key is None:
+        known = ", ".join(sorted(shortcut_map(config)))
+        raise AgentError(
+            f"unknown shortcut {name!r}; shortcuts exist for these routes: "
+            f"{known}\nDefine the route in config/agents.toml and run "
+            f"'agent shortcuts create' to link it."
+        )
+    harness_key, provider_key = route_key.split(".", 1)
+    return harness_key, provider_key
+
+
+def parse_shortcut_args(argv: list[str]) -> tuple[str | None, list[str]]:
+    """Shortcut argv: only --agent-model is launcher-owned, the rest is the
+    harness's own argument vector (passed verbatim, no '--' required)."""
+    model: str | None = None
+    passthru: list[str] = []
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if token == SHORTCUT_MODEL_FLAG:
+            if index + 1 >= len(argv):
+                raise AgentError(f"{token} requires a value")
+            model = argv[index + 1]
+            index += 2
+            continue
+        if token.startswith(SHORTCUT_MODEL_FLAG + "="):
+            value = token.split("=", 1)[1]
+            if not value:
+                raise AgentError(f"{token!r} requires a value")
+            model = value
+            index += 1
+            continue
+        passthru.append(token)
+        index += 1
+    if passthru and passthru[0] == "--":
+        # tolerated so `opencode-zen -- run …` matches the agent-form habit
+        passthru = passthru[1:]
+    return model, passthru
+
+
+def bin_dir() -> Path:
+    override = os.environ.get("AGENT_BIN_DIR")
+    if override:
+        return Path(override)
+    return Path.home() / ".local" / "bin"
+
+
+def launcher_link_target() -> Path:
+    return Path(__file__).resolve()
+
+
+def _shortcut_path(name: str) -> Path:
+    return bin_dir() / name
+
+
+def _link_status(name: str, target: Path) -> str:
+    path = _shortcut_path(name)
+    if path.is_symlink():
+        return "linked" if path.resolve() == target else "conflict (foreign symlink)"
+    if path.exists():
+        return "conflict (existing file)"
+    if shutil.which(name):
+        return f"conflict (command exists at {shutil.which(name)})"
+    return "missing"
+
+
+def cmd_shortcuts(config: Config, action: str | None) -> int:
+    target = launcher_link_target()
+    names = sorted(shortcut_map(config))
+    where = bin_dir()
+
+    if action is None or action == "list":
+        print(f"shortcut commands (from {config.path}):")
+        for name in names:
+            print(f"  {name:<24} {_link_status(name, target)}")
+        print(f"location: {where}   target: {target}")
+        print("create/remove with: agent shortcuts create | remove")
+        return 0
+
+    if action == "check":
+        bad = [name for name in names if _link_status(name, target) != "linked"]
+        if bad:
+            print(
+                "shortcuts not ready: " + ", ".join(bad)
+                + f"\nrun 'agent shortcuts create' (location: {where})",
+                file=sys.stderr,
+            )
+            return EXIT_RUNTIME
+        print(f"shortcuts OK: {len(names)} links in {where} point at {target}")
+        return 0
+
+    if action == "create":
+        conflicts = []
+        for name in names:
+            status = _link_status(name, target)
+            if status == "linked":
+                continue
+            if status.startswith("conflict"):
+                conflicts.append(f"{_shortcut_path(name)}: {status}")
+        if conflicts:
+            raise AgentError(
+                "refusing to overwrite:\n  " + "\n  ".join(conflicts)
+                + "\nremove or rename these entries, then re-run "
+                "'agent shortcuts create'",
+                EXIT_RUNTIME,
+            )
+        where.mkdir(parents=True, exist_ok=True)
+        created = linked = 0
+        for name in names:
+            path = _shortcut_path(name)
+            if path.is_symlink():
+                linked += 1
+                continue
+            path.symlink_to(target)
+            created += 1
+        print(
+            f"shortcuts ready: {created} created, {linked} already linked "
+            f"in {where}"
+        )
+        return 0
+
+    if action == "remove":
+        removed = 0
+        for name in names:
+            path = _shortcut_path(name)
+            if path.is_symlink() and path.resolve() == target:
+                path.unlink()
+                removed += 1
+            elif path.exists() or path.is_symlink():
+                print(f"left untouched (not managed by the launcher): {path}")
+        print(f"shortcuts removed: {removed}")
+        return 0
+
+    raise AgentError(
+        f"unknown shortcuts action {action!r}; use list, check, create or remove"
     )
 
 
@@ -424,6 +630,15 @@ def parse_args(argv: list[str]):
         if len(argv) != 2:
             raise AgentError("usage: agent models <provider>")
         return ("models", argv[1])
+    if head == "shortcuts":
+        if not argv[1:]:
+            return ("shortcuts", None)
+        if len(argv) == 2 and argv[1] in ("list", "check", "create", "remove"):
+            return ("shortcuts", argv[1])
+        raise AgentError(
+            f"unknown shortcuts action {' '.join(argv[1:])!r}; "
+            "usage: agent shortcuts [list|check|create|remove]"
+        )
 
     harness_key = head
     if len(argv) < 2:
@@ -460,8 +675,10 @@ def parse_args(argv: list[str]):
 
 
 FORBIDDEN_PASSTHRU = {
-    "--model": "use the launcher's --model instead",
-    "-m": "use the launcher's --model instead",
+    "--model": "use the launcher's model option instead "
+               "(--model for `agent …`, --agent-model for shortcuts)",
+    "-m": "use the launcher's model option instead "
+          "(--model for `agent …`, --agent-model for shortcuts)",
     "--provider": "the provider is chosen as: agent <harness> <provider>",
     "--api-key": "credentials come from Infisical via script/with-secrets",
     "--fallback-model": "automatic model fallback is intentionally unsupported",
@@ -808,7 +1025,9 @@ def cmd_run(config: Config, harness_key: str, provider_key: str, cli_model: str 
 
 
 def cmd_list(config: Config) -> int:
-    header = f"{'ROUTE':<24} {'DEFAULT MODEL':<28} NOTES"
+    header = (
+        f"{'ROUTE':<22} {'SHORTCUT':<22} {'DEFAULT MODEL':<26} NOTES"
+    )
     print(header)
     print("-" * len(header))
     for key in sorted(config.routes):
@@ -819,10 +1038,14 @@ def cmd_list(config: Config) -> int:
         notes = route.note or ""
         if default is None:
             notes = f"(explicit --model) {notes}".rstrip()
-        print(f"{key:<24} {cell:<28} {notes}".rstrip())
+        print(
+            f"{key:<22} {shortcut_name(route.harness, route.provider):<22} "
+            f"{cell:<26} {notes}".rstrip()
+        )
     print()
     print("models per route are validated against config/agents.toml; run")
     print("'agent models <provider>' for credential names and the full list.")
+    print("'agent shortcuts' shows which shortcut commands are linked.")
     return 0
 
 
@@ -884,9 +1107,19 @@ def cmd_check(config: Config) -> int:
     return 0
 
 
-def main(argv: list[str]) -> int:
+def main(argv: list[str], invoked_as: str | None = None) -> int:
     if argv and argv[0] == "__exec":
         cmd_exec(argv[1:])
+    invoked_as = invoked_as or os.path.basename(sys.argv[0])
+    if invoked_as not in (PROGRAM, "agent-launcher"):
+        # Shortcut form: `<harness>-<provider> [args...]`. The name is matched
+        # exactly against config/agents.toml routes; native harness commands
+        # never come through here (they are separate binaries).
+        config = load_config()
+        harness_key, provider_key = resolve_shortcut(config, invoked_as)
+        model, passthru = parse_shortcut_args(argv)
+        cmd_run(config, harness_key, provider_key, model, passthru)
+        return 0  # pragma: no cover - exec replaces the process
     if not argv:
         print(usage_text(), file=sys.stderr, end="")
         return EXIT_USAGE
@@ -904,6 +1137,8 @@ def main(argv: list[str]) -> int:
         return cmd_check(config)
     if action[0] == "models":
         return cmd_models(config, action[1])
+    if action[0] == "shortcuts":
+        return cmd_shortcuts(config, action[1])
     _, harness_key, provider_key, model, passthru = action
     cmd_run(config, harness_key, provider_key, model, passthru)
     return 0  # pragma: no cover - exec replaces the process

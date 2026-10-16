@@ -14,8 +14,11 @@ agent opencode zen                        # OpenCode on the free zen models
 agent opencode zen -- run "explain this repo"
 agent pi deepseek -- -p 'hello'
 agent dsh deepseek -- web                 # dsh keeps its own native auth
+opencode-zen -- run "explain this repo"   # shortcut form of the line above it
+claude-minimax -p 'say ok'                # default MiniMax-M2.5; --agent-model overrides
 agent models deepseek                     # provider details + models
 agent check                               # validate the config (CI runs this)
+agent shortcuts                           # shortcut names derived from the routes
 claude                                    # plain claude: official native auth
 ```
 
@@ -43,7 +46,8 @@ persistent write of a `--model` choice (`--model` affects one process).
 
 ```
 agent <harness> <provider> [--model <id>] [-- <harness args>...]
-agent list | models <provider> | check | help
+<harness>-<provider> [<harness args>...]      # shortcut form
+agent list | models <provider> | shortcuts [list|check|create|remove] | check | help
 ```
 
 - Everything after `--` is passed to the harness verbatim
@@ -59,6 +63,47 @@ agent list | models <provider> | check | help
   this).
 - `AGENT_MODEL` (the draft mise tasks' variable) is **not** read; a warning
   points at `--model`.
+
+## Short commands (`<harness>-<provider>`)
+
+Every route additionally gets a short command name — `opencode-zen`,
+`claude-minimax`, `pi-openrouter`, … — that behaves exactly like
+`agent <harness> <provider>`:
+
+- **Definition**: the routes in `config/agents.toml` remain the single
+  source of truth. A short name exists only for a configured route; it is
+  resolved by **exact match** against those routes, never by splitting a
+  name on hyphens (`claude-zen` has no route → clear error, exit 2).
+- **Form**: a symlink to the launcher itself
+  (`~/.local/bin/opencode-zen` → `script/agent-launcher`). No second
+  launcher, no per-shortcut ENV-injection script, no duplicated config.
+- **Arguments**: harness arguments are passed straight through (no `--`
+  needed; a leading `--` is tolerated). The launcher-owned model option in
+  this form is `--agent-model <id>` (equals `--model <id>`, this process
+  only); `--model`, `-m`, `--provider`, `--api-key` and `--fallback-model`
+  stay rejected, so a shortcut can neither switch the provider nor inject
+  credentials.
+- **Native commands are untouched**: plain `claude`, `opencode`, `pi` and
+  `dsh` remain the official binaries with their own auth; short names only
+  ever add new commands, never wrap an existing one.
+- **MiniMax** keeps its contract: the default is the machine-verified
+  `MiniMax-M2.5`, any other id needs `--agent-model`/`--model`, and ids
+  outside the TOML model list fail closed.
+
+Link management lives in the launcher and is driven by the same TOML:
+
+```bash
+agent shortcuts            # list every short name + link status
+agent shortcuts check      # exit non-zero unless every link points at the launcher
+agent shortcuts create     # create the symlinks (idempotent)
+agent shortcuts remove     # remove only the launcher's own symlinks
+```
+
+`create` refuses to overwrite anything it does not own: an existing file,
+a foreign symlink, or another command with the same name already on `PATH`
+is reported as a conflict and left untouched (exit 1). `remove` deletes
+only symlinks that resolve to this launcher — user files, foreign links
+and the native harness commands are never touched.
 
 ## Config: `config/agents.toml`
 
@@ -100,8 +145,9 @@ note = "..."                   # optional, shown by `agent list`
 Validation (`agent check`, run by CI) rejects: unknown adapter, route keys
 that reference unknown harnesses/providers, missing defaults without
 `require_model`, defaults that are not in the model list,
-`require_model`-with-default contradictions, and `anthropic` routes whose
-provider has no `base_url`.
+`require_model`-with-default contradictions, `anthropic` routes whose
+provider has no `base_url`, and route keys whose `harness-provider`
+shortcut names would collide.
 
 ## Adapters (native CLI contracts)
 
@@ -164,11 +210,13 @@ between models or providers.
 Verification is reported in two tiers, matching issue #45's acceptance
 criteria:
 
-- **Mock/syntax**: `./script/test-agent` (21 cases: help/list/models,
+- **Mock/syntax**: `./script/test-agent` (27 cases: help/list/models,
   unknown harness/provider/model, `--model` precedence, MiniMax default vs.
   `require_model` fail-closed, secret filtering both ways, missing secret,
-  forbidden passthrough flags, config validation failures) plus
-  `agent check` and source compilation in CI.
+  forbidden passthrough flags, shortcut equivalence/args/`--agent-model`/
+  unknown names/link management, native commands staying unwrapped, config
+  validation failures) plus `agent check`, `agent shortcuts` and source
+  compilation in CI.
 - **Real machine E2E**: recorded in the PR/issue after running a cheap
   prompt per combination (`agent <harness> <provider> -- -p '…'`); combos
   run only in the mock tier stay marked unverified here.
@@ -184,6 +232,8 @@ cd ~/.dotfiles
 git pull --ff-only
 ./script/link && ./script/check   # links home/.local/bin/agent
 agent check && agent list
+agent shortcuts create            # optional: <harness>-<provider> commands
+agent shortcuts check             # verify (also useful in script/check runs)
 # if you used the draft tasks in a checkout: remove the old task file link
 # (it is gone from home/) and re-run script/link / script/check
 ```
@@ -202,10 +252,15 @@ repository-level operation. `script/link` only creates or updates links and
 
 ```bash
 cd ~/.dotfiles
+agent shortcuts remove                  # first: drop our own short-command links
 git revert <the merge commits of PR #46>   # or reset to the pre-merge ref
 rm -f ~/.local/bin/agent                   # dangling after the revert: script/link won't
 ./script/link && ./script/check            # re-sync the remaining managed links
 ```
+
+(`agent shortcuts remove` must run while the launcher still exists — it
+removes exactly the symlinks that point at the launcher and nothing else;
+`script/link` itself never deletes links.)
 
 `config/agent-init.bash` only carries comments, so rollback needs no shell
 surgery beyond what that file documents.

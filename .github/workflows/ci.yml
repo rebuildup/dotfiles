@@ -35,6 +35,7 @@ jobs:
           ./script/agent-launcher check
           ./script/agent-launcher list > /dev/null
           ./script/agent-launcher models zen > /dev/null
+          ./script/agent-launcher shortcuts > /dev/null
       - name: Test agent launcher (mock harnesses)
         run: ./script/test-agent
       - name: Guard secret material

@@ -16,11 +16,21 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tomllib
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 LAUNCHER = REPO / "script" / "agent-launcher"
 REAL_CONFIG = REPO / "config" / "agents.toml"
+
+with open(REAL_CONFIG, "rb") as _handle:
+    # shortcut names derived from the routes, exactly like the launcher does
+    REAL_SHORTCUTS = tuple(
+        sorted(
+            f"{key.split('.', 1)[0]}-{key.split('.', 1)[1]}"
+            for key in tomllib.load(_handle)["routes"]
+        )
+    )
 
 HARNESSES = ("claude", "opencode", "pi", "dsh")
 
@@ -165,6 +175,29 @@ class Fixture:
             text=True,
         )
 
+    def run_shortcut(self, name: str, args: list[str],
+                     env_extra: dict | None = None,
+                     config: Path | None = None) -> subprocess.CompletedProcess:
+        """Invoke the launcher through a `<harness>-<provider>` symlink."""
+        link = self.bindir / name
+        if not link.exists() and not link.is_symlink():
+            link.symlink_to(LAUNCHER)
+        if self.out.exists():
+            self.out.unlink()
+        if self.marker.exists():
+            self.marker.unlink()
+        if self.wrapper_argv.exists():
+            self.wrapper_argv.unlink()
+        env = self.base_env(env_extra)
+        if config is not None:
+            env["AGENT_CONFIG"] = str(config)
+        return subprocess.run(
+            [str(link)] + args,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+
     def child(self) -> tuple[list[str], dict[str, str]]:
         """Parse the stub harness dump: (argv, env)."""
         if not self.out.exists():
@@ -220,6 +253,7 @@ def test_list(fixture: Fixture) -> None:
           "every configured route must resolve a default model")
     check("MiniMax-M2.5" in result.stdout, "minimax default missing")
     check("mimo-v2.6-flash-free" in result.stdout, "zen default missing")
+    check("opencode-zen" in result.stdout, "shortcut names must be listed")
 
 
 def test_models(fixture: Fixture) -> None:
@@ -347,6 +381,183 @@ def test_require_model_fail_closed(fixture: Fixture) -> None:
     check(result.returncode == 0, result.stderr)
     _, env = fixture.child()
     check(env.get("ANTHROPIC_MODEL") == "m2", env)
+
+
+def test_shortcut_equivalence(fixture: Fixture) -> None:
+    """`opencode-zen` must start exactly what `agent opencode zen` starts."""
+    result = fixture.run(["opencode", "zen"], config=REAL_CONFIG)
+    check(result.returncode == 0, result.stderr)
+    ref_argv, ref_env = fixture.child()
+
+    result = fixture.run_shortcut("opencode-zen", [], config=REAL_CONFIG)
+    check(result.returncode == 0, result.stderr)
+    argv, env = fixture.child()
+    check(argv == ref_argv, f"argv {argv} != {ref_argv}")
+    check(env == ref_env, "shortcut child env must equal the agent-form env")
+    check(
+        env.get("OPENCODE_CONFIG_CONTENT", "").endswith(
+            '"opencode/mimo-v2.6-flash-free"}'
+        ),
+        f"model selection differs: {env.get('OPENCODE_CONFIG_CONTENT')}",
+    )
+
+
+def test_shortcut_args_and_agent_model(fixture: Fixture) -> None:
+    result = fixture.run_shortcut("claude-deepseek", ["-p", "hi"], config=REAL_CONFIG)
+    check(result.returncode == 0, result.stderr)
+    argv, env = fixture.child()
+    check(argv == ["-p", "hi"], f"argv {argv}")
+    check(env.get("ANTHROPIC_MODEL") == "deepseek-flash", env)
+
+    for model_args in (
+        ["--agent-model", "deepseek-v4-pro", "-p", "hi"],
+        ["--agent-model=deepseek-v4-pro", "-p", "hi"],
+    ):
+        result = fixture.run_shortcut(
+            "opencode-deepseek", model_args, config=REAL_CONFIG
+        )
+        check(result.returncode == 0, result.stderr)
+        argv, env = fixture.child()
+        check(argv == ["--standalone", "-p", "hi"],
+              f"launcher flag leaked into argv: {argv}")
+        check("deepseek/deepseek-v4-pro" in env.get("OPENCODE_CONFIG_CONTENT", ""),
+              env.get("OPENCODE_CONFIG_CONTENT"))
+
+    result = fixture.run_shortcut("claude-deepseek", ["--agent-model"],
+                                  config=REAL_CONFIG)
+    check(result.returncode == 2, "missing value must fail")
+    check("requires a value" in result.stderr, result.stderr)
+
+    # a leading '--' is tolerated (habit from the agent form)
+    result = fixture.run_shortcut("claude-deepseek", ["--", "-p", "hi"],
+                                  config=REAL_CONFIG)
+    check(result.returncode == 0, result.stderr)
+    argv, _ = fixture.child()
+    check(argv == ["-p", "hi"], f"argv {argv}")
+
+
+def test_shortcut_forbidden_args(fixture: Fixture) -> None:
+    cases = [
+        ["--model", "deepseek-v4-pro"],
+        ["-m", "deepseek-v4-pro"],
+        ["--provider", "openrouter"],
+        ["--api-key=sk-x"],
+        ["--fallback-model=x"],
+    ]
+    for args in cases:
+        result = fixture.run_shortcut("opencode-zen", args, config=REAL_CONFIG)
+        check(result.returncode == 2,
+              f"{args} -> {result.returncode}: {result.stderr}")
+        check("not allowed" in result.stderr, f"{args}: {result.stderr}")
+    check(not fixture.marker.exists(), "credentials must not be fetched")
+
+    # passthrough harnesses keep rejecting launcher-owned model selection
+    result = fixture.run_shortcut("dsh-deepseek", ["--agent-model", "x"],
+                                  config=REAL_CONFIG)
+    check(result.returncode == 2, result.stderr)
+    check("does not accept" in result.stderr, result.stderr)
+
+
+def test_shortcut_unknown_name(fixture: Fixture) -> None:
+    result = fixture.run_shortcut("claude-zen", [], config=REAL_CONFIG)
+    check(result.returncode == 2, f"{result.returncode}: {result.stderr}")
+    check("unknown shortcut" in result.stderr, result.stderr)
+    check("opencode-zen" in result.stderr, "known shortcuts must be listed")
+    check(not fixture.marker.exists(), "credentials must not be fetched")
+
+    result = fixture.run_shortcut("totally-bogus", [], config=REAL_CONFIG)
+    check(result.returncode == 2, result.stderr)
+
+    # subcommand names are not shortcuts
+    result = fixture.run_shortcut("list", [], config=REAL_CONFIG)
+    check(result.returncode == 2, "agent subcommands must not be shortcuts")
+
+
+def test_shortcuts_link_management(fixture: Fixture) -> None:
+    links = fixture.tmp / "links"
+    env = {"AGENT_BIN_DIR": str(links)}
+
+    result = fixture.run(["shortcuts"], env_extra=env, config=REAL_CONFIG)
+    check(result.returncode == 0, result.stderr)
+    for name in REAL_SHORTCUTS:
+        check(name in result.stdout, f"shortcuts list misses {name}")
+    check("claude-zen" not in result.stdout, "non-route must not be listed")
+    check("missing" in result.stdout, result.stdout)
+
+    result = fixture.run(["shortcuts", "check"], env_extra=env, config=REAL_CONFIG)
+    check(result.returncode == 1, "check must fail before create")
+
+    # a native harness entry in the same directory is never touched
+    links.mkdir()
+    native = links / "claude"
+    native.symlink_to("/bin/ls")
+
+    result = fixture.run(["shortcuts", "create"], env_extra=env, config=REAL_CONFIG)
+    check(result.returncode == 0, result.stderr)
+    check(native.is_symlink() and native.resolve() == Path("/bin/ls").resolve(),
+          "native claude entry must be untouched")
+    for name in REAL_SHORTCUTS:
+        path = links / name
+        check(path.is_symlink(), f"{name} was not created")
+        check(path.resolve() == LAUNCHER.resolve(), f"{name} points elsewhere")
+    check(not (links / "claude-zen").exists(),
+          "non-route shortcut must not be created")
+
+    # re-running is safe (idempotent)
+    result = fixture.run(["shortcuts", "create"], env_extra=env, config=REAL_CONFIG)
+    check(result.returncode == 0, result.stderr)
+    check("0 created" in result.stdout, result.stdout)
+    result = fixture.run(["shortcuts", "check"], env_extra=env, config=REAL_CONFIG)
+    check(result.returncode == 0, result.stderr)
+
+    # an unmanaged file is never overwritten
+    victim = links / "pi-openrouter"
+    victim.unlink()
+    victim.write_text("not ours\n")
+    result = fixture.run(["shortcuts", "create"], env_extra=env, config=REAL_CONFIG)
+    check(result.returncode == 1, result.stderr)
+    check("refusing to overwrite" in result.stderr, result.stderr)
+    check(victim.read_text() == "not ours\n", "conflicting file must be untouched")
+    result = fixture.run(["shortcuts", "check"], env_extra=env, config=REAL_CONFIG)
+    check(result.returncode == 1, "check must fail on a conflict")
+
+    # remove takes back only what the launcher owns
+    victim.unlink()
+    foreign = links / "opencode-deepseek"
+    foreign.unlink()
+    foreign.symlink_to("/bin/ls")
+    result = fixture.run(["shortcuts", "remove"], env_extra=env, config=REAL_CONFIG)
+    check(result.returncode == 0, result.stderr)
+    check(foreign.is_symlink() and foreign.resolve() == Path("/bin/ls").resolve(),
+          "foreign symlink must survive remove")
+    check(native.is_symlink(), "native entry must survive remove")
+    for name in REAL_SHORTCUTS:
+        if name == "opencode-deepseek":
+            continue
+        check(not (links / name).exists(), f"{name} must be removed")
+    result = fixture.run(["shortcuts", "check"], env_extra=env, config=REAL_CONFIG)
+    check(result.returncode == 1, "check must fail after remove")
+
+    result = fixture.run(["shortcuts", "frobnicate"], env_extra=env,
+                         config=REAL_CONFIG)
+    check(result.returncode == 2, result.stderr)
+
+
+def test_native_harness_not_wrapped(fixture: Fixture) -> None:
+    """Plain `claude`/`opencode` never go through the launcher."""
+    env = fixture.base_env()
+    result = subprocess.run(
+        [str(fixture.bindir / "claude"), "--version"],
+        env=env, capture_output=True, text=True,
+    )
+    check(result.returncode == 0, result.stderr)
+    _, child_env = fixture.child()
+    check(child_env.get("ANTHROPIC_MODEL") is None,
+          "native claude must not receive route env")
+    check(child_env.get("ANTHROPIC_BASE_URL") is None,
+          "native claude must not be redirected")
+    check(not fixture.marker.exists(),
+          "with-secrets must not run for a native command")
 
 
 def test_claude_deepseek_filters_preset_secrets(fixture: Fixture) -> None:
@@ -686,6 +897,12 @@ TESTS = [
     test_unknown_model,
     test_minimax_default_model,
     test_require_model_fail_closed,
+    test_shortcut_equivalence,
+    test_shortcut_args_and_agent_model,
+    test_shortcut_forbidden_args,
+    test_shortcut_unknown_name,
+    test_shortcuts_link_management,
+    test_native_harness_not_wrapped,
     test_claude_deepseek_filters_preset_secrets,
     test_env_short_circuits_injection,
     test_missing_secret_fails,
