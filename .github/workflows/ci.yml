@@ -23,5 +23,20 @@ jobs:
         run: ./script/test
       - name: Test bootstrap and Infisical workflow
         run: ./script/test-workflow
+      - name: Validate global mise agent tasks
+        run: |
+          python3 - <<'PY'
+          import pathlib
+          import subprocess
+          import tomllib
+
+          file = pathlib.Path("home/.config/mise/conf.d/agent-routes.toml")
+          tasks = tomllib.loads(file.read_text())["tasks"]
+          assert len(tasks) == 10
+          for name, task in tasks.items():
+              assert task["dir"] == "{{ cwd }}", name
+              subprocess.run(["bash", "-n"], input=task["run"], text=True, check=True)
+          print(f"validated {len(tasks)} global mise tasks")
+          PY
       - name: Guard secret material
         run: ./script/check-secrets
