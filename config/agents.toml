@@ -81,9 +81,11 @@ label = "MiniMax (M Plan)"
 base_url = "https://api.minimax.io/anthropic"
 secret = "MINIMAX_M_PLAN_KEY"
 env = "MINIMAX_API_KEY"
-# Fail closed: a model name on the provider website does not prove that this
-# account/plan may use it, so every launch must pass --model explicitly.
-require_model = true
+# The default is the id verified on the real machine (M Plan). Anything else
+# still has to be chosen explicitly with --model: a model name on the provider
+# website does not prove this account/plan may use it, and unknown ids fail
+# closed against the list below before a process starts.
+default_model = "MiniMax-M2.5"
 models = [
   "MiniMax-M3.1-Flash-Preview",
   "MiniMax-M3",
@@ -177,7 +179,7 @@ models = ["deepseek-flash"]
 note = "Anthropic-compatible endpoint; claude-* aliases are deliberately not exposed."
 
 [routes."claude.minimax"]
-note = "Model must be chosen per launch (M Plan entitlement is account-specific)."
+note = "Default is the verified MiniMax-M2.5; M Plan entitlement is account-specific, so pick any other id with --model."
 
 [routes."opencode.zen"]
 note = "Free zen models through the OpenCode client (free tier is client-bound)."
@@ -187,7 +189,7 @@ note = "Free zen models through the OpenCode client (free tier is client-bound).
 [routes."opencode.deepseek"]
 
 [routes."opencode.minimax"]
-note = "Model must be chosen per launch (M Plan entitlement is account-specific)."
+note = "Default is the verified MiniMax-M2.5; M Plan entitlement is account-specific, so pick any other id with --model."
 
 [routes."pi.openrouter"]
 
@@ -195,7 +197,7 @@ note = "Model must be chosen per launch (M Plan entitlement is account-specific)
 note = "pi warns for ids outside its built-in catalog and passes them through."
 
 [routes."pi.minimax"]
-note = "Model must be chosen per launch (M Plan entitlement is account-specific)."
+note = "Default is the verified MiniMax-M2.5; M Plan entitlement is account-specific, so pick any other id with --model."
 
 [routes."dsh.deepseek"]
 note = "Passthrough: dsh keeps its own native DeepSeek provider and auth (unverified here)."

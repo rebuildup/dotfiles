@@ -6,7 +6,7 @@
 #   agent list                             # configured routes
 #   agent claude openrouter                # Claude Code via OpenRouter
 #   agent claude deepseek -- -p 'say ok'   # Claude Code via DeepSeek
-#   agent claude minimax --model MiniMax-M2.5 -- <args>
+#   agent claude minimax -- <args>         # default MiniMax-M2.5; --model overrides
 #   agent opencode zen                     # OpenCode on free zen models
 #
 # Do not re-introduce a shell function named `claude` or export

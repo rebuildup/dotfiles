@@ -216,7 +216,9 @@ def test_list(fixture: Fixture) -> None:
     for route in ("claude.openrouter", "claude.deepseek", "claude.minimax",
                   "opencode.zen", "pi.deepseek", "dsh.deepseek"):
         check(route in result.stdout, f"list misses {route}: {result.stdout}")
-    check("--model required" in result.stdout, "minimax must demand --model")
+    check("--model required" not in result.stdout,
+          "every configured route must resolve a default model")
+    check("MiniMax-M2.5" in result.stdout, "minimax default missing")
     check("mimo-v2.6-flash-free" in result.stdout, "zen default missing")
 
 
@@ -266,14 +268,10 @@ def test_unknown_model(fixture: Fixture) -> None:
     check("unknown model" in result.stderr, result.stderr)
 
 
-def test_minimax_requires_model(fixture: Fixture) -> None:
+def test_minimax_default_model(fixture: Fixture) -> None:
+    # no --model: the verified default applies (fail closed is kept by the
+    # models list — unknown ids are rejected before a process starts)
     result = fixture.run(["claude", "minimax"], config=REAL_CONFIG)
-    check(result.returncode == 2, result.stderr)
-    check("requires an explicit model" in result.stderr, result.stderr)
-
-    result = fixture.run(
-        ["claude", "minimax", "--model", "MiniMax-M2.5"], config=REAL_CONFIG
-    )
     check(result.returncode == 0, result.stderr)
     argv, env = fixture.child()
     check(argv == [], f"argv {argv}")
@@ -292,6 +290,63 @@ def test_minimax_requires_model(fixture: Fixture) -> None:
                  "FAKE_INFISICAL_INJECTED", "MINIMAX_TOKEN_PLAN_KEY"):
         check(leak not in env, f"secret leaked to child: {leak}")
     check(fixture.marker.exists(), "with-secrets wrapper was not used")
+
+    # --model still overrides the default for one process
+    result = fixture.run(
+        ["claude", "minimax", "--model", "MiniMax-M3"], config=REAL_CONFIG
+    )
+    check(result.returncode == 0, result.stderr)
+    _, env = fixture.child()
+    check(env.get("ANTHROPIC_MODEL") == "MiniMax-M3", env)
+
+    # ids outside the model list still fail closed
+    result = fixture.run(
+        ["claude", "minimax", "--model", "MiniMax-not-a-model"], config=REAL_CONFIG
+    )
+    check(result.returncode == 2, "unknown minimax model must exit 2")
+    check("unknown model" in result.stderr, result.stderr)
+
+
+REQUIRE_CONFIG = """
+[providers.p1]
+label = "P1"
+base_url = "https://p1.example/api"
+secret = "DEEPSEEK_API_KEY"
+env = "DEEPSEEK_API_KEY"
+require_model = true
+models = ["m1", "m2"]
+
+[harnesses.h1]
+label = "H1"
+command = "claude"
+adapter = "anthropic"
+[harnesses.h1.env]
+base_url = "ANTHROPIC_BASE_URL"
+auth_token = "ANTHROPIC_AUTH_TOKEN"
+api_key = "ANTHROPIC_API_KEY"
+model = "ANTHROPIC_MODEL"
+small_fast_model = "ANTHROPIC_SMALL_FAST_MODEL"
+default_opus = "ANTHROPIC_DEFAULT_OPUS_MODEL"
+default_sonnet = "ANTHROPIC_DEFAULT_SONNET_MODEL"
+default_haiku = "ANTHROPIC_DEFAULT_HAIKU_MODEL"
+
+[routes."h1.p1"]
+"""
+
+
+def test_require_model_fail_closed(fixture: Fixture) -> None:
+    config = fixture.tmp / "require.toml"
+    config.write_text(REQUIRE_CONFIG)
+    result = fixture.run(["h1", "p1"], config=config)
+    check(result.returncode == 2,
+          f"expected 2, got {result.returncode}: {result.stderr}")
+    check("requires an explicit model" in result.stderr, result.stderr)
+    check(not fixture.marker.exists(), "credentials must not be fetched first")
+
+    result = fixture.run(["h1", "p1", "--model", "m2"], config=config)
+    check(result.returncode == 0, result.stderr)
+    _, env = fixture.child()
+    check(env.get("ANTHROPIC_MODEL") == "m2", env)
 
 
 def test_claude_deepseek_filters_preset_secrets(fixture: Fixture) -> None:
@@ -629,7 +684,8 @@ TESTS = [
     test_models,
     test_unknown_selection,
     test_unknown_model,
-    test_minimax_requires_model,
+    test_minimax_default_model,
+    test_require_model_fail_closed,
     test_claude_deepseek_filters_preset_secrets,
     test_env_short_circuits_injection,
     test_missing_secret_fails,

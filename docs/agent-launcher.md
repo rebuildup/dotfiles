@@ -9,7 +9,7 @@ exactly one API provider, chosen explicitly at launch:
 agent list                                # configured routes
 agent claude openrouter                   # Claude Code via OpenRouter
 agent claude deepseek -- -p 'say ok'      # Claude Code via DeepSeek
-agent claude minimax --model MiniMax-M2.5 -- <args>
+agent claude minimax -- -p 'say ok'      # default MiniMax-M2.5; --model overrides
 agent opencode zen                        # OpenCode on the free zen models
 agent opencode zen -- run "explain this repo"
 agent pi deepseek -- -p 'hello'
@@ -73,7 +73,7 @@ secret = "DEEPSEEK_API_KEY"    # Infisical secret name (environment `dev`)
 env = "DEEPSEEK_API_KEY"       # env var the harness reads (may differ)
 default_model = "deepseek-flash"
 models = ["deepseek-flash", "deepseek-v4-pro"]
-# require_model = true         # fail closed: --model mandatory (MiniMax)
+# require_model = true         # fail closed: --model mandatory when no default exists
 # opencode_id = "opencode"     # provider id when it differs from the key (zen)
 # pi_id = "deepseek"           # pi --provider value (defaults to the key)
 
@@ -152,9 +152,9 @@ arrives, and every other provider's credential does not.
 
 | harness \ provider | zen | openrouter | deepseek | minimax |
 | --- | --- | --- | --- | --- |
-| claude | — (no Anthropic-compatible endpoint verified; zen free tier is client-bound: pi got `403 … only … within OpenCode`) | yes, default `z-ai/glm-5.3-flash` | yes, default `deepseek-flash` (route list: `deepseek-flash` only, because the endpoint silently remaps unknown names) | yes, `--model` required |
-| opencode | yes, default `mimo-v2.6-flash-free` (free models; `opencode_id = "opencode"`) | yes | yes | yes, `--model` required |
-| pi | — (free tier refused outside OpenCode) | yes | yes | yes, `--model` required |
+| claude | — (no Anthropic-compatible endpoint verified; zen free tier is client-bound: pi got `403 … only … within OpenCode`) | yes, default `z-ai/glm-5.3-flash` | yes, default `deepseek-flash` (route list: `deepseek-flash` only, because the endpoint silently remaps unknown names) | yes, default `MiniMax-M2.5` (verified; other ids via `--model`) |
+| opencode | yes, default `mimo-v2.6-flash-free` (free models; `opencode_id = "opencode"`) | yes | yes | yes, default `MiniMax-M2.5` |
+| pi | — (free tier refused outside OpenCode) | yes | yes | yes, default `MiniMax-M2.5` |
 | dsh | — | — | passthrough (native dsh auth, unverified) | — |
 
 Not covered on purpose: `opencode`/`pi` on other providers, paid zen
@@ -164,10 +164,11 @@ between models or providers.
 Verification is reported in two tiers, matching issue #45's acceptance
 criteria:
 
-- **Mock/syntax**: `./script/test-agent` (19 cases: help/list/models,
-  unknown harness/provider/model, `--model` precedence, secret filtering
-  both ways, missing secret, forbidden passthrough flags, config
-  validation failures) plus `agent check` and source compilation in CI.
+- **Mock/syntax**: `./script/test-agent` (21 cases: help/list/models,
+  unknown harness/provider/model, `--model` precedence, MiniMax default vs.
+  `require_model` fail-closed, secret filtering both ways, missing secret,
+  forbidden passthrough flags, config validation failures) plus
+  `agent check` and source compilation in CI.
 - **Real machine E2E**: recorded in the PR/issue after running a cheap
   prompt per combination (`agent <harness> <provider> -- -p '…'`); combos
   run only in the mock tier stay marked unverified here.
@@ -194,10 +195,20 @@ agent check && agent list
   (issue #104); project-init profiles describe the launcher instead of mise
   tasks (issue #100).
 
-Rollback: revert the dotfiles branch (or stop linking `home/.local/bin/agent`);
-nothing in native CLI config, provider accounts, billing or shell rc files is
-modified by the launcher itself. `config/agent-init.bash` only carries
-comments, so rollback needs no shell surgery beyond what that file documents.
+Rollback: the launcher itself keeps no state — native CLI config, provider
+accounts, billing and shell rc files are never modified — so undoing it is a
+repository-level operation. `script/link` only creates or updates links and
+**never deletes them**, so the shim has to be removed explicitly:
+
+```bash
+cd ~/.dotfiles
+git revert <the merge commits of PR #46>   # or reset to the pre-merge ref
+rm -f ~/.local/bin/agent                   # dangling after the revert: script/link won't
+./script/link && ./script/check            # re-sync the remaining managed links
+```
+
+`config/agent-init.bash` only carries comments, so rollback needs no shell
+surgery beyond what that file documents.
 
 ## Secrets
 

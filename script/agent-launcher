@@ -69,7 +69,7 @@ examples:
   agent opencode zen
   agent opencode zen -- run "explain this repo"
   agent claude deepseek -- -p "say ok"
-  agent claude minimax --model MiniMax-M2.5 -- -p "say ok"
+  agent claude minimax -- -p "say ok"   # default MiniMax-M2.5 (--model overrides)
   agent pi openrouter -- -p "hello"
   agent dsh deepseek -- web
   claude                       # plain claude keeps official native auth
