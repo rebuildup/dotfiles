@@ -23,14 +23,14 @@ jobs:
           persist-credentials: false
       - name: Check shell syntax
         run: bash -n script/link script/check script/test script/bootstrap script/secrets-doctor script/with-secrets script/check-secrets script/test-workflow script/agent/minimax script/agent/mimo home/.local/bin/agent config/agent-init.bash
-      - name: Test symlink behavior
-        run: ./script/test
-      - name: Test bootstrap and Infisical workflow
-        run: ./script/test-workflow
       - name: Set up Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
         with:
           bun-version: '1.4.3'
+      - name: Test symlink behavior
+        run: ./script/test
+      - name: Test bootstrap and Infisical workflow
+        run: ./script/test-workflow
       - name: Validate agent launcher config
         run: |
           bun script/agent.ts check

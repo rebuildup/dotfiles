@@ -8,9 +8,17 @@ trap 'rm -rf "$tmp"' EXIT
 clean_home="$tmp/clean-home"
 mkdir -p "$clean_home"
 
+# Pin XDG_CONFIG_HOME alongside HOME so the Claude composer's overlay and state
+# file land under the test home instead of leaking to the runner user's real
+# ~/.config (CI Ubuntu defaults XDG_CONFIG_HOME to /home/runner/.config).
+XDG_CONFIG_HOME="$clean_home/.config"
+export XDG_CONFIG_HOME
+
 HOME="$clean_home" "$repo_root/script/link"
+HOME="$clean_home" bun "$repo_root/script/claude-settings.ts" compose
 HOME="$clean_home" "$repo_root/script/check"
 HOME="$clean_home" "$repo_root/script/link"
+HOME="$clean_home" bun "$repo_root/script/claude-settings.ts" compose
 HOME="$clean_home" "$repo_root/script/check"
 
 expected_gitconfig="$repo_root/home/.gitconfig"
