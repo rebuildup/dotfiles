@@ -7,3 +7,9 @@
 [submodule "agents/opencode"]
 	path = agents/opencode
 	url = https://github.com/rebuildup/my-opencode-setting.git
+[submodule "home/.pi/agent"]
+	path = home/.pi/agent
+	url = https://github.com/rebuildup/pi-config.git
+[submodule "home/.dsh"]
+	path = home/.dsh
+	url = https://github.com/rebuildup/dsh-config.git
