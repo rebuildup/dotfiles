@@ -37,3 +37,18 @@ jobs:
         run: bun test script/agent.test.ts
       - name: Guard secret material
         run: ./script/check-secrets
+
+  windows-agent:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: '1.4.3'
+      - name: Validate agent launcher config (Windows)
+        run: bun script/agent.ts check
+      - name: Test Windows layers (batch shims, .cmd shortcuts, PowerShell wrapper)
+        run: bun test script/agent.test.ts script/agent.windows.test.ts

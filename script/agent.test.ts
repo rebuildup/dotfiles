@@ -9,7 +9,7 @@
  * Run: bun test script/agent.test.ts
  */
 
-import { test, expect } from "bun:test";
+import { describe, test, expect } from "bun:test";
 import {
   chmodSync,
   existsSync,
@@ -196,7 +196,10 @@ class Fixture {
 
   baseEnv(extra?: Record<string, string>): Record<string, string> {
     const env: Record<string, string> = {
-      PATH: `${this.bindir}:${process.env.PATH || "/usr/bin:/bin"}`,
+      // Fixed PATH: the suite must not see shortcuts or harnesses installed
+      // in the developer's environment (a personal ~/.local/bin on PATH
+      // would turn link-management expectations into conflicts).
+      PATH: `${this.bindir}:/usr/bin:/bin`,
       HOME: process.env.HOME || this.tmp,
       AGENT_WITH_SECRETS: this.wrapper,
       AGENT_TEST_OUT: this.out,
@@ -298,6 +301,11 @@ function withFixture(body: (fixture: Fixture) => void): () => void {
   };
 }
 
+// The mock suite drives bash stubs and POSIX symlinks; on Windows the same
+// behaviors are covered by script/agent.windows.test.ts, so skip here.
+const describePosix = process.platform === "win32" ? describe.skip : describe;
+
+describePosix("agent launcher mock suite (POSIX stubs)", () => {
 test(
   "test_config_valid",
   withFixture((fixture) => {
@@ -1114,3 +1122,123 @@ adapter = "passthrough"
     }
   }),
 );
+
+test(
+  "test_signal_exit_code_128_plus",
+  withFixture((fixture) => {
+    const killer = join(fixture.bindir, "killer");
+    writeFileSync(killer, "#!/usr/bin/env bash\nset -eu\nkill -KILL $$\n");
+    chmodSync(killer, 0o755);
+    const config = join(fixture.tmp, "killer.toml");
+    writeFileSync(
+      config,
+      `
+[providers.p1]
+label = "P1"
+default_model = "m1"
+
+[harnesses.killer]
+label = "Killer"
+command = "killer"
+adapter = "passthrough"
+
+[routes."killer.p1"]
+default_model = "m1"
+`,
+    );
+    // A harness killed by SIGKILL must surface as 128+9, as documented —
+    // os.constants.signals covers every signal, not just INT/TERM/HUP.
+    const result = fixture.run(["killer", "p1"], { config });
+    check(result.exitCode === 137, `expected exit 137 (128+SIGKILL), got ${result.exitCode}`);
+  }),
+);
+
+test(
+  "test_dangling_shortcut_symlink",
+  withFixture((fixture) => {
+    const links = join(fixture.tmp, "links");
+    mkdirSync(links, { recursive: true });
+    symlinkSync(join(fixture.tmp, "gone-target"), join(links, "claude-minimax"));
+
+    const create = fixture.run(["shortcuts", "create"], {
+      config: REAL_CONFIG,
+      env: { AGENT_BIN_DIR: links },
+    });
+    check(
+      create.exitCode === 1,
+      `dangling link must be a conflict, got exit ${create.exitCode}: ${create.stderr.toString()}`,
+    );
+    check(
+      create.stderr.toString().includes("dangling"),
+      `expected a dangling-symlink message, got: ${create.stderr.toString()}`,
+    );
+
+    const remove = fixture.run(["shortcuts", "remove"], {
+      config: REAL_CONFIG,
+      env: { AGENT_BIN_DIR: links },
+    });
+    check(remove.exitCode === 0, `remove failed: ${remove.stderr.toString()}`);
+    check(
+      remove.stdout.toString().includes("left untouched (dangling symlink)"),
+      `remove must report the dangling link, got: ${remove.stdout.toString()}`,
+    );
+    check(
+      lstatSync(join(links, "claude-minimax")).isSymbolicLink(),
+      "a dangling symlink cannot be proven ours; remove must keep it",
+    );
+  }),
+);
+
+test(
+  "test_at_prefixed_model_id_is_literal",
+  withFixture((fixture) => {
+    const config = join(fixture.tmp, "at-model.toml");
+    writeFileSync(
+      config,
+      `
+[harnesses.claude]
+label = "Claude Code"
+command = "claude"
+adapter = "anthropic"
+
+[harnesses.claude.env]
+base_url = "ANTHROPIC_BASE_URL"
+auth_token = "ANTHROPIC_AUTH_TOKEN"
+api_key = "ANTHROPIC_API_KEY"
+model = "ANTHROPIC_MODEL"
+small_fast_model = "ANTHROPIC_SMALL_FAST_MODEL"
+default_opus = "ANTHROPIC_DEFAULT_OPUS_MODEL"
+default_sonnet = "ANTHROPIC_DEFAULT_SONNET_MODEL"
+default_haiku = "ANTHROPIC_DEFAULT_HAIKU_MODEL"
+
+[providers.cloudflare]
+label = "Cloudflare"
+base_url = "https://api.cloudflare.example"
+secret = "CLOUDFLARE_API_KEY"
+env = "CLOUDFLARE_API_KEY"
+default_model = "@cf/meta/llama"
+models = ["@cf/meta/llama"]
+
+[routes."claude.cloudflare"]
+`,
+    );
+    // Model ids may legitimately start with `@` (Cloudflare's `@cf/...`);
+    // only the explicit @@cred: marker may trigger credential resolution.
+    const result = fixture.run(["claude", "cloudflare"], {
+      config,
+      env: { CLOUDFLARE_API_KEY: "cf-secret-value" },
+    });
+    check(result.exitCode === 0, `run failed: ${result.stderr.toString()}`);
+    const [, env] = fixture.child();
+    check(
+      env["ANTHROPIC_MODEL"] === "@cf/meta/llama",
+      `model id must stay literal, got '${env["ANTHROPIC_MODEL"]}'`,
+    );
+    check(
+      env["ANTHROPIC_AUTH_TOKEN"] === "cf-secret-value",
+      `@@cred: marker must still resolve, got '${env["ANTHROPIC_AUTH_TOKEN"]}'`,
+    );
+    check(!("ANTHROPIC_API_KEY" in env), "ANTHROPIC_API_KEY must be unset");
+  }),
+);
+});

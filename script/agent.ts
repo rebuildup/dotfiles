@@ -49,7 +49,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
+import { constants as osConstants, homedir } from "node:os";
 
 const PROGRAM = "agent";
 const EXIT_USAGE = 2;
@@ -60,6 +60,10 @@ const ADAPTERS = ["anthropic", "opencode", "pi", "passthrough"];
 // argv-safe assign marker handled inside the child stage: only the model id
 // crosses argv, the surrounding config is merged from the environment.
 const MODEL_MARKER = "@@model:";
+// argv-safe marker for "copy this secret from another env name"; kept
+// distinct from a bare `@` so real model ids that start with `@`
+// (e.g. Cloudflare's `@cf/...`) pass through as literal values.
+const CRED_MARKER = "@@cred:";
 
 const SHORTCUT_MODEL_FLAG = "--agent-model";
 const IS_WINDOWS = process.platform === "win32";
@@ -636,8 +640,12 @@ function which(cmd: string, pathEnv?: string): string | null {
     return isExecutable(cmd) ? cmd : null;
   }
   const pathValue = pathEnv ?? process.env.PATH ?? "";
+  // Windows: PATHEXT candidates BEFORE the bare name. npm generates an
+  // extensionless Bash-style shim next to `opencode.cmd` for Cygwin-style
+  // shells; that file is not a Windows executable, so trying the bare name
+  // first would pick an unrunnable target.
   const exts = IS_WINDOWS
-    ? ["", ...(process.env.PATHEXT || ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean)]
+    ? [...(process.env.PATHEXT || ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean), ""]
     : [""];
   for (const dir of pathValue.split(delimiter)) {
     if (!dir) continue;
@@ -651,6 +659,49 @@ function which(cmd: string, pathEnv?: string): string | null {
 }
 
 const WINDOWS_CMD_MARKER = "rem managed-by: agent-launcher";
+
+/** A Windows batch shim (.cmd/.bat, e.g. npm's cmd-shim output) cannot be
+ * started by CreateProcess/Bun.spawn directly; it needs cmd.exe. */
+function isBatchShim(path: string): boolean {
+  return IS_WINDOWS && /\.(cmd|bat)$/i.test(path);
+}
+
+/**
+ * Build the argv used to launch a resolved harness. Batch shims run through
+ * `cmd.exe /d /s /c <command line>`; cmd.exe re-parses that line per batch
+ * semantics, so double quotes and `%` cannot be transported faithfully —
+ * an unescaped `%VAR%` would be expanded and a stray `"` could expose
+ * metacharacters to the shell. Those arguments are rejected up front
+ * (fail closed) instead of risking corruption or injection; everything
+ * else is quoted so `& | < > ( )` and spaces stay inside one argument.
+ */
+function launchArgv(resolved: string, args: string[]): string[] {
+  if (!isBatchShim(resolved)) {
+    return [resolved, ...args];
+  }
+  if (resolved.includes("%")) {
+    throw new AgentError(
+      `harness path '${resolved}' contains '%' which cannot be passed safely ` +
+        "through cmd.exe; move the harness to a path without '%'",
+      EXIT_RUNTIME
+    );
+  }
+  for (const arg of args) {
+    if (/["%\r\n]/.test(arg)) {
+      throw new AgentError(
+        `harness argument ${JSON.stringify(arg)} contains \" or % which cannot be passed ` +
+          "safely through a Windows batch shim (.cmd/.bat); remove it from the " +
+          "harness arguments or invoke the harness directly",
+        EXIT_RUNTIME
+      );
+    }
+  }
+  const quote = (arg: string): string =>
+    arg === "" || /[\s&|<>^(),;]/.test(arg) ? `"${arg}"` : arg;
+  const commandLine = [resolved, ...args].map(quote).join(" ");
+  const comspec = process.env.ComSpec || "cmd.exe";
+  return [comspec, "/d", "/s", "/c", commandLine];
+}
 
 function shortcutLinkTargetContent(target: string, name: string): string {
   // Minimal Windows entry point generated from the routes; the name is the
@@ -670,7 +721,14 @@ function linkStatus(name: string, target: string): string {
   try {
     const stat = lstatSync(path);
     if (stat.isSymbolicLink()) {
-      return realpathSync(path) === target ? "linked" : "conflict (foreign symlink)";
+      // realpathSync throws for a dangling link (e.g. after the checkout
+      // moved); treat it as a conflict so `create` never tries EEXIST and
+      // the user gets an actionable message instead of "missing".
+      try {
+        return realpathSync(path) === target ? "linked" : "conflict (foreign symlink)";
+      } catch {
+        return "conflict (dangling symlink)";
+      }
     }
     return "conflict (existing file)";
   } catch {
@@ -757,7 +815,20 @@ function cmdShortcuts(config: Config, action: string | null): number {
       }
       try {
         const stat = lstatSync(path);
-        if (stat.isSymbolicLink() && realpathSync(path) === target) {
+        if (!stat.isSymbolicLink()) {
+          console.log(`left untouched (not managed by the launcher): ${path}`);
+          continue;
+        }
+        let pointsHere = false;
+        try {
+          pointsHere = realpathSync(path) === target;
+        } catch {
+          // dangling: the target cannot be verified, so it is not provably
+          // ours — keep it and tell the user instead of silently skipping.
+          console.log(`left untouched (dangling symlink): ${path}`);
+          continue;
+        }
+        if (pointsHere) {
           unlinkSync(path);
           removed += 1;
         } else {
@@ -982,7 +1053,7 @@ function planAnthropic(
   plan.unset.push(env["api_key"]);
   plan.assign.push(
     [env["base_url"], provider.base_url],
-    [env["auth_token"], "@" + provider.env],
+    [env["auth_token"], CRED_MARKER + provider.env],
     [env["model"], model],
     [env["small_fast_model"], model],
     // Single-model routes map every model role (including subagents, which
@@ -1040,7 +1111,10 @@ function planPi(plan: Plan, harness: Harness, provider: Provider, model: string 
 // Execution (child process with inherited stdio; no execve in Bun)
 // ---------------------------------------------------------------------------
 
-const SIGNAL_NUMBERS: Record<string, number> = { SIGHUP: 1, SIGINT: 2, SIGTERM: 15 };
+const SIGNAL_NUMBERS: Record<string, number> = osConstants.signals as unknown as Record<
+  string,
+  number
+>;
 
 async function runInherited(cmd: string[], env?: Record<string, string | undefined>): Promise<number> {
   const child = Bun.spawn({
@@ -1193,8 +1267,8 @@ async function finalize(plan: Plan): Promise<number> {
       }
       content["model"] = modelId;
       env[name] = JSON.stringify(content);
-    } else if (value.startsWith("@")) {
-      const source = value.slice(1);
+    } else if (value.startsWith(CRED_MARKER)) {
+      const source = value.slice(CRED_MARKER.length);
       const resolved = env[source];
       if (!resolved) {
         throw new AgentError(`missing credential ${source} for ${name}`, EXIT_RUNTIME);
@@ -1213,7 +1287,7 @@ async function finalize(plan: Plan): Promise<number> {
       EXIT_RUNTIME
     );
   }
-  return runInherited([resolvedCmd, ...command.slice(1)], env);
+  return runInherited(launchArgv(resolvedCmd, command.slice(1)), env);
 }
 
 interface ExecStagePlan {

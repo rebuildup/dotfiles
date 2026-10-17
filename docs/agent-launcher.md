@@ -122,6 +122,14 @@ One implementation serves every platform (ADR-0009):
   Ctrl+C forwarding work; a child killed by a signal reports 128+signal).
   The two-stage `script/with-secrets` protocol, the per-provider ENV
   filtering and the model marker are unchanged from the original design.
+- **Windows batch shims**: npm-installed harnesses resolve to `opencode.cmd`
+  etc. `which()` probes `PATHEXT` candidates **before** the bare name (the
+  extensionless Cygwin-style shim npm also generates is not executable),
+  and `.cmd`/`.bat` targets are started through `cmd.exe /d /s /c` with
+  quoted arguments. Because cmd.exe re-parses the command line per batch
+  semantics, arguments containing `"` or `%` cannot be transported
+  faithfully and are **rejected with exit 1** (fail closed — no silent
+  corruption, no metacharacter injection).
 - **Entry points**:
   - macOS/WSL: the `~/.local/bin/agent` shim (bash) runs `bun
     script/agent.ts`; shortcuts are symlinks to the same file. The invoked
@@ -261,7 +269,7 @@ differs is which entry-point layer was exercised on a real machine):
 | --- | --- | --- | --- | --- |
 | macOS | verified (real routes) | verified (`ps` name recovery) | verified | n/a |
 | WSL/Linux | unverified on a real machine yet (post-merge step) | unverified (`/proc/self/cmdline` path not yet exercised) | unverified | n/a |
-| Windows native | unverified (no Windows machine in this cycle) | n/a (`.cmd` used instead) | unverified | implemented, unverified |
+| Windows native | CI-verified only (windows-latest job: batch-shim argv/injection/`%`+`"` rejection, `.cmd` shortcut create+exec, `with-secrets.ps1` workspaceId/API-URL pinning) | n/a (`.cmd` used instead) | unverified (no real machine) | CI-verified (PowerShell 7 on windows-latest); **real machine unverified** |
 
 ## Installation and migration (replaces the draft mise tasks)
 
@@ -326,12 +334,16 @@ project `d4c2fc09-a923-4a38-9cf4-b51769aadb76` (no new secrets are created):
 
 ```bash
 bun script/agent.ts check   # config validation
-bun test script/agent.test.ts   # mock harness + mock Infisical wrapper
+bun test script/agent.test.ts          # mock harness + mock Infisical wrapper (POSIX)
+bun test script/agent.windows.test.ts  # Windows layers (runs on windows CI only)
 ./script/test && ./script/check-secrets
 ```
 
 CI installs Bun (pinned `oven-sh/setup-bun`) and runs the config
-validation plus `bun test script/agent.test.ts` on every pull request;
-real prompt runs remain a manual, per-combination step. The mock tests
-spawn bash stubs, so they run on POSIX hosts (CI + macOS); Windows
-behavior is covered by the manual verification above.
+validation plus the mock suite on every pull request; a second
+`windows-latest` job runs the same launcher validation plus the
+Windows-layer suite (batch shims, generated `.cmd` shortcuts, the
+PowerShell wrapper with a stubbed `infisical`). Real prompt runs remain a
+manual, per-combination step. The POSIX mock tests spawn bash stubs, so
+they run on POSIX hosts (CI + macOS); Windows behavior is covered by the
+windows-latest CI job and still awaits real-machine verification.
