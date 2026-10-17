@@ -71,7 +71,7 @@ dotfiles の current release-driven development で使用する Operating Model 
 - normal local workflowはCLI-firstとし、runtime injectionを優先する
 - plaintext `.env` をcanonical storeにしない
 - human / agent / CIはidentityを分離し、project / environment / path / actionをleast privilegeにする
-- GitHub Actionsは利用可能ならOIDC + scoped Machine Identityを使用し、long-lived master credentialをdefaultにしない
+- GitHub Actionsは利用可能ならOIDC + scoped Machine Identityを使用し、OIDCが利用できない場合はUniversal Auth等のscoped Machine Identityを使用する。long-lived master credentialをdefaultにしない
 - generic CIへproduction secretを渡さない
 - NixOS / dotfiles / bootstrap等 encrypted secret-in-Git がexplicit requirementならSOPS等へdeviateできる
 - provider-specific procedureは `secrets-management` Skillへprogressive disclosureする
@@ -149,7 +149,7 @@ explicit user/project decisionとして固定されたrelease scope/version/publ
 - canonical install layout は `.agents/skills/` と `.claude/skills/`。Codex / OpenCode / Cursor は universal `.agents/skills/` を共有し、Claude Code は `.claude/skills/` を使用する。
 - 初回導入 / scope変更は `bunx skills add rebuildup/project-init --list` で候補を確認し、標準bootstrapは `bunx skills add rebuildup/project-init --skill '*' --agent claude-code --agent codex -y` とする。repositoryに `mise.toml` taskがある場合は `mise run skills-bootstrap` を同じ入口とする。
 - project-local `skills-lock.json` は source / skill path / content hash の durable metadata として commit する。通常の追従更新は `bunx skills update -p -y`（または `mise run skills-update`）を使う。
-- current Skills CLI の `skills install` は lock から universal `.agents/skills/` のみを復元するため、Claude Codeを含むfresh clone bootstrapの唯一の入口にはしない。
+- current Skills CLI では lock からの復元は `skills experimental_install` を使う（`skills install` サブコマンドは存在しない）。ただし fresh clone bootstrap の入口は `mise run skills-bootstrap` とし、lock 復元だけで Claude Code 側の配置を保証しない。
 - `--global` は通常運用で使用しない。user-global Skills を repository policy / freshness evidence にしない。
 - project固有 Skill や intentional customization は upstream update で無条件上書きせず、source ownershipを分けてreconcileする。
 
