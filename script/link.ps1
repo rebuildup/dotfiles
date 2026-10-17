@@ -48,8 +48,18 @@ if (-not (Test-Path -LiteralPath $SourceRoot)) {
     exit 1
 }
 
-$indexLines = @(& git -C $RepoRoot ls-files -s -- home 2>$null)
-if ($LASTEXITCODE -ne 0 -or $indexLines.Count -eq 0) {
+# `git` missing from PATH is a terminating error under -Stop, so catch it and
+# fail through the same path as an unreadable index.
+$indexLines = @()
+$gitOk = $false
+try {
+    $indexLines = @(& git -C $RepoRoot ls-files -s -- home 2>$null)
+    $gitOk = ($LASTEXITCODE -eq 0)
+}
+catch {
+    $gitOk = $false
+}
+if (-not $gitOk -or $indexLines.Count -eq 0) {
     [Console]::Error.WriteLine("cannot read managed entries from the git index of $RepoRoot")
     exit 1
 }
@@ -92,11 +102,19 @@ foreach ($entry in $entries) {
             continue
         }
         # Plain file holding the link text (core.symlinks=false) or a real link.
-        $linkItem = Get-Item -LiteralPath $workingCopy -Force
-        $linkText = if ($linkItem.LinkType) { [string]($linkItem.Target | Select-Object -First 1) } else { (Get-Content -LiteralPath $workingCopy -Raw).Trim() }
-        $resolved = [System.IO.Path]::GetFullPath((Join-Path $SourceRoot $linkText))
-        $hasContent = (Test-Path -LiteralPath $resolved -PathType Container) -and
-        [bool](Get-ChildItem -LiteralPath $resolved -Force | Select-Object -First 1)
+        # A missing/unreadable working copy (sparse checkout, deleted file) must
+        # skip this entry, not abort the whole plan.
+        try {
+            $linkItem = Get-Item -LiteralPath $workingCopy -Force -ErrorAction Stop
+            $linkText = if ($linkItem.LinkType) { [string]($linkItem.Target | Select-Object -First 1) } else { (Get-Content -LiteralPath $workingCopy -Raw -ErrorAction Stop).Trim() }
+            $resolved = [System.IO.Path]::GetFullPath((Join-Path $SourceRoot $linkText))
+            $hasContent = (Test-Path -LiteralPath $resolved -PathType Container) -and
+            [bool](Get-ChildItem -LiteralPath $resolved -Force -ErrorAction Stop | Select-Object -First 1)
+        }
+        catch {
+            Add-Result -State 'skip' -Relative $relative -Detail "cannot read symlink entry: $($_.Exception.Message)"
+            continue
+        }
         if (-not $hasContent) {
             Add-Result -State 'skip' -Relative $relative -Detail "link target $resolved is missing or empty (submodule not initialized?)"
             continue
@@ -131,8 +149,14 @@ foreach ($entry in $entries) {
         continue
     }
 
-    if (-not $isDirectoryLink -and -not $existing.PSIsContainer -and
-        (Get-FileHash -LiteralPath $target).Hash -eq (Get-FileHash -LiteralPath $source).Hash) {
+    # A locked or unreadable file (e.g. a credentials file held open) cannot be
+    # proven identical, so it is a conflict rather than a fatal error.
+    $same = $false
+    if (-not $isDirectoryLink -and -not $existing.PSIsContainer) {
+        try { $same = (Get-FileHash -LiteralPath $target -ErrorAction Stop).Hash -eq (Get-FileHash -LiteralPath $source -ErrorAction Stop).Hash }
+        catch { $same = $false }
+    }
+    if ($same) {
         Add-Result -State 'identical' -Relative $relative -Detail 'unmanaged copy with identical content; left as is'
         continue
     }

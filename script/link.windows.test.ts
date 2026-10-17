@@ -54,7 +54,7 @@ function link(repo: string, home: string, ...extra: string[]) {
 }
 
 function withTemp(fn: (root: string) => void) {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "link-win-")));
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "link-win-")));
   try {
     fn(root);
   } finally {
@@ -85,10 +85,10 @@ describeWin("link.ps1 (Windows adoption adapter)", () => {
       mkdirSync(home);
       expect(link(repo, home, "-Apply").code).toBe(0);
       expect(isLink(join(home, ".gitconfig"))).toBe(true);
-      expect(realpathSync(join(home, ".gitconfig"))).toBe(realpathSync(join(repo, "home", ".gitconfig")));
+      expect(realpathSync.native(join(home, ".gitconfig"))).toBe(realpathSync.native(join(repo, "home", ".gitconfig")));
       // a directory unit is linked to the resolved agents/dsh checkout
       expect(isLink(join(home, ".dsh"))).toBe(true);
-      expect(realpathSync(join(home, ".dsh"))).toBe(realpathSync(join(repo, "agents", "dsh")));
+      expect(realpathSync.native(join(home, ".dsh"))).toBe(realpathSync.native(join(repo, "agents", "dsh")));
       // POSIX-only entries are skipped, not linked
       expect(existsSync(join(home, ".local", "bin", "agent"))).toBe(false);
       expect(existsSync(join(home, ".claude", "statusline-command.sh"))).toBe(false);
@@ -152,6 +152,51 @@ describeWin("link.ps1 (Windows adoption adapter)", () => {
       expect(r.code).toBe(0);
       expect(r.out).toContain("skip       .dsh");
       expect(existsSync(join(home, ".dsh"))).toBe(false);
+    });
+  });
+
+  test("fails safely (exit 1, no stack trace) when git is not on PATH", () => {
+    withTemp((root) => {
+      const repo = makeRepo(root, { initSubmodule: true });
+      const home = join(root, "home");
+      mkdirSync(home);
+      const pwsh = Bun.which("pwsh")!;
+      const r = Bun.spawnSync(["pwsh", "-NoProfile", "-File", LINK_PS1, "-RepoRoot", repo, "-HomeDir", home], {
+        env: { ...process.env, PATH: dirname(pwsh) }, stdout: "pipe", stderr: "pipe",
+      });
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr.toString()).toContain("cannot read managed entries");
+      expect(r.stderr.toString()).not.toContain("CommandNotFoundException");
+    });
+  });
+
+  test("a symlink entry whose working copy is missing is skipped, not fatal", () => {
+    withTemp((root) => {
+      const repo = makeRepo(root, { initSubmodule: true });
+      rmSync(join(repo, "home", ".dsh"));
+      const home = join(root, "home");
+      mkdirSync(home);
+      const r = link(repo, home, "-Apply");
+      expect(r.code).toBe(0);
+      expect(r.out).toContain("skip       .dsh");
+      expect(isLink(join(home, ".gitconfig"))).toBe(true);
+    });
+  });
+
+  test("a target that cannot be read is a conflict, not fatal", () => {
+    withTemp((root) => {
+      const repo = makeRepo(root, { initSubmodule: true });
+      const home = join(root, "home");
+      mkdirSync(home);
+      const target = join(home, ".gitconfig");
+      writeFileSync(target, "[user]\n\tname = managed\n");
+      // Hold an exclusive lock so Get-FileHash cannot read it.
+      const r = Bun.spawnSync(["pwsh", "-NoProfile", "-Command",
+        `$f=[IO.File]::Open('${target}','Open','ReadWrite','None'); try { & '${LINK_PS1}' -RepoRoot '${repo}' -HomeDir '${home}' -Apply; exit $LASTEXITCODE } finally { $f.Close() }`],
+        { stdout: "pipe", stderr: "pipe" });
+      expect(r.exitCode).toBe(1);
+      expect(r.stdout.toString()).toContain("conflict   .gitconfig");
+      expect(readFileSync(target, "utf8")).toContain("managed");
     });
   });
 });
