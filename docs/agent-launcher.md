@@ -313,6 +313,16 @@ On Windows (PowerShell, no Bash/WSL/Python): run
 `& <checkout>\script\agent.ps1 check`, and `agent.ps1 shortcuts create`
 generates the `.cmd` entry points into `~/.local/bin` (add it to `PATH`).
 
+The bare `agent` command on Windows is `script\agent.cmd`, a thin wrapper over
+`script/agent.ts` usable from cmd.exe and PowerShell. Register it with
+`pwsh script\agent-entrypoint.ps1 install` (creates a managed `agent.cmd` shim in
+`~/.local/bin`; `check` and `remove` also exist). The script never edits `PATH`
+and never overwrites or removes another `agent` (for example Grok Build's
+`~/.grok/bin/agent.exe`). It verifies that both `Get-Command agent` and
+`where.exe agent` resolve to the shim, and exits 1 naming the shadowing path
+otherwise, so a name collision is never reported as success. Resolve it by
+placing `~/.local/bin` before the shadowing directory on `PATH` yourself.
+
 - `AGENT_MODEL=… mise run agent:…` → `agent <harness> <provider> --model …`.
 - `script/agent/mimo` and `script/agent/minimax` stay as explicit,
   provider-tuned wrappers (ADR-0008) and are not touched here.
@@ -356,6 +366,7 @@ project `d4c2fc09-a923-4a38-9cf4-b51769aadb76` (no new secrets are created):
 bun script/agent.ts check   # config validation
 bun test script/agent.test.ts          # mock harness + mock Infisical wrapper (POSIX)
 bun test script/agent.windows.test.ts  # Windows layers (runs on windows CI only)
+bun test script/agent.entrypoint.windows.test.ts  # native `agent` entry point (windows only)
 ./script/test && ./script/check-secrets
 ```
 
