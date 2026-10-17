@@ -70,8 +70,7 @@ class WinFixture {
 
   env(extra?: Record<string, string>): Record<string, string | undefined> {
     return {
-      ...process.env,
-      PATH: `${this.bindir};${process.env.PATH || ""}`,
+      ...withPath(process.env, `${this.bindir};${process.env.Path || process.env.PATH || ""}`),
       AGENT_CONFIG: this.config,
       AGENT_TEST_OUT: this.out,
       ...extra,
@@ -113,6 +112,23 @@ function check(condition: unknown, message: string): void {
   if (!condition) throw new Error(message);
 }
 
+/**
+ * Windows env vars are case-insensitive; spreading process.env and adding a
+ * second `PATH` key creates duplicate entries whose winner is undefined.
+ * Replace any case variant with exactly one `Path`.
+ */
+function withPath(
+  base: Record<string, string | undefined>,
+  newPath: string,
+): Record<string, string | undefined> {
+  const env: Record<string, string | undefined> = {};
+  for (const [key, value] of Object.entries(base)) {
+    if (key.toUpperCase() !== "PATH") env[key] = value;
+  }
+  env["Path"] = newPath;
+  return env;
+}
+
 /** A fake dotfiles checkout for script/with-secrets.ps1 tests. */
 function makeFakeRepo(tmp: string, workspaceId: string): string {
   const repo = join(tmp, "fake-repo");
@@ -124,9 +140,11 @@ function makeFakeRepo(tmp: string, workspaceId: string): string {
   return repo;
 }
 
+const PWSH = Bun.which("pwsh") || "pwsh";
+
 function runPs1(script: string, args: string[], env: Record<string, string | undefined>) {
   return Bun.spawnSync({
-    cmd: ["pwsh", "-NoProfile", "-File", script, ...args],
+    cmd: [PWSH, "-NoProfile", "-File", script, ...args],
     env,
     stdout: "pipe",
     stderr: "pipe",
@@ -194,10 +212,10 @@ describeWin("agent launcher Windows layers", () => {
       // Execute the generated entry point through cmd.exe; the route name in
       // argv must dispatch to the stub harness with intact arguments.
       if (existsSync(fixture.out)) rmSync(fixture.out);
-      const commandLine = `""${link}" one "two three""`;
+      const runEnv = fixture.env({ AGENT_TEST_CMD: `""${link}" one "two three""` });
       const run = Bun.spawnSync({
-        cmd: ["cmd.exe", "/d", "/s", "/c", commandLine],
-        env: fixture.env(),
+        cmd: ["cmd.exe", "/d", "/c", "%AGENT_TEST_CMD%"],
+        env: runEnv,
         stdout: "pipe",
         stderr: "pipe",
       });
@@ -226,13 +244,16 @@ describeWin("agent launcher Windows layers", () => {
         ARGV_CAPTURE + `> "%CAPTURE_FILE%" echo URL=%INFISICAL_API_URL% ARGS=%line%\r\n`,
       );
 
-      const result = runPs1(join(repo, "script", "with-secrets.ps1"), ["echo", "hello", "two words"], {
-        ...process.env,
-        PATH: `${bin};${process.env.PATH || ""}`,
-        CAPTURE_FILE: capture,
-        // ambient Cloud URL must be overridden, never used
-        INFISICAL_API_URL: "https://cloud.infisical.com/api",
-      });
+      const result = runPs1(
+        join(repo, "script", "with-secrets.ps1"),
+        ["echo", "hello", "two words"],
+        {
+          ...withPath(process.env, `${bin};${process.env.Path || process.env.PATH || ""}`),
+          CAPTURE_FILE: capture,
+          // ambient Cloud URL must be overridden, never used
+          INFISICAL_API_URL: "https://cloud.infisical.com/api",
+        },
+      );
       check(result.exitCode === 0, `wrapper failed (exit ${result.exitCode}): ${result.stderr.toString()}`);
       const captured = readFileSync(capture, "utf8").replace(/\r\n/g, " ").trim();
       check(
@@ -271,8 +292,7 @@ describeWin("agent launcher Windows layers", () => {
       const realWorkspace = JSON.parse(readFileSync(join(REPO, ".infisical.json"), "utf8")).workspaceId;
       const repo = makeFakeRepo(tmp, realWorkspace);
       const result = runPs1(join(repo, "script", "with-secrets.ps1"), ["echo", "x"], {
-        ...process.env,
-        PATH: `${process.env.SystemRoot}\\System32`,
+        ...withPath(process.env, `${process.env.SystemRoot}\\System32`),
       });
       check(result.exitCode === 1, `missing infisical must fail, got exit ${result.exitCode}`);
       check(

@@ -125,11 +125,13 @@ One implementation serves every platform (ADR-0009):
 - **Windows batch shims**: npm-installed harnesses resolve to `opencode.cmd`
   etc. `which()` probes `PATHEXT` candidates **before** the bare name (the
   extensionless Cygwin-style shim npm also generates is not executable),
-  and `.cmd`/`.bat` targets are started through `cmd.exe /d /s /c` with
-  quoted arguments. Because cmd.exe re-parses the command line per batch
-  semantics, arguments containing `"` or `%` cannot be transported
-  faithfully and are **rejected with exit 1** (fail closed — no silent
-  corruption, no metacharacter injection).
+  and `.cmd`/`.bat` targets are started via `cmd.exe /d /c %AGENT_LAUNCH_CMD%`
+  — the fully quoted command line travels in an env var because cmd.exe does
+  not understand the backslash-escaped quotes of CreateProcess argv
+  serialization (quotes in cmd's expansion toggle its quoting state, so
+  `& | < > ( )` and spaces inside quoted args stay literal). Arguments
+  containing `"` or `%` cannot be represented at all and are **rejected with
+  exit 1** (fail closed — no silent corruption, no metacharacter injection).
 - **Entry points**:
   - macOS/WSL: the `~/.local/bin/agent` shim (bash) runs `bun
     script/agent.ts`; shortcuts are symlinks to the same file. The invoked

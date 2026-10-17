@@ -668,14 +668,20 @@ function isBatchShim(path: string): boolean {
 
 /**
  * Build the argv used to launch a resolved harness. Batch shims run through
- * `cmd.exe /d /s /c <command line>`; cmd.exe re-parses that line per batch
- * semantics, so double quotes and `%` cannot be transported faithfully —
- * an unescaped `%VAR%` would be expanded and a stray `"` could expose
- * metacharacters to the shell. Those arguments are rejected up front
- * (fail closed) instead of risking corruption or injection; everything
- * else is quoted so `& | < > ( )` and spaces stay inside one argument.
+ * cmd.exe, which re-parses its command tail per batch semantics and does not
+ * understand the backslash-escaped quotes that CreateProcess argv
+ * serialization produces — so the fully quoted command line travels through
+ * an environment variable and is expanded by cmd itself (quotes in the
+ * expanded text toggle cmd's quoting state, keeping `& | < > ( )` and spaces
+ * inside quoted arguments literal). Double quotes and `%` cannot be
+ * represented faithfully at all; those arguments are rejected up front
+ * (fail closed) instead of risking corruption or injection.
  */
-function launchArgv(resolved: string, args: string[]): string[] {
+function launchArgv(
+  resolved: string,
+  args: string[],
+  env: Record<string, string>
+): string[] {
   if (!isBatchShim(resolved)) {
     return [resolved, ...args];
   }
@@ -698,9 +704,9 @@ function launchArgv(resolved: string, args: string[]): string[] {
   }
   const quote = (arg: string): string =>
     arg === "" || /[\s&|<>^(),;]/.test(arg) ? `"${arg}"` : arg;
-  const commandLine = [resolved, ...args].map(quote).join(" ");
+  env["AGENT_LAUNCH_CMD"] = [resolved, ...args].map(quote).join(" ");
   const comspec = process.env.ComSpec || "cmd.exe";
-  return [comspec, "/d", "/s", "/c", commandLine];
+  return [comspec, "/d", "/c", "%AGENT_LAUNCH_CMD%"];
 }
 
 function shortcutLinkTargetContent(target: string, name: string): string {
@@ -1287,7 +1293,7 @@ async function finalize(plan: Plan): Promise<number> {
       EXIT_RUNTIME
     );
   }
-  return runInherited(launchArgv(resolvedCmd, command.slice(1)), env);
+  return runInherited(launchArgv(resolvedCmd, command.slice(1), env), env);
 }
 
 interface ExecStagePlan {
