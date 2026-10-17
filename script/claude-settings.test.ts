@@ -85,7 +85,7 @@ describe("compose", () => {
     expect(compose(p)).toEqual([`ok      ${p.target}`]);
   });
 
-  test("unmanaged live file: Herdr hook and extra keys are kept, original backed up", () => {
+  test("unmanaged live file: Herdr hook and extra keys are kept, original backed up outside the dotfiles repo", () => {
     const p = fixture();
     const live = {
       ...SHARED,
@@ -96,11 +96,13 @@ describe("compose", () => {
 
     const actions = compose(p);
 
-    expect(actions.some((a) => a.startsWith("backup"))).toBe(true);
-    const backups = readdirSync(join(p.target, ".."))
-      .filter((n) => n.startsWith("settings.json.pre-dotfiles-"));
-    expect(backups.length).toBe(1);
-    expect(read(join(join(p.target, ".."), backups[0]))).toEqual(live);
+    expect(actions.some((a) => a.startsWith("legacy"))).toBe(true);
+    // The legacy backup must land under the state directory, not next to
+    // the live file, so it is outside the managed dotfiles repository.
+    const stateDir = dirname(p.overlay);
+    const legacyDirs = readdirSync(stateDir).filter((n) => n.startsWith("legacy-"));
+    expect(legacyDirs.length).toBe(1);
+    expect(read(join(stateDir, legacyDirs[0], "settings.json"))).toEqual(live);
 
     const effective = read(p.target);
     expect(effective.statusLine).toEqual(SHARED.statusLine);
@@ -184,6 +186,8 @@ describe("compose", () => {
     const actions = compose(p);
 
     expect(actions.some((a) => a.startsWith("unlink"))).toBe(true);
+    // Nothing to back up because the target is missing.
+    expect(actions.some((a) => a.startsWith("legacy"))).toBe(false);
     expect(actions.some((a) => a.startsWith("backup"))).toBe(false);
     expect(lstatSync(p.target).isSymbolicLink()).toBe(false);
     expect(read(p.target)).toEqual(SHARED);
@@ -191,10 +195,11 @@ describe("compose", () => {
     expect(compose(p)).toEqual([`ok      ${p.target}`]);
   });
 
-  test("symlink to existing old home/.claude/settings.json backs the target up and composes fresh", () => {
+  test("symlink to existing old home/.claude/settings.json backs the target up outside the repo and composes fresh", () => {
     // When the old layout file still exists on disk (e.g. the user has
     // edited it through the symlink), the composer copies it aside before
     // removing the symlink so the user-customised content is preserved.
+    // The copy lands outside the managed dotfiles repository.
     const p = fixture();
     const oldLayout = join(p.root, "repo", "home", ".claude", "settings.json");
     mkdirSync(dirname(oldLayout), { recursive: true });
@@ -203,12 +208,18 @@ describe("compose", () => {
 
     const actions = compose(p);
 
-    expect(actions.some((a) => a.startsWith("backup"))).toBe(true);
+    expect(actions.some((a) => a.startsWith("legacy"))).toBe(true);
     expect(actions.some((a) => a.startsWith("unlink"))).toBe(true);
-    const backups = readdirSync(dirname(oldLayout)).filter(
-      (n) => n.startsWith("settings.json.pre-dotfiles-"),
+    // The legacy copy is under the state directory, not the dotfiles repo.
+    const stateDir = dirname(p.overlay);
+    const legacyDirs = readdirSync(stateDir).filter((n) => n.startsWith("legacy-"));
+    expect(legacyDirs.length).toBeGreaterThanOrEqual(1);
+    expect(read(join(stateDir, legacyDirs[0], "settings.json"))).toEqual(SHARED);
+    // Nothing was left next to the old-layout target inside the dotfiles repo.
+    const inRepoBackups = readdirSync(dirname(oldLayout)).filter(
+      (n) => n.startsWith("settings.json.pre-dotfiles-") || n.endsWith(".bak"),
     );
-    expect(backups.length).toBeGreaterThanOrEqual(1);
+    expect(inRepoBackups).toEqual([]);
     expect(lstatSync(p.target).isSymbolicLink()).toBe(false);
     expect(read(p.target)).toEqual(SHARED);
     expect(plan(p).status).toBe("ok");
@@ -247,6 +258,102 @@ describe("compose", () => {
     expect(overlay.statusLine).toBeUndefined();
     expect(overlay.hooks.SessionStart).toContainEqual(orcaHook);
     expect(plan(p).status).toBe("ok");
+  });
+
+  test("old-layout target with Herdr hook: hook is imported into overlay, not the stale model", () => {
+    // Reproduces the real-machine migration: a pre-0.3.0 install left
+    // ~/.claude/settings.json -> <repo>/home/.claude/settings.json. The old
+    // target carried a Herdr SessionStart hook (machine-specific, valid) and
+    // a model=haiku pin (stale, must not survive). The composer must import
+    // the hook into the overlay, drop the model, and write a fresh live file.
+    const p = fixture();
+    const oldLayout = join(p.root, "repo", "home", ".claude", "settings.json");
+    mkdirSync(dirname(oldLayout), { recursive: true });
+    const oldContent = {
+      ...SHARED,
+      hooks: { SessionStart: [...SHARED.hooks.SessionStart, HERDR_HOOK] },
+      model: "haiku",
+    };
+    writeFileSync(oldLayout, JSON.stringify(oldContent, null, 2));
+    symlinkSync(oldLayout, p.target);
+
+    const actions = compose(p);
+
+    expect(actions.some((a) => a.startsWith("legacy"))).toBe(true);
+    expect(actions.some((a) => a.startsWith("unlink"))).toBe(true);
+
+    const overlay = read(p.overlay);
+    expect(overlay.hooks.SessionStart).toContainEqual(HERDR_HOOK);
+    expect(overlay.model).toBeUndefined();
+
+    const composed = read(p.target);
+    expect(composed.statusLine).toEqual(SHARED.statusLine);
+    expect(composed.hooks.SessionStart).toContainEqual(HERDR_HOOK);
+    expect(composed.model).toBeUndefined();
+
+    expect(plan(p).status).toBe("ok");
+  });
+
+  test("overlay with Orca-written statusLine is restored to the shared baseline", () => {
+    // If a previous Orca install somehow wrote its statusLine into the
+    // machine-local overlay, the composer must drop it so the canonical
+    // statusLine from the shared baseline takes effect again. The protected
+    // key is reported in the action log so the operator can recover it
+    // manually if the canonical change was unintentional.
+    const p = fixture();
+    mkdirSync(dirname(p.overlay), { recursive: true });
+    const orcaStatus = {
+      type: "command",
+      command: "orca-agent statusline --token=$ORCA_AGENT_HOOK_TOKEN",
+    };
+    writeFileSync(
+      p.overlay,
+      JSON.stringify({ statusLine: orcaStatus, theme: "dark" }, null, 2),
+    );
+
+    const actions = compose(p);
+
+    expect(actions.some((a) => a.startsWith("strip"))).toBe(true);
+    const overlay = read(p.overlay);
+    expect(overlay.statusLine).toBeUndefined();
+    expect(overlay.theme).toEqual("dark");
+
+    const composed = read(p.target);
+    expect(composed.statusLine).toEqual(SHARED.statusLine);
+    expect(composed.theme).toEqual("dark");
+    expect(plan(p).status).toBe("ok");
+  });
+
+  test("compose is idempotent on a re-run after migration", () => {
+    // First run migrates a pre-0.3.0 symlink and imports the Herdr hook into
+    // the overlay. The second run must observe the live file as already
+    // generated, leave the overlay alone, and report ok with no extra
+    // backup, no extra overlay write, and no symlink activity.
+    const p = fixture();
+    const oldLayout = join(p.root, "repo", "home", ".claude", "settings.json");
+    mkdirSync(dirname(oldLayout), { recursive: true });
+    const oldContent = {
+      ...SHARED,
+      hooks: { SessionStart: [...SHARED.hooks.SessionStart, HERDR_HOOK] },
+    };
+    writeFileSync(oldLayout, JSON.stringify(oldContent, null, 2));
+    symlinkSync(oldLayout, p.target);
+
+    compose(p);
+    const overlayAfterFirst = read(p.overlay);
+    const legacyDirsAfterFirst = readdirSync(dirname(p.overlay)).filter(
+      (n) => n.startsWith("legacy-"),
+    );
+    expect(legacyDirsAfterFirst.length).toBe(1);
+
+    const secondActions = compose(p);
+
+    expect(secondActions).toEqual([`ok      ${p.target}`]);
+    expect(read(p.overlay)).toEqual(overlayAfterFirst);
+    const legacyDirsAfterSecond = readdirSync(dirname(p.overlay)).filter(
+      (n) => n.startsWith("legacy-"),
+    );
+    expect(legacyDirsAfterSecond.length).toBe(1);
   });
 });
 
