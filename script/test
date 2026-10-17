@@ -39,4 +39,26 @@ if [[ -e "$conflict_home/.config/git/ignore" || -L "$conflict_home/.config/git/i
   exit 1
 fi
 
+# A top-level managed unit whose name contains a space must link as one unit,
+# never split into word fragments by unit-name handling in link and check.
+spaced_repo="$(cd "$tmp" && pwd -P)/spaced-repo"
+mkdir -p "$spaced_repo/home"
+cp -R "$repo_root/script" "$spaced_repo/script"
+ln -s "$repo_root/home/.gitconfig" "$spaced_repo/home/my config"
+
+spaced_home="$tmp/spaced-home"
+mkdir -p "$spaced_home"
+HOME="$spaced_home" "$spaced_repo/script/link"
+HOME="$spaced_home" "$spaced_repo/script/check"
+
+if [[ "$(readlink "$spaced_home/my config")" != "$spaced_repo/home/my config" ]]; then
+  printf 'spaced unit was not linked as one entry\n' >&2
+  exit 1
+fi
+
+if [[ -e "$spaced_home/my" || -L "$spaced_home/my" || -e "$spaced_home/config" || -L "$spaced_home/config" ]]; then
+  printf 'spaced unit was split into word fragments\n' >&2
+  exit 1
+fi
+
 printf 'symlink behavior tests passed\n'

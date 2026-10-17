@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# `agent` — unified AI harness launcher shim.
+# Installed into ~/.local/bin by script/link; the implementation lives in
+# the dotfiles repository next to its declarative config (config/agents.toml).
+set -euo pipefail
+
+if ! command -v bun >/dev/null 2>&1; then
+  printf 'agent: bun is required (install it via pc-setup / mise)\n' >&2
+  exit 1
+fi
+
+exec bun "${HOME}/.dotfiles/script/agent.ts" "$@"
