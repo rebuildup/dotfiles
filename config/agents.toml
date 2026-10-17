@@ -87,14 +87,22 @@ label = "MiniMax (M Plan)"
 base_url = "https://api.minimax.io/anthropic"
 secret = "MINIMAX_M_PLAN_KEY"
 env = "MINIMAX_API_KEY"
-# Model ids below are the ones GET /anthropic/v1/models returned for this
-# account (snapshot 2026-10-17). Ids that appear only in the provider's docs
-# are NOT listed: MiniMax-M3.1-Flash-Preview is documented but was absent from
-# this account's list, so it is unverified and fails closed until verified.
-# The default is the newest verified id. Unknown ids fail closed before a
-# process starts.
-default_model = "MiniMax-M3"
+# Model ids verified by direct Messages API calls against this account's M
+# Plan entitlement. GET /anthropic/v1/models is used as a hint only: ids
+# absent from that list but reachable through the Messages API are still
+# listed (e.g. MiniMax-M3.1-Flash-Preview: documented, absent from the
+# account's /v1/models snapshot, but the Messages API answers with the
+# echoed model id — verified 2026-10-17). The default is the newest verified
+# id. Unknown ids fail closed before a process starts.
+#
+# M3.1 Flash Preview model-specific contract (do not silently violate):
+#   - Reasoning is always on; the launcher never sets `thinking: disabled`
+#     or `effort: none` for this id.
+#   - Effort accepts only low/medium/high/xhigh/max and defaults to `max`
+#     when no value is passed.
+default_model = "MiniMax-M3.1-Flash-Preview"
 models = [
+  "MiniMax-M3.1-Flash-Preview",
   "MiniMax-M3",
   "MiniMax-M2.7",
   "MiniMax-M2.7-highspeed",
@@ -186,7 +194,7 @@ models = ["deepseek-flash"]
 note = "Anthropic-compatible endpoint; claude-* aliases are deliberately not exposed."
 
 [routes."claude.minimax"]
-note = "Default is the verified MiniMax-M3; M Plan entitlement is account-specific, so pick any other id with --model."
+note = "Default is the verified MiniMax-M3.1-Flash-Preview; reasoning is always on, effort defaults to max. Any other verified id (notably MiniMax-M3) is selectable with --model."
 
 [routes."opencode.zen"]
 note = "Free zen models through the OpenCode client (free tier is client-bound)."
@@ -196,7 +204,17 @@ note = "Free zen models through the OpenCode client (free tier is client-bound).
 [routes."opencode.deepseek"]
 
 [routes."opencode.minimax"]
-note = "Default is the verified MiniMax-M3; M Plan entitlement is account-specific, so pick any other id with --model."
+# OpenCode v2 silently ignores any id outside its built-in catalog for the
+# minimax provider and falls back to a zen free-tier default. MiniMax-M3.1-
+# Flash-Preview is NOT in that catalog, so the route keeps MiniMax-M3 as the
+# default and only ids the opencode client actually recognizes appear in the
+# route's model list. The launcher enforces this fail-closed: any --model id
+# that is not in the route's model list is rejected with exit 2 before a
+# process starts, so MiniMax-M3.1-Flash-Preview cannot be reached through this
+# route even when passed explicitly.
+default_model = "MiniMax-M3"
+models = ["MiniMax-M3"]
+note = "OpenCode v2 has no built-in catalog entry for MiniMax-M3.1-Flash-Preview and silently falls back to zen; MiniMax-M3 is the verified default. The launcher rejects MiniMax-M3.1-Flash-Preview with exit 2 here because the route's model list only contains ids the opencode client actually recognizes."
 
 [routes."pi.openrouter"]
 
@@ -204,7 +222,7 @@ note = "Default is the verified MiniMax-M3; M Plan entitlement is account-specif
 note = "pi warns for ids outside its built-in catalog and passes them through."
 
 [routes."pi.minimax"]
-note = "Default is the verified MiniMax-M3; M Plan entitlement is account-specific, so pick any other id with --model."
+note = "Default is the verified MiniMax-M3.1-Flash-Preview (pi warns 'not in catalog' and passes the id through). Any other verified id is selectable with --model."
 
 [routes."dsh.deepseek"]
 note = "Passthrough: dsh keeps its own native DeepSeek provider and auth (unverified here)."
