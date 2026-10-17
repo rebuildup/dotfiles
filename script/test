@@ -69,4 +69,44 @@ if [[ -e "$spaced_home/my" || -L "$spaced_home/my" || -e "$spaced_home/config" |
   exit 1
 fi
 
+# Composer-owned Claude backups left in the working tree (an untracked
+# home/.claude/settings.json.bak from a migration, or the older
+# pre-dotfiles-* pattern) must not be promoted to managed symlinks by
+# script/link and must not be reported as missing or drift by script/check.
+# The composer writes its real backups under the state directory, but
+# defensively skipping these patterns in link/check means a leftover file
+# inside the repo cannot leak into HOME and cannot be flagged as drift.
+backup_repo="$(cd "$tmp" && pwd -P)/backup-repo"
+mkdir -p "$backup_repo/home/.claude"
+cp -R "$repo_root/script" "$backup_repo/script"
+cp "$repo_root/home/.claude/statusline-command.sh" "$backup_repo/home/.claude/statusline-command.sh"
+cat > "$backup_repo/home/.claude/settings.json.bak" <<'EOF'
+{ "leftover": "from-migration" }
+EOF
+cat > "$backup_repo/home/.claude/settings.json.pre-dotfiles-20250101" <<'EOF'
+{ "leftover": "pre-dotfiles-pattern" }
+EOF
+
+backup_home="$tmp/backup-home"
+mkdir -p "$backup_home"
+XDG_CONFIG_HOME="$backup_home/.config" HOME="$backup_home" "$backup_repo/script/link"
+XDG_CONFIG_HOME="$backup_home/.config" HOME="$backup_home" "$backup_repo/script/check"
+
+if [[ -L "$backup_home/.claude/settings.json.bak" || -e "$backup_home/.claude/settings.json.bak" ]]; then
+  printf 'link/check promoted a leftover composer-owned .bak file to a managed target\n' >&2
+  exit 1
+fi
+if [[ -L "$backup_home/.claude/settings.json.pre-dotfiles-20250101" || -e "$backup_home/.claude/settings.json.pre-dotfiles-20250101" ]]; then
+  printf 'link/check promoted a leftover composer-owned pre-dotfiles-* file to a managed target\n' >&2
+  exit 1
+fi
+if HOME="$backup_home" "$backup_repo/script/link" 2>&1 | grep -q "settings.json.bak\|pre-dotfiles"; then
+  printf 'link reported a composer-owned backup file as drift\n' >&2
+  exit 1
+fi
+if XDG_CONFIG_HOME="$backup_home/.config" HOME="$backup_home" "$backup_repo/script/check" 2>&1 | grep -q "settings.json.bak\|pre-dotfiles"; then
+  printf 'check reported a composer-owned backup file as drift\n' >&2
+  exit 1
+fi
+
 printf 'symlink behavior tests passed\n'

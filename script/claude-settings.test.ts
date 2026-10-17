@@ -13,7 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { compose, extras, merge, type Paths, plan, scalarConflict } from "./claude-settings";
 
 const SHARED = {
@@ -85,7 +85,7 @@ describe("compose", () => {
     expect(compose(p)).toEqual([`ok      ${p.target}`]);
   });
 
-  test("unmanaged live file: Herdr hook and extra keys are kept, original backed up", () => {
+  test("unmanaged live file: Herdr hook and extra keys are kept, original backed up outside the dotfiles repo", () => {
     const p = fixture();
     const live = {
       ...SHARED,
@@ -96,11 +96,13 @@ describe("compose", () => {
 
     const actions = compose(p);
 
-    expect(actions.some((a) => a.startsWith("backup"))).toBe(true);
-    const backups = readdirSync(join(p.target, ".."))
-      .filter((n) => n.startsWith("settings.json.pre-dotfiles-"));
-    expect(backups.length).toBe(1);
-    expect(read(join(join(p.target, ".."), backups[0]))).toEqual(live);
+    expect(actions.some((a) => a.startsWith("legacy"))).toBe(true);
+    // The legacy backup must land under the state directory, not next to
+    // the live file, so it is outside the managed dotfiles repository.
+    const stateDir = dirname(p.overlay);
+    const legacyDirs = readdirSync(stateDir).filter((n) => n.startsWith("legacy-"));
+    expect(legacyDirs.length).toBe(1);
+    expect(read(join(stateDir, legacyDirs[0], "settings.json"))).toEqual(live);
 
     const effective = read(p.target);
     expect(effective.statusLine).toEqual(SHARED.statusLine);
@@ -126,15 +128,18 @@ describe("compose", () => {
   });
 
   test("conflicting scalar with the overlay aborts before any change", () => {
+    // scalarConflict only flags scalar divergence; arrays re-append cleanly.
+    // Use permissions.defaultMode (a scalar shared baseline value) so the
+    // conflict is reproducible.
     const p = fixture();
     mkdirSync(join(p.overlay, ".."), { recursive: true });
-    writeFileSync(p.overlay, JSON.stringify({ statusLine: { type: "command", command: "old" } }));
-    const live = { ...SHARED, statusLine: { type: "command", command: "new-live" } };
+    writeFileSync(p.overlay, JSON.stringify({ permissions: { defaultMode: "acceptEdits" } }));
+    const live = { ...SHARED, permissions: { ...SHARED.permissions, defaultMode: "plan" } };
     writeFileSync(p.target, JSON.stringify(live, null, 2));
 
-    expect(() => compose(p)).toThrow(/conflict with overlay at "statusLine\.command"/);
+    expect(() => compose(p)).toThrow(/conflict with overlay at "permissions\.defaultMode"/);
     expect(read(p.target)).toEqual(live);
-    expect(read(p.overlay)).toEqual({ statusLine: { type: "command", command: "old" } });
+    expect(read(p.overlay)).toEqual({ permissions: { defaultMode: "acceptEdits" } });
   });
 
   test("invalid JSON in the live file aborts and leaves it untouched", () => {
@@ -149,7 +154,7 @@ describe("compose", () => {
     const other = join(p.root, "other.json");
     writeFileSync(other, "{}");
     symlinkSync(other, p.target);
-    expect(() => compose(p)).toThrow(/not the shared baseline/);
+    expect(() => compose(p)).toThrow(/move it aside manually before composing/);
     expect(readFileSync(other, "utf8")).toBe("{}");
 
     unlinkSync(p.target);
@@ -160,12 +165,220 @@ describe("compose", () => {
     expect(read(p.shared)).toEqual(SHARED);
   });
 
+  test("non-dangling symlink whose textual target looks like old layout but resolves elsewhere is foreign", () => {
+    // The textual target of the symlink at p.target lives under the local
+    // oldLayoutRoot path string, but realpathSync follows a chain of symlinks
+    // to a real file that lives outside the dotfiles repo. Migration must
+    // abort rather than backing up and overwriting that foreign file.
+    const p = fixture();
+    const foreignDir = join(p.root, "foreign", "home", ".claude");
+    mkdirSync(foreignDir, { recursive: true });
+    const foreignTarget = join(foreignDir, "settings.json");
+    writeFileSync(foreignTarget, JSON.stringify({ foreign: "untouched" }));
+    // Build a symlink chain: p.target -> <oldLayoutRoot>/settings.json (a
+    // symlink itself) -> foreignTarget. The textual target of p.target
+    // looks like old layout, but the resolved path does not.
+    const oldLayoutRoot = join(p.root, "repo", "home", ".claude");
+    const oldLayoutFile = join(oldLayoutRoot, "settings.json");
+    mkdirSync(oldLayoutRoot, { recursive: true });
+    symlinkSync(foreignTarget, oldLayoutFile);
+    symlinkSync(oldLayoutFile, p.target);
+
+    expect(() => compose(p)).toThrow(/move it aside manually before composing/);
+    // Foreign target file must remain byte-for-byte untouched.
+    expect(read(foreignTarget)).toEqual({ foreign: "untouched" });
+    expect(lstatSync(p.target).isSymbolicLink()).toBe(true);
+  });
+
   test("missing shared baseline is a skip, not an error", () => {
     const p = fixture();
     rmSync(p.shared);
     writeFileSync(p.target, "keep");
     expect(compose(p)[0]).toMatch(/^skip /);
     expect(readFileSync(p.target, "utf8")).toBe("keep");
+  });
+
+  test("dangling symlink to old home/.claude/settings.json is migrated to a fresh composed file", () => {
+    // Reproduces the real-machine failure: a pre-0.3.0 install left
+    // ~/.claude/settings.json -> ~/.dotfiles/home/.claude/settings.json.
+    // After upgrading dotfiles the source file is gone and the symlink is
+    // dangling. The composer must unlink it and produce a fresh regular file
+    // instead of asking the operator to clean up by hand.
+    const p = fixture();
+    const oldLayout = join(p.root, "repo", "home", ".claude", "settings.json");
+    symlinkSync(oldLayout, p.target);
+
+    const actions = compose(p);
+
+    expect(actions.some((a) => a.startsWith("unlink"))).toBe(true);
+    // Nothing to back up because the target is missing.
+    expect(actions.some((a) => a.startsWith("legacy"))).toBe(false);
+    expect(actions.some((a) => a.startsWith("backup"))).toBe(false);
+    expect(lstatSync(p.target).isSymbolicLink()).toBe(false);
+    expect(read(p.target)).toEqual(SHARED);
+    expect(plan(p).status).toBe("ok");
+    expect(compose(p)).toEqual([`ok      ${p.target}`]);
+  });
+
+  test("symlink to existing old home/.claude/settings.json backs the target up outside the repo and composes fresh", () => {
+    // When the old layout file still exists on disk (e.g. the user has
+    // edited it through the symlink), the composer copies it aside before
+    // removing the symlink so the user-customised content is preserved.
+    // The copy lands outside the managed dotfiles repository.
+    const p = fixture();
+    const oldLayout = join(p.root, "repo", "home", ".claude", "settings.json");
+    mkdirSync(dirname(oldLayout), { recursive: true });
+    writeFileSync(oldLayout, JSON.stringify(SHARED, null, 2));
+    symlinkSync(oldLayout, p.target);
+
+    const actions = compose(p);
+
+    expect(actions.some((a) => a.startsWith("legacy"))).toBe(true);
+    expect(actions.some((a) => a.startsWith("unlink"))).toBe(true);
+    // The legacy copy is under the state directory, not the dotfiles repo.
+    const stateDir = dirname(p.overlay);
+    const legacyDirs = readdirSync(stateDir).filter((n) => n.startsWith("legacy-"));
+    expect(legacyDirs.length).toBeGreaterThanOrEqual(1);
+    expect(read(join(stateDir, legacyDirs[0], "settings.json"))).toEqual(SHARED);
+    // Nothing was left next to the old-layout target inside the dotfiles repo.
+    const inRepoBackups = readdirSync(dirname(oldLayout)).filter(
+      (n) => n.startsWith("settings.json.pre-dotfiles-") || n.endsWith(".bak"),
+    );
+    expect(inRepoBackups).toEqual([]);
+    expect(lstatSync(p.target).isSymbolicLink()).toBe(false);
+    expect(read(p.target)).toEqual(SHARED);
+    expect(plan(p).status).toBe("ok");
+  });
+
+  test("Orca rewrites statusLine on the live file: shared statusLine is restored, Orca hook survives", () => {
+    // Orca installs a SessionStart hook that rewrites statusLine on the live
+    // file for its own progress notifications. The composer must:
+    //   - keep the shared statusLine (the user owns the canonical render),
+    //   - import the Orca hook into the overlay (machine-specific value),
+    //   - never transfer the rewritten statusLine into the overlay.
+    const p = fixture();
+    const orcaStatus = {
+      type: "command",
+      command: "orca-agent statusline --token=$ORCA_AGENT_HOOK_TOKEN",
+    };
+    const orcaHook = {
+      hooks: [{ type: "command", command: "orca-session-start" }],
+    };
+    const live = {
+      ...SHARED,
+      statusLine: orcaStatus,
+      hooks: {
+        ...SHARED.hooks,
+        SessionStart: [...SHARED.hooks.SessionStart, orcaHook],
+      },
+    };
+    writeFileSync(p.target, JSON.stringify(live, null, 2));
+
+    compose(p);
+
+    const composed = read(p.target);
+    expect(composed.statusLine).toEqual(SHARED.statusLine);
+    expect(composed.hooks.SessionStart).toContainEqual(orcaHook);
+    const overlay = read(p.overlay);
+    expect(overlay.statusLine).toBeUndefined();
+    expect(overlay.hooks.SessionStart).toContainEqual(orcaHook);
+    expect(plan(p).status).toBe("ok");
+  });
+
+  test("old-layout target with Herdr hook: hook is imported into overlay, not the stale model", () => {
+    // Reproduces the real-machine migration: a pre-0.3.0 install left
+    // ~/.claude/settings.json -> <repo>/home/.claude/settings.json. The old
+    // target carried a Herdr SessionStart hook (machine-specific, valid) and
+    // a model=haiku pin (stale, must not survive). The composer must import
+    // the hook into the overlay, drop the model, and write a fresh live file.
+    const p = fixture();
+    const oldLayout = join(p.root, "repo", "home", ".claude", "settings.json");
+    mkdirSync(dirname(oldLayout), { recursive: true });
+    const oldContent = {
+      ...SHARED,
+      hooks: { SessionStart: [...SHARED.hooks.SessionStart, HERDR_HOOK] },
+      model: "haiku",
+    };
+    writeFileSync(oldLayout, JSON.stringify(oldContent, null, 2));
+    symlinkSync(oldLayout, p.target);
+
+    const actions = compose(p);
+
+    expect(actions.some((a) => a.startsWith("legacy"))).toBe(true);
+    expect(actions.some((a) => a.startsWith("unlink"))).toBe(true);
+
+    const overlay = read(p.overlay);
+    expect(overlay.hooks.SessionStart).toContainEqual(HERDR_HOOK);
+    expect(overlay.model).toBeUndefined();
+
+    const composed = read(p.target);
+    expect(composed.statusLine).toEqual(SHARED.statusLine);
+    expect(composed.hooks.SessionStart).toContainEqual(HERDR_HOOK);
+    expect(composed.model).toBeUndefined();
+
+    expect(plan(p).status).toBe("ok");
+  });
+
+  test("overlay with Orca-written statusLine is restored to the shared baseline", () => {
+    // If a previous Orca install somehow wrote its statusLine into the
+    // machine-local overlay, the composer must drop it so the canonical
+    // statusLine from the shared baseline takes effect again. The protected
+    // key is reported in the action log so the operator can recover it
+    // manually if the canonical change was unintentional.
+    const p = fixture();
+    mkdirSync(dirname(p.overlay), { recursive: true });
+    const orcaStatus = {
+      type: "command",
+      command: "orca-agent statusline --token=$ORCA_AGENT_HOOK_TOKEN",
+    };
+    writeFileSync(
+      p.overlay,
+      JSON.stringify({ statusLine: orcaStatus, theme: "dark" }, null, 2),
+    );
+
+    const actions = compose(p);
+
+    expect(actions.some((a) => a.startsWith("strip"))).toBe(true);
+    const overlay = read(p.overlay);
+    expect(overlay.statusLine).toBeUndefined();
+    expect(overlay.theme).toEqual("dark");
+
+    const composed = read(p.target);
+    expect(composed.statusLine).toEqual(SHARED.statusLine);
+    expect(composed.theme).toEqual("dark");
+    expect(plan(p).status).toBe("ok");
+  });
+
+  test("compose is idempotent on a re-run after migration", () => {
+    // First run migrates a pre-0.3.0 symlink and imports the Herdr hook into
+    // the overlay. The second run must observe the live file as already
+    // generated, leave the overlay alone, and report ok with no extra
+    // backup, no extra overlay write, and no symlink activity.
+    const p = fixture();
+    const oldLayout = join(p.root, "repo", "home", ".claude", "settings.json");
+    mkdirSync(dirname(oldLayout), { recursive: true });
+    const oldContent = {
+      ...SHARED,
+      hooks: { SessionStart: [...SHARED.hooks.SessionStart, HERDR_HOOK] },
+    };
+    writeFileSync(oldLayout, JSON.stringify(oldContent, null, 2));
+    symlinkSync(oldLayout, p.target);
+
+    compose(p);
+    const overlayAfterFirst = read(p.overlay);
+    const legacyDirsAfterFirst = readdirSync(dirname(p.overlay)).filter(
+      (n) => n.startsWith("legacy-"),
+    );
+    expect(legacyDirsAfterFirst.length).toBe(1);
+
+    const secondActions = compose(p);
+
+    expect(secondActions).toEqual([`ok      ${p.target}`]);
+    expect(read(p.overlay)).toEqual(overlayAfterFirst);
+    const legacyDirsAfterSecond = readdirSync(dirname(p.overlay)).filter(
+      (n) => n.startsWith("legacy-"),
+    );
+    expect(legacyDirsAfterSecond.length).toBe(1);
   });
 });
 

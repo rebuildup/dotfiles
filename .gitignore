@@ -1,6 +1,12 @@
 .DS_Store
 Thumbs.db
 
+# Composer-owned Claude settings backups. These are created by
+# script/claude-settings.ts when migrating from a pre-0.3.0 install that
+# left a symlink to home/.claude/settings.json behind.
+home/.claude/*.bak
+home/.claude/*.pre-dotfiles-*
+
 # Local secret material / retired encrypted-Git model
 .env
 .env.*
