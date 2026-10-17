@@ -85,7 +85,7 @@ git submodule status --recursive
 ## Principles
 
 - Keep only configuration that I actually use or need to reproduce.
-- `home/` mirrors `$HOME`; managed files are linked individually into the real home directory. An entry may be a regular file or a symlink into an agent submodule.
+- `home/` mirrors `$HOME`; managed files are linked individually into the real home directory.
 - Linking is idempotent and non-destructive. `script/link` never overwrites unmanaged targets; `script/bootstrap` only adopts known legacy Git targets after preserving backups and migrating user-owned state.
 - Secret values are not Git state. The self-hosted Infisical instance at `https://secrets.rebuildup.dev` is the canonical secret source of truth.
 - Prefer process-scoped `infisical run` injection over global exports or persistent plaintext `.env` files.
@@ -100,16 +100,14 @@ git submodule status --recursive
 .
 ├── .infisical.json       # tracked self-host project binding
 ├── config/
-│   ├── infisical.sh      # non-secret self-host site/API/project metadata
-│   └── agent-init.bash   # interactive-shell delegation to a provider entrypoint
+│   └── infisical.sh      # non-secret self-host site/API/project metadata
 ├── agents/               # pinned private agent-config submodules
 │   ├── claude/
 │   ├── codex/
 │   └── opencode/
-├── home/                 # files/symlinks that mirror paths below $HOME
+├── home/                 # public files that mirror paths below $HOME
 ├── script/
 │   ├── bootstrap         # fresh-machine identity/auth/project bootstrap
-│   ├── agent/            # per-provider process-scoped runtime entrypoints
 │   ├── link              # create missing symlinks
 │   ├── check             # detect missing/drifted symlinks
 │   ├── test              # isolated symlink behavior test
@@ -144,13 +142,9 @@ See [agent launcher](docs/agent-launcher.md). For example `agent list`, `agent c
 
 Global Claude Code, Codex, and OpenCode repositories are pinned as sibling submodules under `agents/`. A fresh clone does not need `--recurse-submodules`: `script/bootstrap` authenticates GitHub, stores the GitHub credential helper in machine-local `~/.gitconfig.local`, links the stable global Git config, then initializes the exact commits recorded by the parent repository.
 
-The Claude submodule is **active**: `home/.claude/settings.json` is a tracked symlink into `agents/claude/settings.json`, and `script/link` publishes it at `~/.claude/settings.json`. `home/` therefore contains both regular managed files and symlinks into the agent submodules, and `script/link` / `script/check` traverse both.
+The current submodules are fetched automatically but are **not yet linked into active agent config paths**. Each child repository must first be made cross-platform; for example, the current Claude settings contain a Windows-specific absolute hook path. Activation before that cleanup would make the same dotfiles commit behave differently across operating systems.
 
-Machine-specific Claude Code values stay out of the submodule. Herdr's `SessionStart` hook lives in the untracked `~/.claude/settings.local.json`, which Claude Code merges over the managed baseline.
-
-The Codex and OpenCode submodules are fetched but **not yet linked into active agent config paths**. Each remaining child repository must first be made cross-platform. Activation before that cleanup would make the same dotfiles commit behave differently across operating systems.
-
-The composition is:
+The target composition is:
 
 ```text
 agents/
@@ -244,8 +238,5 @@ The current common Git baseline includes:
 - [`ADR-0005`](docs/adr/ADR-0005.md) — sibling agent-config submodules and shared portable assets
 - [`ADR-0006`](docs/adr/ADR-0006.md) — self-hosted Infisical control plane
 - [`ADR-0007`](docs/adr/ADR-0007.md) — WSL Infisical file-vault / bounded runtime validation
-- [`ADR-0008`](docs/adr/ADR-0008.md) — provider-neutral Claude common configuration / isolated providers
-- [`ADR-0009`](docs/adr/ADR-0009.md) — agent launcher in Bun + TypeScript (`agent <harness> <provider>`)
-- [`ADR-0010`](docs/adr/ADR-0010.md) — active Claude submodule via symlinked `home/` entry and machine-local `settings.local.json`
 - [`ADR-0011`](docs/adr/ADR-0011.md) — one owner per global Agent Skill placement (dotfiles, app updaters, projects)
 - [`dotfiles survey`](docs/research/dotfiles-survey.md)

@@ -295,15 +295,12 @@ printf 'ok      GitHub HTTPS credential helper stored in %s\n' "$local_git_confi
 # Install the stable ~/.gitconfig include before Git needs credentials for
 # private submodules. gh writes only to ~/.gitconfig.local above.
 "$repo_root/script/link"
+"$repo_root/script/check"
 
 # Agent configuration repositories are private. Authenticate Git first, then
 # fetch the pinned submodule commits. Fresh clones intentionally do not require
-# --recurse-submodules. This runs before the final link/check because managed
-# agent entries are symlinks into these submodules and would otherwise dangle.
+# --recurse-submodules.
 sync_agent_submodules
-
-"$repo_root/script/link"
-"$repo_root/script/check"
 
 configure_infisical_vault
 
