@@ -6,6 +6,50 @@ source_root="$repo_root/home"
 target_root="${HOME:?HOME must be set}"
 status=0
 
+# A top-level entry of home/ is linked as ONE symlink when it is a committed
+# symlink (home/.dsh -> ../agents/dsh) or a git submodule checkout. That keeps
+# a submodule pinned under agents/ reachable from $HOME while $HOME/<name> is
+# still a symlink to the pinned checkout. Every other file keeps the original
+# per-file symlink behaviour.
+unit_names=()
+
+shopt -s nullglob dotglob
+for entry in "$source_root"/*; do
+  [[ -e "$entry" || -L "$entry" ]] || continue
+  if [[ -L "$entry" || -e "$entry/.git" ]]; then
+    unit_names+=("$(basename "$entry")")
+  fi
+done
+shopt -u nullglob dotglob
+
+# Exact-name membership. Names may contain spaces, so they are never
+# word-split or substring-matched.
+is_unit_name() {
+  local candidate="$1" name
+  [[ ${#unit_names[@]} -gt 0 ]] || return 1
+  for name in "${unit_names[@]}"; do
+    [[ "$name" == "$candidate" ]] && return 0
+  done
+  return 1
+}
+
+# Emit every managed source: whole-directory units first so a parent exists
+# before any per-file source lands inside it, then the remaining files.
+sources() {
+  local name source relative first
+  if [[ ${#unit_names[@]} -gt 0 ]]; then
+    for name in "${unit_names[@]}"; do
+      printf '%s\0' "$source_root/$name"
+    done
+  fi
+  while IFS= read -r -d '' source; do
+    relative="${source#"$source_root"/}"
+    first="${relative%%/*}"
+    is_unit_name "$first" && continue
+    printf '%s\0' "$source"
+  done < <(find "$source_root" \( -type f -o -type l \) -print0)
+}
+
 # Preflight every managed target before mutating HOME. A conflict anywhere
 # aborts the whole operation so linking never leaves a partial result.
 while IFS= read -r -d '' source; do
@@ -24,7 +68,7 @@ while IFS= read -r -d '' source; do
     printf 'conflict %s already exists and is unmanaged\n' "$target" >&2
     status=1
   fi
-done < <(find "$source_root" -type f -print0)
+done < <(sources)
 
 if [[ "$status" -ne 0 ]]; then
   exit "$status"
@@ -42,4 +86,4 @@ while IFS= read -r -d '' source; do
   mkdir -p "$(dirname "$target")"
   ln -s "$source" "$target"
   printf 'linked  %s -> %s\n' "$target" "$source"
-done < <(find "$source_root" -type f -print0)
+done < <(sources)

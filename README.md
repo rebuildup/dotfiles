@@ -85,7 +85,7 @@ git submodule status --recursive
 ## Principles
 
 - Keep only configuration that I actually use or need to reproduce.
-- `home/` mirrors `$HOME`; managed files are linked individually into the real home directory.
+- `home/` mirrors `$HOME`; managed files are linked individually into the real home directory. An entry may be a regular file or a symlink into an agent submodule.
 - Linking is idempotent and non-destructive. `script/link` never overwrites unmanaged targets; `script/bootstrap` only adopts known legacy Git targets after preserving backups and migrating user-owned state.
 - Secret values are not Git state. The self-hosted Infisical instance at `https://secrets.rebuildup.dev` is the canonical secret source of truth.
 - Prefer process-scoped `infisical run` injection over global exports or persistent plaintext `.env` files.
@@ -100,14 +100,16 @@ git submodule status --recursive
 .
 ├── .infisical.json       # tracked self-host project binding
 ├── config/
-│   └── infisical.sh      # non-secret self-host site/API/project metadata
+│   ├── infisical.sh      # non-secret self-host site/API/project metadata
+│   └── agent-init.bash   # interactive-shell delegation to a provider entrypoint
 ├── agents/               # pinned private agent-config submodules
 │   ├── claude/
 │   ├── codex/
 │   └── opencode/
-├── home/                 # public files that mirror paths below $HOME
+├── home/                 # files/symlinks that mirror paths below $HOME
 ├── script/
 │   ├── bootstrap         # fresh-machine identity/auth/project bootstrap
+│   ├── agent/            # per-provider process-scoped runtime entrypoints
 │   ├── link              # create missing symlinks
 │   ├── check             # detect missing/drifted symlinks
 │   ├── test              # isolated symlink behavior test
@@ -132,13 +134,23 @@ Canonical binding:
 
 A new machine reuses this binding. Normal setup only needs user authentication against the self-hosted instance; `infisical init` is not part of the normal bootstrap.
 
+## Agent launcher (`agent`)
+
+The native `claude` command keeps the official Claude Code login and is never wrapped, aliased or overridden. Routes to other API providers (OpenRouter, DeepSeek, MiniMax, OpenCode Zen) are explicit and opt-in through the unified `agent` launcher: one declarative config (`config/agents.toml`), one thin Bun/TypeScript implementation (`script/agent.ts`, linked to `~/.local/bin/agent` by `script/link`; PowerShell entry `script/agent.ps1` on Windows) that reads the TOML with `Bun.TOML.parse()`, builds a filtered process-scoped environment through the existing Infisical wrapper (`script/with-secrets`, or `script/with-secrets.ps1` on Windows) and starts the native harness CLI. Short `<harness>-<provider>` commands (e.g. `opencode-zen`) derive from the same routes.
+
+See [agent launcher](docs/agent-launcher.md). For example `agent list`, `agent claude deepseek -- -p 'say ok'`, `agent opencode zen` or plain `agent claude` (native mode: no provider, no injection).
+
 ## Agent configuration
 
 Global Claude Code, Codex, and OpenCode repositories are pinned as sibling submodules under `agents/`. A fresh clone does not need `--recurse-submodules`: `script/bootstrap` authenticates GitHub, stores the GitHub credential helper in machine-local `~/.gitconfig.local`, links the stable global Git config, then initializes the exact commits recorded by the parent repository.
 
-The current submodules are fetched automatically but are **not yet linked into active agent config paths**. Each child repository must first be made cross-platform; for example, the current Claude settings contain a Windows-specific absolute hook path. Activation before that cleanup would make the same dotfiles commit behave differently across operating systems.
+The Claude submodule is **active**: `home/.claude/settings.json` is a tracked symlink into `agents/claude/settings.json`, and `script/link` publishes it at `~/.claude/settings.json`. `home/` therefore contains both regular managed files and symlinks into the agent submodules, and `script/link` / `script/check` traverse both.
 
-The target composition is:
+`~/.claude/settings.json` is generated, not a symlink: `script/claude-settings.ts` composes the shared `agents/claude/settings.json` with the machine-local overlay at `~/.config/dotfiles/claude/settings.local.json` (Herdr's hook lives there). Live-only values are imported into the overlay and the previous file is backed up before regeneration. See ADR-0010.
+
+The Codex and OpenCode submodules are fetched but **not yet linked into active agent config paths**. Each remaining child repository must first be made cross-platform. Activation before that cleanup would make the same dotfiles commit behave differently across operating systems.
+
+The composition is:
 
 ```text
 agents/
@@ -156,7 +168,7 @@ One common global instruction source will be linked to:
 - `~/.codex/AGENTS.md`
 - `~/.config/opencode/AGENTS.md`
 
-See [ADR-0005](docs/adr/ADR-0005.md).
+See [ADR-0005](docs/adr/ADR-0005.md). Global Skills that an app installs and updates itself, such as Orca's stubs, stay owned by that app ([ADR-0011](docs/adr/ADR-0011.md)).
 
 ## Secret model
 
@@ -232,4 +244,8 @@ The current common Git baseline includes:
 - [`ADR-0005`](docs/adr/ADR-0005.md) — sibling agent-config submodules and shared portable assets
 - [`ADR-0006`](docs/adr/ADR-0006.md) — self-hosted Infisical control plane
 - [`ADR-0007`](docs/adr/ADR-0007.md) — WSL Infisical file-vault / bounded runtime validation
+- [`ADR-0008`](docs/adr/ADR-0008.md) — provider-neutral Claude common configuration / isolated providers
+- [`ADR-0009`](docs/adr/ADR-0009.md) — agent launcher in Bun + TypeScript (`agent <harness> <provider>`)
+- [`ADR-0010`](docs/adr/ADR-0010.md) — effective Claude settings composed from the shared submodule baseline and a machine-local overlay
+- [`ADR-0011`](docs/adr/ADR-0011.md) — one owner per global Agent Skill placement (dotfiles, app updaters, projects)
 - [`dotfiles survey`](docs/research/dotfiles-survey.md)

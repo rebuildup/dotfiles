@@ -2,7 +2,9 @@
 set -euo pipefail
 
 source_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-tmp="$(mktemp -d)"
+# Canonicalize: scripts resolve paths with `pwd -P`, so comparisons against
+# $tmp must use the same form (macOS maps /var to /private/var).
+tmp="$(cd "$(mktemp -d)" && pwd -P)"
 trap 'rm -rf "$tmp"' EXIT
 
 repo="$tmp/repo"
@@ -14,6 +16,14 @@ infisical_log="$tmp/infisical.log"
 infisical_state="$tmp/infisical-authenticated"
 infisical_vault_state="$tmp/infisical-vault"
 mkdir -p "$repo" "$home" "$fake_bin"
+
+# script/link and script/check resolve their own roots with `pwd -P`. On
+# platforms where TMPDIR is itself a symlink (macOS /var -> private/var) the
+# recorded link targets use the physical path, so assertions must compare
+# against physical paths too.
+repo="$(cd "$repo" && pwd -P)"
+home="$(cd "$home" && pwd -P)"
+fake_bin="$(cd "$fake_bin" && pwd -P)"
 
 git -C "$source_root" archive HEAD | tar -x -C "$repo"
 git -C "$repo" init -q -b main
