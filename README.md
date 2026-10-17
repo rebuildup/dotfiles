@@ -39,7 +39,19 @@ Ubuntu/macOSではpc-setupがGit + miseを最小bootstrapし、その後miseが 
 irm https://raw.githubusercontent.com/rebuildup/pc-setup/main/bootstrap.ps1 | iex
 ```
 
-Windows machineのtool/application setupはmise + WinGetで進める。Windows nativeのdotfiles symlink adapterはまだcanonicalではないため、user-level dotfiles / agent configは現時点ではWSL側への適用をcanonicalとする。
+Windows machineのtool/application setupはmise + WinGetで進める。
+
+Windows nativeのdotfilesは `script/link.ps1` で**既存環境を壊さずに採用**する。Unix用 `script/link` の移植ではなく、既存の `.gitconfig` などを置換しない adoption-first の adapter:
+
+```powershell
+pwsh -NoProfile -File script/link.ps1          # plan のみ。何も変更しない
+pwsh -NoProfile -File script/link.ps1 -Apply   # target が存在しない entry だけ symlink
+```
+
+- 既存ファイルは置換・移動・削除しない。内容が同一なら `identical`、異なる/別先を指す symlink は `conflict` として手動マージ対象に残す(`-Apply` は conflict が残ると終了コード 1)。
+- symlink 権限が無い場合 (Developer Mode / 管理者が必要) は copy にフォールバックせず `error` を報告する。
+- symlink entry は git index (mode 120000) から読む。`core.symlinks=false` では plain file として checkout されるため。
+- 未初期化 submodule の unit (`.dsh`) と POSIX 専用 entry (`.local/bin/agent`, `.claude/statusline-command.sh`) は理由付きで skip する。Windows の agent は `script/agent.ps1` と `agent shortcuts create` を使う。
 
 ### Direct dotfiles recovery
 

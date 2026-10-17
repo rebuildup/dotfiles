@@ -56,3 +56,5 @@ jobs:
         run: bun script/agent.ts check
       - name: Test Windows layers (batch shims, .cmd shortcuts, PowerShell wrapper)
         run: bun test script/agent.test.ts script/agent.windows.test.ts
+      - name: Test Windows link adapter (adoption-first symlinks)
+        run: bun test script/link.windows.test.ts
