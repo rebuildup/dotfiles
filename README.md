@@ -146,7 +146,7 @@ Global Claude Code, Codex, and OpenCode repositories are pinned as sibling submo
 
 The Claude submodule is **active**: `home/.claude/settings.json` is a tracked symlink into `agents/claude/settings.json`, and `script/link` publishes it at `~/.claude/settings.json`. `home/` therefore contains both regular managed files and symlinks into the agent submodules, and `script/link` / `script/check` traverse both.
 
-Machine-specific Claude Code values stay out of the submodule. Herdr's `SessionStart` hook lives in the untracked `~/.claude/settings.local.json`, which Claude Code merges over the managed baseline.
+Machine-specific Claude Code values stay out of the submodule. Where the Herdr `SessionStart` hook should live is an open decision (ADR-0010 decision 3): Claude Code has no user-scope `settings.local.json` override.
 
 The Codex and OpenCode submodules are fetched but **not yet linked into active agent config paths**. Each remaining child repository must first be made cross-platform. Activation before that cleanup would make the same dotfiles commit behave differently across operating systems.
 
