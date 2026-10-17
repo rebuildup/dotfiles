@@ -391,7 +391,7 @@ test(
       [["bogus", "zen"], "unknown harness"],
       [["claude", "bogus"], "unknown provider"],
       [["dsh", "openrouter"], "available providers for 'dsh'"],
-      [["claude"], "missing provider"],
+      [["claude", "--model", "sonnet"], "requires a provider"],
       [["claude", "openrouter", "stray"], "unexpected argument"],
       [["claude", "openrouter", "--model"], "requires a value"],
     ];
@@ -1239,6 +1239,96 @@ models = ["@cf/meta/llama"]
       `@@cred: marker must still resolve, got '${env["ANTHROPIC_AUTH_TOKEN"]}'`,
     );
     check(!("ANTHROPIC_API_KEY" in env), "ANTHROPIC_API_KEY must be unset");
+  }),
+);
+
+test(
+  "test_native_provider_omitted_no_injection",
+  withFixture((fixture) => {
+    // `agent claude` = native mode: spawn the harness untouched.
+    const result = fixture.run(["claude"], { config: REAL_CONFIG });
+    check(result.exitCode === 0, `native run failed: ${result.stderr.toString()}`);
+    const [argv, env] = fixture.child();
+    // FAKE_HARNESS dumps its arguments only (no $0): bare `agent claude`
+    // passes nothing
+    check(argv.length === 0, `expected empty native argv, got: ${JSON.stringify(argv)}`);
+    check(!("ANTHROPIC_BASE_URL" in env), "native mode must not inject an endpoint");
+    check(!("ANTHROPIC_AUTH_TOKEN" in env), "native mode must not inject a credential");
+    check(!("ANTHROPIC_MODEL" in env), "native mode must not inject a model");
+    // no script/with-secrets stage either (no Infisical involvement)
+    check(!existsSync(fixture.marker), "native mode must not invoke with-secrets");
+  }),
+);
+
+test(
+  "test_native_passthrough_args",
+  withFixture((fixture) => {
+    // flag-first tail needs no '--'; '--' also works; both reach the harness
+    for (const args of [
+      ["claude", "-p", "hello world"],
+      ["claude", "--", "-p", "hello world"],
+    ]) {
+      const result = fixture.run(args, { config: REAL_CONFIG });
+      check(result.exitCode === 0, `${args.join(" ")}: ${result.stderr.toString()}`);
+      const [argv] = fixture.child();
+      // dump excludes $0: [-p, "hello world"]
+      check(
+        argv.length === 2 && argv[0] === "-p" && argv[1] === "hello world",
+        `${args.join(" ")}: argv mismatch: ${JSON.stringify(argv)}`,
+      );
+    }
+    // a non-flag second token stays a provider (typo fail-closed), not an arg
+    const typo = fixture.run(["claude", "run"], { config: REAL_CONFIG });
+    check(typo.exitCode === 2, `non-flag second token must stay a provider, got ${typo.exitCode}`);
+    check(typo.stderr.toString().includes("unknown provider"), typo.stderr.toString());
+  }),
+);
+
+test(
+  "test_native_forbidden_and_missing_harness",
+  withFixture((fixture) => {
+    // model flags still require a provider route, in either spelling
+    for (const args of [
+      ["claude", "--model", "sonnet"],
+      ["claude", "-m", "sonnet"],
+      ["claude", "--", "--model=sonnet"],
+      ["claude", "--", "--fallback-model=x"],
+    ]) {
+      const result = fixture.run(args, { config: REAL_CONFIG });
+      check(
+        result.exitCode === 2,
+        `${args.join(" ")} must exit 2, got ${result.exitCode}: ${result.stderr.toString()}`,
+      );
+      check(!existsSync(fixture.marker), `${args.join(" ")}: harness must not start`);
+    }
+    // unknown harness in native mode is still exit 2 with the known list
+    const unknown = fixture.run(["bogus"], { config: REAL_CONFIG });
+    check(unknown.exitCode === 2, `native unknown harness must exit 2, got ${unknown.exitCode}`);
+    check(unknown.stderr.toString().includes("unknown harness"), unknown.stderr.toString());
+    // missing binary → exit 1 (runtime), same contract as route mode
+    const ghost = join(fixture.tmp, "ghost.toml");
+    writeFileSync(
+      ghost,
+      `
+[providers.p1]
+label = "P1"
+default_model = "m1"
+
+[harnesses.ghost]
+label = "Ghost"
+command = "no-such-harness-binary-xyz"
+adapter = "passthrough"
+
+[routes."ghost.p1"]
+default_model = "m1"
+`,
+    );
+    const missing = fixture.run(["ghost"], { config: ghost });
+    check(
+      missing.exitCode === 1,
+      `missing harness must exit 1, got ${missing.exitCode}: ${missing.stderr.toString()}`,
+    );
+    check(missing.stderr.toString().includes("harness not found"), missing.stderr.toString());
   }),
 );
 });

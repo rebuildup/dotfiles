@@ -173,6 +173,21 @@ describeWin("agent launcher Windows layers", () => {
     }
   });
 
+  test("test_windows_native_provider_omitted", () => {
+    const fixture = new WinFixture();
+    try {
+      const result = fixture.run(["win", "-p", "hi"]);
+      check(result.exitCode === 0, `native run failed (exit ${result.exitCode}): ${result.stderr.toString()}`);
+      check(fixture.captured() === `-p hi`, `native argv mismatch: ${fixture.captured()}`);
+      // model flags still need a provider route, even on Windows
+      const model = fixture.run(["win", "--model", "x"]);
+      check(model.exitCode === 2, `--model without provider must exit 2, got ${model.exitCode}`);
+      check(model.stderr.toString().includes("requires a provider"), model.stderr.toString());
+    } finally {
+      fixture.clean();
+    }
+  });
+
   test("test_windows_batch_shim_rejects_unsafe_args", () => {
     const fixture = new WinFixture();
     try {

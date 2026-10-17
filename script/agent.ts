@@ -72,6 +72,7 @@ const LAUNCHER_BASENAME = basename(import.meta.path);
 const USAGE = `\
 usage:
   agent <harness> <provider> [--model <id>] [-- <harness args>...]
+  agent <harness> [-- <harness args>...]        # native: no provider, no injection
   <harness>-<provider> [<harness args>...]      # shortcut (agent shortcuts create)
   agent list
   agent models <provider>
@@ -105,6 +106,17 @@ shortcut form:
     --agent-model <id>        equals the route's --model <id> (this process
                               only; never persisted)
 
+native mode (provider omitted):
+  \`agent <harness>\` runs the harness natively: the environment is passed
+  through untouched — no endpoint, no model and no credential injection
+  (Claude Code uses its subscription login, opencode/pi their own account).
+  A leading flag or '--' passes harness arguments:
+    agent claude -p "say ok"
+    agent opencode -- run "explain this repo"
+  --model / -m still require a provider route (exit 2); use plain
+  \`<harness>\` when you want the harness's own model flags. A failing
+  route never falls back to native mode.
+
 run options:
   --model <id>, -m <id>      model for this process only (never persisted)
   --                         everything after it goes to the harness verbatim
@@ -122,6 +134,8 @@ examples:
   agent claude minimax -- -p "say ok"   # default MiniMax-M2.5 (--model overrides)
   agent pi openrouter -- -p "hello"
   agent dsh deepseek -- web
+  agent claude -p "say ok"              # native: subscription login, no injection
+  agent dsh -- web                      # native dsh (args after '--')
   opencode-zen -- run "explain this repo"   # shortcut form
   claude                       # plain claude keeps official native auth
 
@@ -886,6 +900,7 @@ type Action =
   | ["check"]
   | ["models", string]
   | ["shortcuts", string | null]
+  | ["native", string, string[]]
   | ["run", string, string, string | null, string[]];
 
 function parseArgs(argv: string[]): Action {
@@ -933,13 +948,26 @@ function parseArgs(argv: string[]): Action {
 
   const harnessKey = head;
   if (argv.length < 2) {
-    throw new AgentError(
-      `missing provider for harness '${harnessKey}'; ` +
-        `usage: agent ${harnessKey} <provider> [--model <id>] [-- <args>]`
-    );
+    // Provider omitted: native mode — run the harness untouched (no
+    // endpoint/model/credential injection; its own subscription/account).
+    return ["native", harnessKey, []];
   }
   if (argv[1] === "--help" || argv[1] === "-h" || argv[1] === "help") {
     return ["help"];
+  }
+  if (argv[1] === "--model" || argv[1] === "-m") {
+    throw new AgentError(
+      `--model requires a provider route: agent ${harnessKey} <provider> --model <id> ` +
+        "(native mode keeps the harness's own model selection)"
+    );
+  }
+  if (argv[1].startsWith("-")) {
+    // No provider name starts with '-': everything here belongs to the
+    // harness in native mode. '--' switches to verbatim passthrough;
+    // without it the whole tail is forwarded as-is.
+    const dashdash = argv.indexOf("--");
+    const passthru = dashdash >= 0 ? argv.slice(dashdash + 1) : argv.slice(1);
+    return ["native", harnessKey, passthru];
   }
   const providerKey = argv[1];
 
@@ -1367,16 +1395,24 @@ function usageText(): string {
   return USAGE.replace("{config_path}", configPath()).replace("{with_secrets}", withSecretsPath());
 }
 
-function selectRoute(config: Config, harnessKey: string, providerKey: string): [Harness, Provider, Route] {
+function requireHarness(config: Config, harnessKey: string): Harness {
   const harness = config.harnesses[harnessKey];
   if (!harness) {
     const known = Object.keys(config.harnesses).sort().join(", ");
     throw new AgentError(`unknown harness '${harnessKey}'; known harnesses: ${known}`);
   }
+  return harness;
+}
+
+function selectRoute(config: Config, harnessKey: string, providerKey: string): [Harness, Provider, Route] {
+  const harness = requireHarness(config, harnessKey);
   const provider = config.providers[providerKey];
   if (!provider) {
     const known = Object.keys(config.providers).sort().join(", ");
-    throw new AgentError(`unknown provider '${providerKey}'; known providers: ${known}`);
+    throw new AgentError(
+      `unknown provider '${providerKey}'; known providers: ${known}; ` +
+        "(harness arguments go after '--'; `agent <harness>` needs no provider)"
+    );
   }
   const route = config.routes[`${harnessKey}.${providerKey}`];
   if (!route) {
@@ -1432,6 +1468,32 @@ function cmdRunShortcut(config: Config, name: string, argv: string[]): Promise<n
   const [harnessKey, providerKey] = resolveShortcut(config, name);
   const { model, passthru } = parseShortcutArgs(argv);
   return cmdRun(config, harnessKey, providerKey, model, passthru);
+}
+
+function cmdRunNative(config: Config, harnessKey: string, passthru: string[]): Promise<number> {
+  // Native mode: no provider, no route, no Plan — the environment is passed
+  // through exactly as-is (nothing injected, filtered or unset), matching
+  // the contract of running the harness directly (subscription login,
+  // harness-owned auth/model), plus the launcher's resolution, argument
+  // guard and exit-code/signal handling.
+  const harness = requireHarness(config, harnessKey);
+  checkPassthru(passthru, harness);
+  console.error(
+    `${PROGRAM}: no provider given — running native '${harnessKey}' ` +
+      "(no endpoint/model/credential injection)"
+  );
+  const env: Record<string, string> = {};
+  for (const [name, value] of Object.entries(process.env)) {
+    if (value !== undefined) env[name] = value;
+  }
+  const resolvedCmd = which(harness.command, env["PATH"]);
+  if (!resolvedCmd) {
+    throw new AgentError(
+      `harness not found: ${harness.command} (install it via pc-setup/mise)`,
+      EXIT_RUNTIME
+    );
+  }
+  return runInherited(launchArgv(resolvedCmd, passthru, env), env);
 }
 
 function cmdList(config: Config): number {
@@ -1596,6 +1658,10 @@ async function main(argv: string[]): Promise<number> {
   }
   if (action[0] === "shortcuts") {
     return cmdShortcuts(config, action[1]);
+  }
+  if (action[0] === "native") {
+    const [, harnessKey, nativePassthru] = action;
+    return cmdRunNative(config, harnessKey, nativePassthru);
   }
   const [, harnessKey, providerKey, model, passthru] = action;
   return cmdRun(config, harnessKey, providerKey, model, passthru);

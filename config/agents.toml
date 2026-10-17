@@ -17,6 +17,10 @@
 #     failover. Unknown or unconfigured combinations fail fast with a
 #     message that lists the supported ones.
 #   - Plain `claude` (without `agent`) always keeps official native auth.
+#   - `agent <harness>` without a provider runs that harness NATIVELY:
+#     no route lookup and no environment injection whatsoever (the
+#     harness's own subscription/account auth). Model flags still need a
+#     provider route; a failed route never falls back to native.
 
 [defaults]
 # Environment names that must never reach a harness child process: either

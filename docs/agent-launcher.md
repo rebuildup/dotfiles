@@ -14,6 +14,9 @@ agent opencode zen                        # OpenCode on the free zen models
 agent opencode zen -- run "explain this repo"
 agent pi deepseek -- -p 'hello'
 agent dsh deepseek -- web                 # dsh keeps its own native auth
+agent claude -p 'say ok'                  # native mode: no provider at all —
+                                           # subscription login, zero injection
+agent opencode -- run "explain this repo"  # native opencode (own account)
 opencode-zen -- run "explain this repo"   # shortcut form of the line above it
 claude-minimax -p 'say ok'                # default MiniMax-M2.5; --agent-model overrides
 agent models deepseek                     # provider details + models
@@ -46,10 +49,22 @@ persistent write of a `--model` choice (`--model` affects one process).
 
 ```
 agent <harness> <provider> [--model <id>] [-- <harness args>...]
+agent <harness> [-- <harness args>...]     # native mode: provider omitted
 <harness>-<provider> [<harness args>...]      # shortcut form
 agent list | models <provider> | shortcuts [list|check|create|remove] | check | help
 ```
 
+- **Native mode (provider omitted)**: `agent <harness>` runs the harness
+  exactly as-is — the environment is passed through untouched: no endpoint,
+  no model and no credential injection, no `script/with-secrets` stage
+  (Claude Code uses its subscription login, opencode/pi their own account,
+  dsh its own auth). Harness arguments follow a leading flag or `--`
+  (`agent claude -p 'say ok'`, `agent opencode -- run …`); a non-flag
+  second token is still parsed as a provider, so typos keep failing closed
+  with exit 2. `--model`/`-m` still require a provider route (exit 2) —
+  use plain `<harness>` for the harness's own model flags. Route mode never
+  falls back to native mode on failure (and vice versa): both are explicit
+  choices only.
 - Everything after `--` is passed to the harness verbatim
   (`agent claude openrouter -- --help` asks the harness for help;
   `agent claude openrouter --help` shows this launcher's help).
