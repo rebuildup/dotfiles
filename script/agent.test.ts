@@ -357,7 +357,7 @@ test(
       !stdout.includes("--model required"),
       "every configured route must resolve a default model",
     );
-    check(stdout.includes("MiniMax-M3"), "minimax default missing");
+    check(stdout.includes("MiniMax-M3.1-Flash-Preview"), "minimax default missing");
     check(stdout.includes("mimo-v2.6-flash-free"), "zen default missing");
     check(stdout.includes("opencode-zen"), "shortcut names must be listed");
   }),
@@ -433,16 +433,19 @@ test(
   "test_minimax_default_model",
   withFixture((fixture) => {
     // no --model: the verified default applies (fail closed is kept by the
-    // models list — unknown ids are rejected before a process starts)
+    // models list — unknown ids are rejected before a process starts).
+    // claude.minimax inherits the provider default (M3.1-Flash-Preview);
+    // opencode.minimax keeps MiniMax-M3 as a route-level override because
+    // OpenCode v2 has no catalog entry for M3.1.
     const result = fixture.run(["claude", "minimax"], { config: REAL_CONFIG });
     check(result.exitCode === 0, result.stderr.toString());
     const [argv, env] = fixture.child();
     check(argv.length === 0, `argv ${JSON.stringify(argv)}`);
     check(env["ANTHROPIC_BASE_URL"] === "https://api.minimax.io/anthropic", JSON.stringify(env));
-    check(env["ANTHROPIC_MODEL"] === "MiniMax-M3", JSON.stringify(env));
-    check(env["ANTHROPIC_DEFAULT_OPUS_MODEL"] === "MiniMax-M3", JSON.stringify(env));
-    check(env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] === "MiniMax-M3", JSON.stringify(env));
-    check(env["ANTHROPIC_SMALL_FAST_MODEL"] === "MiniMax-M3", JSON.stringify(env));
+    check(env["ANTHROPIC_MODEL"] === "MiniMax-M3.1-Flash-Preview", JSON.stringify(env));
+    check(env["ANTHROPIC_DEFAULT_OPUS_MODEL"] === "MiniMax-M3.1-Flash-Preview", JSON.stringify(env));
+    check(env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] === "MiniMax-M3.1-Flash-Preview", JSON.stringify(env));
+    check(env["ANTHROPIC_SMALL_FAST_MODEL"] === "MiniMax-M3.1-Flash-Preview", JSON.stringify(env));
     // secret rename: Infisical MINIMAX_M_PLAN_KEY -> harness MINIMAX_API_KEY
     check(env["MINIMAX_API_KEY"] === "secret-minimax-plan", env["MINIMAX_API_KEY"]);
     check(
@@ -463,7 +466,9 @@ test(
     }
     check(existsSync(fixture.marker), "with-secrets wrapper was not used");
 
-    // --model still overrides the default for one process
+    // --model still overrides the default for one process (MiniMax-M3 stays
+    // explicitly selectable on every minimax route, even where it is no
+    // longer the default)
     const result2 = fixture.run(["claude", "minimax", "--model", "MiniMax-M3"], {
       config: REAL_CONFIG,
     });
@@ -477,6 +482,53 @@ test(
     });
     check(result3.exitCode === 2, "unknown minimax model must exit 2");
     check(result3.stderr.toString().includes("unknown model"), result3.stderr.toString());
+
+    // opencode.minimax keeps MiniMax-M3 as a route-level default because
+    // OpenCode v2 has no catalog entry for MiniMax-M3.1-Flash-Preview
+    const oc = fixture.run(["opencode", "minimax"], { config: REAL_CONFIG });
+    check(oc.exitCode === 0, oc.stderr.toString());
+    const [, envOc] = fixture.child();
+    const content = envOc["OPENCODE_CONFIG_CONTENT"];
+    check(typeof content === "string", `OPENCODE_CONFIG_CONTENT missing: ${JSON.stringify(envOc)}`);
+    const parsed = JSON.parse(content as string);
+    check(parsed.model === "minimax/MiniMax-M3", JSON.stringify(parsed));
+
+    // opencode.minimax rejects MiniMax-M3.1-Flash-Preview explicitly with
+    // exit 2 — the route's model list only contains ids the opencode client
+    // recognizes, so the launcher enforces fail-closed before any process
+    // starts (this is a regression test: the route used to advertise M3.1
+    // as selectable while silently falling back to zen).
+    const ocReject = fixture.run(
+      ["opencode", "minimax", "--model", "MiniMax-M3.1-Flash-Preview"],
+      { config: REAL_CONFIG },
+    );
+    check(ocReject.exitCode === 2, `M3.1 must exit 2 on opencode.minimax, got ${ocReject.exitCode}`);
+    check(
+      ocReject.stderr.toString().includes("unknown model"),
+      `expected 'unknown model' in stderr, got: ${ocReject.stderr.toString()}`,
+    );
+    check(
+      ocReject.stderr.toString().includes("MiniMax-M3.1-Flash-Preview"),
+      `expected the rejected id in stderr, got: ${ocReject.stderr.toString()}`,
+    );
+
+    // opencode.minimax still accepts explicit MiniMax-M3 (the verified id)
+    const ocM3 = fixture.run(["opencode", "minimax", "--model", "MiniMax-M3"], {
+      config: REAL_CONFIG,
+    });
+    check(ocM3.exitCode === 0, ocM3.stderr.toString());
+    const [, envOcM3] = fixture.child();
+    const parsedM3 = JSON.parse(envOcM3["OPENCODE_CONFIG_CONTENT"] as string);
+    check(parsedM3.model === "minimax/MiniMax-M3", JSON.stringify(parsedM3));
+
+    // pi.minimax inherits the provider default (M3.1-Flash-Preview)
+    const pi = fixture.run(["pi", "minimax"], { config: REAL_CONFIG });
+    check(pi.exitCode === 0, pi.stderr.toString());
+    const [argvPi, envPi] = fixture.child();
+    check(argvPi.includes("--provider"), `pi argv missing --provider: ${JSON.stringify(argvPi)}`);
+    check(argvPi.includes("minimax"), `pi argv missing provider id: ${JSON.stringify(argvPi)}`);
+    check(argvPi.includes("MiniMax-M3.1-Flash-Preview"), `pi argv missing model: ${JSON.stringify(argvPi)}`);
+    check(envPi["MINIMAX_API_KEY"] === "secret-minimax-plan", envPi["MINIMAX_API_KEY"]);
   }),
 );
 
