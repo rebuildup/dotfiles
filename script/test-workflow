@@ -42,6 +42,32 @@ EOF
 git -C "$repo" add home/.gitconfig
 git -C "$repo" commit -qm 'fixture: misplaced managed identity'
 
+# Materialize a shared Claude baseline inside the test repo. `git archive` does
+# not recurse into submodules, so `agents/claude/` arrives as an empty tree;
+# without this fixture, bootstrap fails the "shared Claude baseline missing"
+# pre-flight and the regression for the compose-before-check ordering cannot be
+# exercised.
+mkdir -p "$repo/agents/claude"
+cat > "$repo/agents/claude/settings.json" <<'EOF'
+{
+  "permissions": {
+    "defaultMode": "bypassPermissions",
+    "allow": ["Bash(git status)"]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "bash ~/.claude/statusline-command.sh"
+  },
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [{ "type": "command", "command": "shared-start" }] }
+    ]
+  }
+}
+EOF
+git -C "$repo" add agents/claude/settings.json
+git -C "$repo" commit -qm 'fixture: shared Claude baseline'
+
 cat > "$fake_bin/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -123,6 +149,37 @@ cat > "$home/.config/git/ignore" <<'EOF'
 *.local-only
 EOF
 
+# Pre-populate an unmanaged live ~/.claude/settings.json so the regression
+# covers the existing-HOME first-run path: an unmanaged file with a Herdr hook
+# and a machine-local overlay must be imported (not lost) when compose runs
+# before script/check.
+mkdir -p "$home/.claude"
+cat > "$home/.claude/settings.json" <<'EOF'
+{
+  "permissions": {
+    "defaultMode": "bypassPermissions",
+    "allow": ["Bash(git status)"]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "bash ~/.claude/statusline-command.sh"
+  },
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [{ "type": "command", "command": "shared-start" }] },
+      { "hooks": [{ "type": "command", "command": "herdr-session-start" }] }
+    ]
+  },
+  "localOnly": { "theme": "dark" }
+}
+EOF
+
+# Pin XDG_CONFIG_HOME alongside HOME so the Claude composer's overlay and
+# state file land under the test home instead of leaking to the runner user's
+# real ~/.config (CI Ubuntu defaults XDG_CONFIG_HOME to /home/runner/.config).
+# Exported once for both bootstrap runs and the post-rerun check.
+export XDG_CONFIG_HOME="$home/.config"
+
 HOME="$home" PATH="$fake_bin:$PATH" FAKE_GH_LOG="$gh_log" FAKE_GH_STATE="$gh_state" FAKE_INFISICAL_LOG="$infisical_log" FAKE_INFISICAL_STATE="$infisical_state" FAKE_INFISICAL_VAULT_STATE="$infisical_vault_state" WSL_DISTRO_NAME=Ubuntu DOTFILES_GIT_NAME='Fallback User' DOTFILES_GIT_EMAIL='fallback@example.invalid' DOTFILES_ALLOW_INTERACTIVE_AUTH=1 DOTFILES_SKIP_AGENT_SUBMODULES=1 "$repo/script/bootstrap"
 
 if [[ ! -L "$home/.gitconfig" || "$(readlink "$home/.gitconfig")" != "$repo/home/.gitconfig" ]]; then
@@ -198,6 +255,53 @@ if git config --file "$repo/home/.gitconfig" --get credential.https://github.com
   exit 1
 fi
 
+# Claude composition ran before script/check: the live file must now be a
+# regular file (not a symlink), the Herdr hook and machine-local overlay must
+# survive, the shared statusLine must be present, a pre-dotfiles backup of the
+# unmanaged live file must exist, and the imported overlay must carry the
+# Herdr hook. With the old check-before-compose ordering, script/check would
+# have aborted bootstrap with drift on ~/.claude/settings.json before any of
+# these could be true.
+if [[ -L "$home/.claude/settings.json" ]]; then
+  printf 'compose left ~/.claude/settings.json as a symlink instead of a regular file\n' >&2
+  exit 1
+fi
+if [[ ! -f "$home/.claude/settings.json" ]]; then
+  printf 'compose did not write ~/.claude/settings.json\n' >&2
+  exit 1
+fi
+
+composed_claude="$(cat "$home/.claude/settings.json")"
+case "$composed_claude" in
+  *herdr-session-start*) ;;
+  *) printf 'compose dropped the Herdr SessionStart hook from the live file\n' >&2; exit 1 ;;
+esac
+case "$composed_claude" in
+  *'bash ~/.claude/statusline-command.sh'*) ;;
+  *) printf 'compose dropped the shared statusLine from the live file\n' >&2; exit 1 ;;
+esac
+case "$composed_claude" in
+  *'"localOnly":'*) ;;
+  *) printf 'compose dropped the machine-local overlay from the live file\n' >&2; exit 1 ;;
+esac
+
+overlay_file="$home/.config/dotfiles/claude/settings.local.json"
+if [[ ! -f "$overlay_file" ]]; then
+  printf 'compose did not create the machine-local overlay at %s\n' "$overlay_file" >&2
+  exit 1
+fi
+if ! grep -Fq 'herdr-session-start' "$overlay_file"; then
+  printf 'compose did not import the Herdr SessionStart hook into the overlay\n' >&2
+  exit 1
+fi
+overlay_before="$(cat "$overlay_file")"
+
+claude_backups="$(find "$home/.claude" -maxdepth 1 -name 'settings.json.pre-dotfiles-*' -type f | wc -l)"
+if [[ "$claude_backups" -ne 1 ]]; then
+  printf 'compose did not create a single pre-dotfiles backup of the unmanaged live settings (got %s)\n' "$claude_backups" >&2
+  exit 1
+fi
+
 HOME="$home" PATH="$fake_bin:$PATH" FAKE_GH_LOG="$gh_log" FAKE_GH_STATE="$gh_state" FAKE_INFISICAL_LOG="$infisical_log" FAKE_INFISICAL_STATE="$infisical_state" FAKE_INFISICAL_VAULT_STATE="$infisical_vault_state" WSL_DISTRO_NAME=Ubuntu DOTFILES_ALLOW_INTERACTIVE_AUTH=1 DOTFILES_SKIP_AGENT_SUBMODULES=1 "$repo/script/bootstrap"
 
 if [[ "$(find "$home" -maxdepth 1 -name '.gitconfig.pre-dotfiles*' -type f | wc -l)" -ne 1 ]]; then
@@ -209,6 +313,33 @@ if [[ "$(find "$home/.config/git" -maxdepth 1 -name 'ignore.pre-dotfiles*' -type
   printf 'bootstrap created duplicate global-ignore migration backups on rerun\n' >&2
   exit 1
 fi
+
+# Rerun composition must be idempotent: no new pre-dotfiles backup, no change
+# to the live file, the overlay still carries the imported hook, and a
+# subsequent claude-settings check reports ok rather than drift.
+claude_backups_after="$(find "$home/.claude" -maxdepth 1 -name 'settings.json.pre-dotfiles-*' -type f | wc -l)"
+if [[ "$claude_backups_after" -ne 1 ]]; then
+  printf 'bootstrap created duplicate settings.json pre-dotfiles backups on rerun (got %s)\n' "$claude_backups_after" >&2
+  exit 1
+fi
+
+composed_claude_after="$(cat "$home/.claude/settings.json")"
+if [[ "$composed_claude_after" != "$composed_claude" ]]; then
+  printf 'compose rewrote ~/.claude/settings.json on rerun (was not idempotent)\n' >&2
+  exit 1
+fi
+
+overlay_after="$(cat "$overlay_file")"
+if [[ "$overlay_after" != "$overlay_before" ]]; then
+  printf 'compose rewrote the machine-local overlay on rerun (was not idempotent)\n' >&2
+  exit 1
+fi
+if ! grep -Fq 'herdr-session-start' "$overlay_file"; then
+  printf 'rerun lost the Herdr SessionStart hook from the overlay\n' >&2
+  exit 1
+fi
+
+HOME="$home" bun "$repo/script/claude-settings.ts" check >/dev/null
 
 expected_site='https://secrets.rebuildup.dev'
 expected_api='https://secrets.rebuildup.dev/api'
