@@ -2,7 +2,9 @@
 set -euo pipefail
 
 source_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-tmp="$(mktemp -d)"
+# Canonicalize: scripts resolve paths with `pwd -P`, so comparisons against
+# $tmp must use the same form (macOS maps /var to /private/var).
+tmp="$(cd "$(mktemp -d)" && pwd -P)"
 trap 'rm -rf "$tmp"' EXIT
 
 repo="$tmp/repo"
