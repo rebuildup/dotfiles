@@ -146,7 +146,7 @@ Global Claude Code, Codex, and OpenCode repositories are pinned as sibling submo
 
 The Claude submodule is **active**: `home/.claude/settings.json` is a tracked symlink into `agents/claude/settings.json`, and `script/link` publishes it at `~/.claude/settings.json`. `home/` therefore contains both regular managed files and symlinks into the agent submodules, and `script/link` / `script/check` traverse both.
 
-Machine-specific Claude Code values stay out of the submodule. Where the Herdr `SessionStart` hook should live is an open decision (ADR-0010 decision 3): Claude Code has no user-scope `settings.local.json` override.
+`~/.claude/settings.json` is generated, not a symlink: `script/claude-settings.ts` composes the shared `agents/claude/settings.json` with the machine-local overlay at `~/.config/dotfiles/claude/settings.local.json` (Herdr's hook lives there). Live-only values are imported into the overlay and the previous file is backed up before regeneration. See ADR-0010.
 
 The Codex and OpenCode submodules are fetched but **not yet linked into active agent config paths**. Each remaining child repository must first be made cross-platform. Activation before that cleanup would make the same dotfiles commit behave differently across operating systems.
 
@@ -246,6 +246,6 @@ The current common Git baseline includes:
 - [`ADR-0007`](docs/adr/ADR-0007.md) — WSL Infisical file-vault / bounded runtime validation
 - [`ADR-0008`](docs/adr/ADR-0008.md) — provider-neutral Claude common configuration / isolated providers
 - [`ADR-0009`](docs/adr/ADR-0009.md) — agent launcher in Bun + TypeScript (`agent <harness> <provider>`)
-- [`ADR-0010`](docs/adr/ADR-0010.md) — active Claude submodule via symlinked `home/` entry and machine-local `settings.local.json`
+- [`ADR-0010`](docs/adr/ADR-0010.md) — effective Claude settings composed from the shared submodule baseline and a machine-local overlay
 - [`ADR-0011`](docs/adr/ADR-0011.md) — one owner per global Agent Skill placement (dotfiles, app updaters, projects)
 - [`dotfiles survey`](docs/research/dotfiles-survey.md)

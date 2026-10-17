@@ -67,4 +67,9 @@ while IFS= read -r -d '' source; do
   printf 'ok      %s\n' "$target"
 done < <(sources)
 
+# Claude settings are generated, so verify the live file matches the composition.
+if command -v bun >/dev/null 2>&1; then
+  bun "$repo_root/script/claude-settings.ts" check || status=1
+fi
+
 exit "$status"

@@ -38,7 +38,7 @@ jobs:
           bun script/agent.ts models zen > /dev/null
           bun script/agent.ts shortcuts > /dev/null
       - name: Test agent launcher (mock harnesses)
-        run: bun test script/agent.test.ts
+        run: bun test script/agent.test.ts script/claude-settings.test.ts
       - name: Guard secret material
         run: ./script/check-secrets
 

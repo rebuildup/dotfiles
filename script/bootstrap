@@ -305,6 +305,15 @@ sync_agent_submodules
 "$repo_root/script/link"
 "$repo_root/script/check"
 
+# Compose the effective Claude settings from the shared baseline plus the
+# machine-local overlay. Live-only values (e.g. the Herdr hook) are imported
+# first and the previous file is backed up; nothing is overwritten silently.
+if command -v bun >/dev/null 2>&1; then
+  bun "$repo_root/script/claude-settings.ts" compose
+else
+  printf 'warning: bun not found; Claude settings not composed. Run: bun %s compose\n' "$repo_root/script/claude-settings.ts" >&2
+fi
+
 configure_infisical_vault
 
 if [[ ! -f "$infisical_config" ]]; then
