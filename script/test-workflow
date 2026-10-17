@@ -257,8 +257,9 @@ fi
 
 # Claude composition ran before script/check: the live file must now be a
 # regular file (not a symlink), the Herdr hook and machine-local overlay must
-# survive, the shared statusLine must be present, a pre-dotfiles backup of the
-# unmanaged live file must exist, and the imported overlay must carry the
+# survive, the shared statusLine must be present, a legacy backup of the
+# unmanaged live file must exist under the state directory (outside the
+# managed dotfiles repository), and the imported overlay must carry the
 # Herdr hook. With the old check-before-compose ordering, script/check would
 # have aborted bootstrap with drift on ~/.claude/settings.json before any of
 # these could be true.
@@ -296,9 +297,23 @@ if ! grep -Fq 'herdr-session-start' "$overlay_file"; then
 fi
 overlay_before="$(cat "$overlay_file")"
 
-claude_backups="$(find "$home/.claude" -maxdepth 1 -name 'settings.json.pre-dotfiles-*' -type f | wc -l)"
+claude_backups="$(find "$home/.config/dotfiles/claude" -maxdepth 1 -type d -name 'legacy-*' | wc -l | tr -d ' ')"
 if [[ "$claude_backups" -ne 1 ]]; then
-  printf 'compose did not create a single pre-dotfiles backup of the unmanaged live settings (got %s)\n' "$claude_backups" >&2
+  printf 'compose did not create a single legacy backup of the unmanaged live settings (got %s)\n' "$claude_backups" >&2
+  exit 1
+fi
+legacy_backup_dir="$(find "$home/.config/dotfiles/claude" -maxdepth 1 -type d -name 'legacy-*' -print -quit)"
+legacy_backup="$legacy_backup_dir/settings.json"
+if [[ ! -f "$legacy_backup" ]]; then
+  printf 'legacy backup dir %s has no settings.json inside it\n' "$legacy_backup_dir" >&2
+  exit 1
+fi
+if ! grep -q 'herdr-session-start' "$legacy_backup"; then
+  printf 'legacy backup of the unmanaged live settings did not preserve the Herdr hook\n' >&2
+  exit 1
+fi
+if ! grep -q 'localOnly' "$legacy_backup"; then
+  printf 'legacy backup of the unmanaged live settings did not preserve the machine-local overlay\n' >&2
   exit 1
 fi
 
@@ -314,12 +329,12 @@ if [[ "$(find "$home/.config/git" -maxdepth 1 -name 'ignore.pre-dotfiles*' -type
   exit 1
 fi
 
-# Rerun composition must be idempotent: no new pre-dotfiles backup, no change
+# Rerun composition must be idempotent: no new legacy backup, no change
 # to the live file, the overlay still carries the imported hook, and a
 # subsequent claude-settings check reports ok rather than drift.
-claude_backups_after="$(find "$home/.claude" -maxdepth 1 -name 'settings.json.pre-dotfiles-*' -type f | wc -l)"
+claude_backups_after="$(find "$home/.config/dotfiles/claude" -maxdepth 1 -type d -name 'legacy-*' | wc -l)"
 if [[ "$claude_backups_after" -ne 1 ]]; then
-  printf 'bootstrap created duplicate settings.json pre-dotfiles backups on rerun (got %s)\n' "$claude_backups_after" >&2
+  printf 'bootstrap created duplicate settings.json legacy backups on rerun (got %s)\n' "$claude_backups_after" >&2
   exit 1
 fi
 
@@ -411,9 +426,15 @@ if ! grep -Fq 'bypassPermissions' "$old_layout_home/.claude/settings.json"; then
   printf 'old-layout migration dropped the shared baseline\n' >&2
   exit 1
 fi
-old_layout_backups="$(find "$old_layout_home/.claude" -maxdepth 1 -name 'settings.json.pre-dotfiles-*' -type f | wc -l)"
+old_layout_backups="$(find "$old_layout_home/.config/dotfiles/claude" -maxdepth 1 -type d -name 'legacy-*' 2>/dev/null | wc -l)"
 if [[ "$old_layout_backups" -ne 0 ]]; then
   printf 'old-layout migration should not create a backup for a dangling symlink (got %s)\n' "$old_layout_backups" >&2
+  exit 1
+fi
+# Nothing must be left next to the live file in the old-layout home: backups
+# always live under the state directory, never beside ~/.claude/settings.json.
+if [[ -n "$(find "$old_layout_home/.claude" -maxdepth 1 \( -name 'settings.json.bak' -o -name 'settings.json.pre-dotfiles-*' \) -type f 2>/dev/null)" ]]; then
+  printf 'old-layout migration left a backup next to the live file in %s\n' "$old_layout_home/.claude" >&2
   exit 1
 fi
 
@@ -432,17 +453,33 @@ if [[ -L "$existing_layout_home/.claude/settings.json" ]]; then
   printf 'composer left the old-layout symlink in place when the target still exists\n' >&2
   exit 1
 fi
-existing_backups="$(find "$repo/home/.claude" -maxdepth 1 -name 'settings.json.pre-dotfiles-*' -type f)"
+existing_legacy_dir="$existing_layout_home/.config/dotfiles/claude"
+existing_backups="$(find "$existing_legacy_dir" -maxdepth 1 -type d -name 'legacy-*' 2>/dev/null)"
 if [[ -z "$existing_backups" ]]; then
-  printf 'composer did not back up the existing old-layout target file\n' >&2
+  printf 'composer did not back up the existing old-layout target file under %s\n' "$existing_legacy_dir" >&2
   exit 1
 fi
-if ! grep -Fq 'preserved-by-composer' "${existing_backups[0]}"; then
+legacy_backup_file="$existing_backups/settings.json"
+# find returns paths newline-separated; the first one is the only entry.
+legacy_backup_file="${existing_backups%%$'\n'*}/settings.json"
+if [[ ! -f "$legacy_backup_file" ]]; then
+  printf 'composer wrote a legacy dir but not a settings.json inside it\n' >&2
+  exit 1
+fi
+if ! grep -Fq 'preserved-by-composer' "$legacy_backup_file"; then
   printf 'backup did not preserve the user-customized old-layout content\n' >&2
   exit 1
 fi
+# The backup must live outside the managed dotfiles repository. Anything
+# left next to the old-layout target inside the repo would risk being
+# re-linked by script/link or accidentally committed.
+if [[ -n "$(find "$repo/home/.claude" -maxdepth 1 \( -name 'settings.json.bak' -o -name 'settings.json.pre-dotfiles-*' \) -type f 2>/dev/null)" ]]; then
+  printf 'composer left a backup inside the managed dotfiles repo at %s\n' "$repo/home/.claude" >&2
+  exit 1
+fi
 # Clean up the fixture so the test repo is reusable.
-rm -f "$repo/home/.claude/settings.json" "$repo/home/.claude"/settings.json.pre-dotfiles-*
+rm -f "$repo/home/.claude/settings.json"
+rm -rf "$existing_legacy_dir"/legacy-*
 
 printf 'legacy\n' > "$repo/.sops.yaml"
 git -C "$repo" add -f .sops.yaml
