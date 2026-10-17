@@ -493,6 +493,34 @@ test(
     const parsed = JSON.parse(content as string);
     check(parsed.model === "minimax/MiniMax-M3", JSON.stringify(parsed));
 
+    // opencode.minimax rejects MiniMax-M3.1-Flash-Preview explicitly with
+    // exit 2 — the route's model list only contains ids the opencode client
+    // recognizes, so the launcher enforces fail-closed before any process
+    // starts (this is a regression test: the route used to advertise M3.1
+    // as selectable while silently falling back to zen).
+    const ocReject = fixture.run(
+      ["opencode", "minimax", "--model", "MiniMax-M3.1-Flash-Preview"],
+      { config: REAL_CONFIG },
+    );
+    check(ocReject.exitCode === 2, `M3.1 must exit 2 on opencode.minimax, got ${ocReject.exitCode}`);
+    check(
+      ocReject.stderr.toString().includes("unknown model"),
+      `expected 'unknown model' in stderr, got: ${ocReject.stderr.toString()}`,
+    );
+    check(
+      ocReject.stderr.toString().includes("MiniMax-M3.1-Flash-Preview"),
+      `expected the rejected id in stderr, got: ${ocReject.stderr.toString()}`,
+    );
+
+    // opencode.minimax still accepts explicit MiniMax-M3 (the verified id)
+    const ocM3 = fixture.run(["opencode", "minimax", "--model", "MiniMax-M3"], {
+      config: REAL_CONFIG,
+    });
+    check(ocM3.exitCode === 0, ocM3.stderr.toString());
+    const [, envOcM3] = fixture.child();
+    const parsedM3 = JSON.parse(envOcM3["OPENCODE_CONFIG_CONTENT"] as string);
+    check(parsedM3.model === "minimax/MiniMax-M3", JSON.stringify(parsedM3));
+
     // pi.minimax inherits the provider default (M3.1-Flash-Preview)
     const pi = fixture.run(["pi", "minimax"], { config: REAL_CONFIG });
     check(pi.exitCode === 0, pi.stderr.toString());

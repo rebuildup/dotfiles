@@ -207,12 +207,14 @@ note = "Free zen models through the OpenCode client (free tier is client-bound).
 # OpenCode v2 silently ignores any id outside its built-in catalog for the
 # minimax provider and falls back to a zen free-tier default. MiniMax-M3.1-
 # Flash-Preview is NOT in that catalog, so the route keeps MiniMax-M3 as the
-# default and only verified ids the opencode client accepts appear here.
-# M3.1 is still selectable explicitly with --model for routes/clients that
-# do recognize it (e.g. pi with its custom-id passthrough).
+# default and only ids the opencode client actually recognizes appear in the
+# route's model list. The launcher enforces this fail-closed: any --model id
+# that is not in the route's model list is rejected with exit 2 before a
+# process starts, so MiniMax-M3.1-Flash-Preview cannot be reached through this
+# route even when passed explicitly.
 default_model = "MiniMax-M3"
 models = ["MiniMax-M3"]
-note = "OpenCode v2 has no built-in catalog entry for MiniMax-M3.1-Flash-Preview and silently falls back to zen; MiniMax-M3 is the verified default. --model MiniMax-M3.1-Flash-Preview stays accepted here but resolves to the same fallback."
+note = "OpenCode v2 has no built-in catalog entry for MiniMax-M3.1-Flash-Preview and silently falls back to zen; MiniMax-M3 is the verified default. The launcher rejects MiniMax-M3.1-Flash-Preview with exit 2 here because the route's model list only contains ids the opencode client actually recognizes."
 
 [routes."pi.openrouter"]
 

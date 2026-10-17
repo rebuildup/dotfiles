@@ -108,9 +108,10 @@ Every route additionally gets a short command name — `opencode-zen`,
   Messages-API-verified `MiniMax-M3.1-Flash-Preview` (reasoning is always
   on; effort defaults to `max`), `opencode.minimax` keeps the verified
   `MiniMax-M3` as a route-level default because OpenCode v2 silently
-  ignores `MiniMax-M3.1-Flash-Preview`, and any other id (notably
-  `MiniMax-M3`) is selectable with `--agent-model`/`--model`. Ids outside
-  the TOML model list fail closed.
+  ignores `MiniMax-M3.1-Flash-Preview`, and on the `claude.minimax` and
+  `pi.minimax` routes the other verified id (`MiniMax-M3`) is selectable
+  with `--agent-model`/`--model`. Ids outside the per-route model list
+  fail closed (exit 2 before any process starts).
 
 Link management lives in the launcher and is driven by the same TOML:
 
@@ -263,7 +264,7 @@ arrives, and every other provider's credential does not.
 | harness \ provider | zen | openrouter | deepseek | minimax |
 | --- | --- | --- | --- | --- |
 | claude | — (no Anthropic-compatible endpoint verified; zen free tier is client-bound: pi got `403 … only … within OpenCode`) | yes, default `z-ai/glm-5.3-flash` | yes, default `deepseek-flash` (route list: `deepseek-flash` only, because the endpoint silently remaps unknown names) | yes, default `MiniMax-M3.1-Flash-Preview` (Messages-API verified; reasoning always on; effort defaults to `max`) |
-| opencode | yes, default `mimo-v2.6-flash-free` (free models; `opencode_id = "opencode"`) | yes | yes | yes, route default `MiniMax-M3` (OpenCode v2 has no built-in catalog entry for `MiniMax-M3.1-Flash-Preview` and silently falls back to zen — keep M3 as the verified route default) |
+| opencode | yes, default `mimo-v2.6-flash-free` (free models; `opencode_id = "opencode"`) | yes | yes | yes, route default `MiniMax-M3` (route model list `["MiniMax-M3"]` only; OpenCode v2 has no built-in catalog entry for `MiniMax-M3.1-Flash-Preview` and silently falls back to zen — keep M3 as the verified route default; `--model MiniMax-M3.1-Flash-Preview` exits 2 here) |
 | pi | — (free tier refused outside OpenCode) | yes | yes | yes, default `MiniMax-M3.1-Flash-Preview` (pi warns "not in catalog" and passes the id through) |
 | dsh | — | — | passthrough (native dsh auth; install + `--version` verified, live session pending DeepSeek balance) | — |
 
