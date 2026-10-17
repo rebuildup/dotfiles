@@ -45,8 +45,16 @@ if ($bindingObject.workspaceId -ne $projectId) {
     exit 1
 }
 
-if (-not (Get-Command infisical -ErrorAction SilentlyContinue)) {
+# Only infisical.exe is accepted. A .cmd/.bat shim cannot pass arguments such
+# as & | % faithfully through cmd.exe, so it fails closed instead of running.
+$infisicalCommand = Get-Command infisical -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+if (-not $infisicalCommand) {
     [Console]::Error.WriteLine('missing required command: infisical (install it via pc-setup)')
+    exit 1
+}
+$infisicalPath = $infisicalCommand.Source
+if ([IO.Path]::GetExtension($infisicalPath) -ne '.exe') {
+    [Console]::Error.WriteLine("infisical must resolve to infisical.exe; refusing '$infisicalPath' (.cmd/.bat shims are not supported)")
     exit 1
 }
 
@@ -57,5 +65,5 @@ $env:INFISICAL_API_URL = $apiUrl
 # PS 7.3+ passes array elements faithfully; older versions only. Harmless
 # assignment where the variable is unknown (Windows PowerShell 5.1).
 $PSNativeCommandArgumentPassing = 'Standard'
-& infisical run "--projectId=$projectId" "--env=$environment" "--project-config-dir=$repoRoot" -- @args
+& $infisicalPath run "--projectId=$projectId" "--env=$environment" "--project-config-dir=$repoRoot" -- @args
 exit $LASTEXITCODE

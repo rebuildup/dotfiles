@@ -138,6 +138,20 @@ function makeFakeRepo(tmp: string, workspaceId: string): string {
   return repo;
 }
 
+// Compiles the test double into a real infisical.exe, so the exe-only path is
+// exercised with a native executable rather than a batch shim.
+function buildInfisicalStub(dir: string): void {
+  const built = Bun.spawnSync([
+    process.execPath,
+    "build",
+    "--compile",
+    join(REPO, "script", "test-fixtures", "infisical-stub.ts"),
+    "--outfile",
+    join(dir, "infisical.exe"),
+  ]);
+  check(built.exitCode === 0, `failed to build infisical stub: ${built.stderr.toString()}`);
+}
+
 const PWSH = Bun.which("pwsh") || "pwsh";
 
 function runPs1(script: string, args: string[], env: Record<string, string | undefined>) {
@@ -251,19 +265,14 @@ describeWin("agent launcher Windows layers", () => {
     try {
       const realWorkspace = JSON.parse(readFileSync(join(REPO, ".infisical.json"), "utf8")).workspaceId;
       const repo = makeFakeRepo(tmp, realWorkspace);
-
-      // fake infisical records its environment and argv
       const bin = join(tmp, "bin");
       mkdirSync(bin, { recursive: true });
-      const capture = join(tmp, "infisical-capture.txt");
-      writeFileSync(
-        join(bin, "infisical.cmd"),
-        `@echo off\r\n> "%CAPTURE_FILE%" echo URL=%INFISICAL_API_URL% ARGS=%*\r\n`,
-      );
+      const capture = join(tmp, "infisical-capture.json");
+      buildInfisicalStub(bin);
 
       const result = runPs1(
         join(repo, "script", "with-secrets.ps1"),
-        ["echo", "hello", "two words"],
+        ["echo", "hello", "two words", "& echo injected"],
         {
           ...withPath(process.env, `${bin};${process.env.Path || process.env.PATH || ""}`),
           CAPTURE_FILE: capture,
@@ -272,33 +281,52 @@ describeWin("agent launcher Windows layers", () => {
         },
       );
       check(result.exitCode === 0, `wrapper failed (exit ${result.exitCode}): ${result.stderr.toString()}`);
-      const captured = readFileSync(capture, "utf8").replace(/\r\n/g, " ").trim();
+      const captured = JSON.parse(readFileSync(capture, "utf8")) as { url: string; argv: string[] };
+      check(captured.url === SELF_HOST_API_URL, `wrapper must pin the self-hosted API URL, got: ${captured.url}`);
       check(
-        captured.includes(`URL=${SELF_HOST_API_URL}`),
-        `wrapper must pin the self-hosted API URL, got: ${captured}`,
-      );
-      check(!captured.includes("cloud.infisical.com"), "ambient Cloud URL leaked into infisical");
-      for (const token of [
-        `--projectId=${realWorkspace}`,
-        "--env=dev",
-        "--project-config-dir=",
-        "hello",
-      ]) {
-        check(captured.includes(token), `infisical argv lost ${token}, got: ${captured}`);
-      }
-      // literal `--` separator between infisical flags and the command
-      const argsTail = captured.split("ARGS=")[1] ?? "";
-      check(
-        /(?:^|\s)--(?:\s|$)/.test(argsTail),
-        `infisical lost the '--' separator, got: ${captured}`,
-      );
-      // "two words" must be one argument at the end of the tail
-      check(
-        /hello\s+"?two words"?\s*$/.test(captured),
-        `two words was not one argv element, got: ${captured}`,
+        JSON.stringify(captured.argv) ===
+          JSON.stringify([
+            "run",
+            `--projectId=${realWorkspace}`,
+            "--env=dev",
+            `--project-config-dir=${repo}`,
+            "--",
+            "echo",
+            "hello",
+            "two words",
+            "& echo injected",
+          ]),
+        `infisical argv mismatch: ${JSON.stringify(captured.argv)}`,
       );
     } finally {
       rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("test_windows_with_secrets_ps1_rejects_cmd_and_bat_shims", () => {
+    for (const shim of ["infisical.cmd", "infisical.bat"]) {
+      const tmp = mkdtempSync(join(tmpdir(), "agent-ps1-test-"));
+      try {
+        const realWorkspace = JSON.parse(readFileSync(join(REPO, ".infisical.json"), "utf8")).workspaceId;
+        const repo = makeFakeRepo(tmp, realWorkspace);
+        const bin = join(tmp, "bin");
+        mkdirSync(bin, { recursive: true });
+        const capture = join(tmp, "infisical-capture.json");
+        writeFileSync(join(bin, shim), `@echo off\r\n> "%CAPTURE_FILE%" echo ran\r\n`);
+
+        const result = runPs1(join(repo, "script", "with-secrets.ps1"), ["echo", "x"], {
+          ...withPath(process.env, `${bin};${process.env.Path || process.env.PATH || ""}`),
+          CAPTURE_FILE: capture,
+        });
+        check(result.exitCode === 1, `${shim} must fail closed, got exit ${result.exitCode}`);
+        check(
+          result.stderr.toString().includes("must resolve to infisical.exe"),
+          `${shim}: expected exe-only error, got: ${result.stderr.toString()}`,
+        );
+        check(!existsSync(capture), `${shim} must never be executed`);
+      } finally {
+        rmSync(tmp, { recursive: true, force: true });
+      }
     }
   });
 
