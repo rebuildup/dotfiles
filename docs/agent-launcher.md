@@ -225,8 +225,11 @@ shortcut names would collide.
   warning and passes them through (its catalog is shown by
   `pi --list-models`).
 - **passthrough (dsh)**: argv only, plus the provider credential env;
-  `--model` is rejected (dsh selects its model natively). dsh is not
-  installed on the development machine and is explicitly unverified.
+  `--model` is rejected (dsh selects its model natively). dsh is installed
+  machine-wide through mise (`npm:@deepseek-ai/dsh`, pinned because every
+  upstream version is a prerelease); the route is verified up to
+  `agent dsh deepseek -- --version` (Infisical injection, exit 0). A live
+  DeepSeek session stays unverified until the account balance allows it.
 
 ## Credential handling (no leakage, no argv secrets)
 
@@ -258,7 +261,7 @@ arrives, and every other provider's credential does not.
 | claude | — (no Anthropic-compatible endpoint verified; zen free tier is client-bound: pi got `403 … only … within OpenCode`) | yes, default `z-ai/glm-5.3-flash` | yes, default `deepseek-flash` (route list: `deepseek-flash` only, because the endpoint silently remaps unknown names) | yes, default `MiniMax-M2.5` (verified; other ids via `--model`) |
 | opencode | yes, default `mimo-v2.6-flash-free` (free models; `opencode_id = "opencode"`) | yes | yes | yes, default `MiniMax-M2.5` |
 | pi | — (free tier refused outside OpenCode) | yes | yes | yes, default `MiniMax-M2.5` |
-| dsh | — | — | passthrough (native dsh auth, unverified) | — |
+| dsh | — | — | passthrough (native dsh auth; install + `--version` verified, live session pending DeepSeek balance) | — |
 
 Not covered on purpose: `opencode`/`pi` on other providers, paid zen
 models (add them to the TOML deliberately), and any automatic fallback
