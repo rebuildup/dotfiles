@@ -156,7 +156,7 @@ One common global instruction source will be linked to:
 - `~/.codex/AGENTS.md`
 - `~/.config/opencode/AGENTS.md`
 
-See [ADR-0005](docs/adr/ADR-0005.md).
+See [ADR-0005](docs/adr/ADR-0005.md). Global Skills that an app installs and updates itself, such as Orca's stubs, stay owned by that app ([ADR-0009](docs/adr/ADR-0009.md)).
 
 ## Secret model
 
@@ -232,4 +232,5 @@ The current common Git baseline includes:
 - [`ADR-0005`](docs/adr/ADR-0005.md) — sibling agent-config submodules and shared portable assets
 - [`ADR-0006`](docs/adr/ADR-0006.md) — self-hosted Infisical control plane
 - [`ADR-0007`](docs/adr/ADR-0007.md) — WSL Infisical file-vault / bounded runtime validation
+- [`ADR-0009`](docs/adr/ADR-0009.md) — one owner per global Agent Skill placement (dotfiles, app updaters, projects)
 - [`dotfiles survey`](docs/research/dotfiles-survey.md)
