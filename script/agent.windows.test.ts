@@ -283,19 +283,17 @@ describeWin("agent launcher Windows layers", () => {
       check(result.exitCode === 0, `wrapper failed (exit ${result.exitCode}): ${result.stderr.toString()}`);
       const captured = JSON.parse(readFileSync(capture, "utf8")) as { url: string; argv: string[] };
       check(captured.url === SELF_HOST_API_URL, `wrapper must pin the self-hosted API URL, got: ${captured.url}`);
+      // The wrapper reports the resolved repo path, which can differ from the
+      // path the test created (Windows short/long names), so match its suffix.
+      const [configDir, ...rest] = captured.argv.slice(3);
       check(
-        JSON.stringify(captured.argv) ===
-          JSON.stringify([
-            "run",
-            `--projectId=${realWorkspace}`,
-            "--env=dev",
-            `--project-config-dir=${repo}`,
-            "--",
-            "echo",
-            "hello",
-            "two words",
-            "& echo injected",
-          ]),
+        captured.argv[0] === "run" &&
+          captured.argv[1] === `--projectId=${realWorkspace}` &&
+          captured.argv[2] === "--env=dev" &&
+          configDir?.startsWith("--project-config-dir=") &&
+          configDir.endsWith("fake-repo") &&
+          JSON.stringify(rest) ===
+            JSON.stringify(["--", "echo", "hello", "two words", "& echo injected"]),
         `infisical argv mismatch: ${JSON.stringify(captured.argv)}`,
       );
     } finally {
