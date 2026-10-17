@@ -11,28 +11,41 @@ status=0
 # a submodule pinned under agents/ reachable from $HOME while $HOME/<name> is
 # still a symlink to the pinned checkout. Every other file keeps the original
 # per-file symlink behaviour.
-unit_names=""
+unit_names=()
 
 shopt -s nullglob dotglob
 for entry in "$source_root"/*; do
   [[ -e "$entry" || -L "$entry" ]] || continue
   if [[ -L "$entry" || -e "$entry/.git" ]]; then
-    unit_names+=" $(basename "$entry")"
+    unit_names+=("$(basename "$entry")")
   fi
 done
 shopt -u nullglob dotglob
+
+# Exact-name membership. Names may contain spaces, so they are never
+# word-split or substring-matched.
+is_unit_name() {
+  local candidate="$1" name
+  [[ ${#unit_names[@]} -gt 0 ]] || return 1
+  for name in "${unit_names[@]}"; do
+    [[ "$name" == "$candidate" ]] && return 0
+  done
+  return 1
+}
 
 # Emit every managed source: whole-directory units first so a parent exists
 # before any per-file source lands inside it, then the remaining files.
 sources() {
   local name source relative first
-  for name in $unit_names; do
-    printf '%s\0' "$source_root/$name"
-  done
+  if [[ ${#unit_names[@]} -gt 0 ]]; then
+    for name in "${unit_names[@]}"; do
+      printf '%s\0' "$source_root/$name"
+    done
+  fi
   while IFS= read -r -d '' source; do
     relative="${source#"$source_root"/}"
     first="${relative%%/*}"
-    [[ " $unit_names " == *" $first "* ]] && continue
+    is_unit_name "$first" && continue
     printf '%s\0' "$source"
   done < <(find "$source_root" -type f -print0)
 }
