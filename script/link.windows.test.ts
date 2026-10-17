@@ -49,6 +49,14 @@ function makeRepo(root: string, { initSubmodule }: { initSubmodule: boolean }) {
   return repo;
 }
 
+/** Windows env names are case-insensitive: drop every PATH spelling before setting one. */
+function envWithPath(path: string) {
+  const env: Record<string, string> = {};
+  for (const [k, v] of Object.entries(process.env)) if (k.toLowerCase() !== "path" && v !== undefined) env[k] = v;
+  env.Path = path;
+  return env;
+}
+
 function link(repo: string, home: string, ...extra: string[]) {
   return run(["pwsh", "-NoProfile", "-File", LINK_PS1, "-RepoRoot", repo, "-HomeDir", home, ...extra]);
 }
@@ -162,7 +170,7 @@ describeWin("link.ps1 (Windows adoption adapter)", () => {
       mkdirSync(home);
       const pwsh = Bun.which("pwsh")!;
       const r = Bun.spawnSync(["pwsh", "-NoProfile", "-File", LINK_PS1, "-RepoRoot", repo, "-HomeDir", home], {
-        env: { ...process.env, PATH: dirname(pwsh) }, stdout: "pipe", stderr: "pipe",
+        env: envWithPath(dirname(pwsh)), stdout: "pipe", stderr: "pipe",
       });
       expect(r.exitCode).toBe(1);
       expect(r.stderr.toString()).toContain("cannot read managed entries");
