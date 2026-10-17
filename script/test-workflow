@@ -390,6 +390,60 @@ if HOME="$home" PATH="$fake_bin:$PATH" FAKE_INFISICAL_LOG="$infisical_log" FAKE_
   exit 1
 fi
 
+# Old-layout migration: a pre-0.3.0 install left a symlink from
+# ~/.claude/settings.json to <repo>/home/.claude/settings.json. The
+# composer must unlink the dangling symlink and write a fresh composed
+# file rather than aborting with drift.
+old_layout_home="$tmp/old-layout-home"
+mkdir -p "$old_layout_home/.claude"
+ln -s "$repo/home/.claude/settings.json" "$old_layout_home/.claude/settings.json"
+XDG_CONFIG_HOME="$old_layout_home/.config" HOME="$old_layout_home" bun "$repo/script/claude-settings.ts" compose >/dev/null
+
+if [[ -L "$old_layout_home/.claude/settings.json" ]]; then
+  printf 'composer left the old-layout symlink in place after migration\n' >&2
+  exit 1
+fi
+if [[ ! -f "$old_layout_home/.claude/settings.json" ]]; then
+  printf 'composer did not write a fresh settings.json after old-layout migration\n' >&2
+  exit 1
+fi
+if ! grep -Fq 'bypassPermissions' "$old_layout_home/.claude/settings.json"; then
+  printf 'old-layout migration dropped the shared baseline\n' >&2
+  exit 1
+fi
+old_layout_backups="$(find "$old_layout_home/.claude" -maxdepth 1 -name 'settings.json.pre-dotfiles-*' -type f | wc -l)"
+if [[ "$old_layout_backups" -ne 0 ]]; then
+  printf 'old-layout migration should not create a backup for a dangling symlink (got %s)\n' "$old_layout_backups" >&2
+  exit 1
+fi
+
+# Old-layout migration with an existing target: the user has been editing
+# the old-layout file through the symlink. The composer must back the
+# target file aside before unlinking so the user's customizations survive.
+existing_layout_home="$tmp/existing-layout-home"
+mkdir -p "$existing_layout_home/.claude" "$repo/home/.claude"
+cat > "$repo/home/.claude/settings.json" <<'EOF'
+{ "userCustomized": "preserved-by-composer" }
+EOF
+ln -s "$repo/home/.claude/settings.json" "$existing_layout_home/.claude/settings.json"
+XDG_CONFIG_HOME="$existing_layout_home/.config" HOME="$existing_layout_home" bun "$repo/script/claude-settings.ts" compose >/dev/null
+
+if [[ -L "$existing_layout_home/.claude/settings.json" ]]; then
+  printf 'composer left the old-layout symlink in place when the target still exists\n' >&2
+  exit 1
+fi
+existing_backups="$(find "$repo/home/.claude" -maxdepth 1 -name 'settings.json.pre-dotfiles-*' -type f)"
+if [[ -z "$existing_backups" ]]; then
+  printf 'composer did not back up the existing old-layout target file\n' >&2
+  exit 1
+fi
+if ! grep -Fq 'preserved-by-composer' "${existing_backups[0]}"; then
+  printf 'backup did not preserve the user-customized old-layout content\n' >&2
+  exit 1
+fi
+# Clean up the fixture so the test repo is reusable.
+rm -f "$repo/home/.claude/settings.json" "$repo/home/.claude"/settings.json.pre-dotfiles-*
+
 printf 'legacy\n' > "$repo/.sops.yaml"
 git -C "$repo" add -f .sops.yaml
 

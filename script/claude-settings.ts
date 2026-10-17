@@ -19,6 +19,7 @@ import {
   lstatSync,
   mkdirSync,
   readFileSync,
+  readlinkSync,
   realpathSync,
   renameSync,
   unlinkSync,
@@ -72,10 +73,19 @@ export function merge(base: Json, overlay: Json): Json {
 
 // The part of `live` that the shared baseline does not already express.
 // undefined means live adds nothing beyond shared.
+//
+// `statusLine` is never a live-only addition: tools that hook into Claude Code
+// (Orca, Herdr, etc.) sometimes rewrite the live statusLine for their own
+// notifications. The canonical value comes from the shared baseline or the
+// machine-local overlay; rewriting the live file should not transfer that
+// rewrite into the overlay.
+const PROTECTED_KEYS = new Set(["statusLine"]);
+
 export function extras(shared: Json | undefined, live: Json): Json | undefined {
   if (isObj(live)) {
     const out: Obj = {};
     for (const [k, v] of Object.entries(live)) {
+      if (PROTECTED_KEYS.has(k)) continue;
       if (!isObj(shared) || !(k in shared)) {
         out[k] = v;
         continue;
@@ -122,6 +132,11 @@ export interface Plan {
   overlayAfter?: Json; // set when the overlay must change
   backupNeeded?: boolean;
   replaceSymlink?: boolean;
+  // Absolute path of a symlink target that should be copied aside before the
+  // symlink is removed. Used when the symlink points at an old dotfiles
+  // layout file (e.g. <repo>/home/.claude/settings.json) that may still
+  // exist on disk and could carry user-customised content.
+  backupSymlinkTarget?: string;
 }
 
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");
@@ -161,6 +176,7 @@ export function plan(paths: Paths): Plan {
   let overlayAfter: Json | undefined;
   let backupNeeded = false;
   let replaceSymlink = false;
+  let backupSymlinkTarget: string | undefined;
 
   let stat: ReturnType<typeof lstatSync> | undefined;
   try {
@@ -170,20 +186,44 @@ export function plan(paths: Paths): Plan {
   }
 
   if (stat?.isSymbolicLink()) {
-    // A symlink is only replaceable when it points at the shared baseline
-    // (the earlier direct-link layout). Any other symlink is not ours.
+    // Three kinds of symlink are replaceable:
+    //   1. points at the shared baseline (the earlier direct-link layout)
+    //   2. points at, or used to point at, the old dotfiles layout
+    //      <repo>/home/.claude/settings.json — that file no longer exists
+    //      in dotfiles but pre-0.3.0 installations left a symlink behind.
+    //   3. dangling symlink whose textual target was under that old layout.
+    // Any other target is foreign; moving it aside is the operator's call.
+    const linkText = readlinkSync(paths.target);
     let real: string | undefined;
     try {
       real = realpathSync(paths.target);
     } catch {
       real = undefined;
     }
-    if (real !== realpathSync(paths.shared)) {
+    // agents/claude/settings.json → agents/claude → agents → repo (3 hops)
+    const repoRoot = resolve(paths.shared, "..", "..", "..");
+    const oldLayoutRoot = join(repoRoot, "home", ".claude");
+    const isUnder = (path: string): boolean => {
+      if (path === oldLayoutRoot) return true;
+      return path.startsWith(`${oldLayoutRoot}/`);
+    };
+    const absLinkText = resolve(dirname(paths.target), linkText);
+    const isOldLayout =
+      (real !== undefined && isUnder(real)) || isUnder(absLinkText);
+    const isSharedBaseline = real !== undefined && real === realpathSync(paths.shared);
+
+    if (!isSharedBaseline && !isOldLayout) {
       throw new Error(
-        `${paths.target} is a symlink to ${real ?? "a missing path"}, not the shared baseline; move it aside manually`,
+        `${paths.target} is a symlink to ${linkText}${real === undefined ? " (target missing)" : ""}; move it aside manually before composing`,
       );
     }
+
     replaceSymlink = true;
+    // For old-layout targets that still exist, copy the underlying file aside
+    // before unlinking so any user-customised content survives the migration.
+    if (isOldLayout && real !== undefined) {
+      backupSymlinkTarget = real;
+    }
   } else if (stat?.isFile()) {
     const text = readFileSync(paths.target, "utf8");
     const live = readJsonFile(paths.target, "live settings");
@@ -223,6 +263,7 @@ export function plan(paths: Paths): Plan {
     overlayAfter,
     backupNeeded,
     replaceSymlink,
+    backupSymlinkTarget,
   };
 }
 
@@ -245,8 +286,16 @@ export function compose(paths: Paths): string[] {
     actions.push(`overlay ${paths.overlay} (imported live-only settings)`);
   }
   if (p.replaceSymlink) {
+    // Back the old-layout target aside first if it still exists, so any
+    // user-customised content there survives the symlink removal.
+    if (p.backupSymlinkTarget) {
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+      const backup = `${p.backupSymlinkTarget}.pre-dotfiles-${stamp}`;
+      copyFileSync(p.backupSymlinkTarget, backup, constants.COPYFILE_EXCL);
+      actions.push(`backup  ${p.backupSymlinkTarget} -> ${backup}`);
+    }
     unlinkSync(paths.target);
-    actions.push(`unlink  ${paths.target} (old shared-baseline symlink)`);
+    actions.push(`unlink  ${paths.target} (replaced old-layout symlink)`);
   } else if (p.backupNeeded) {
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
     const backup = `${paths.target}.pre-dotfiles-${stamp}`;
