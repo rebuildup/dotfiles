@@ -32,9 +32,9 @@ Project-wide delivery, authority, evidence, and review rules follow the current 
 
 project-init 由来の Agent Skills は **project-local** に管理し、global install を canonical にしない。
 
-- 初回導入 / 全体 reconcile: `bunx skills add rebuildup/project-init --skill '*' --agent claude-code opencode codex -y`
-- fresh clone から lock を復元: `bunx skills experimental_install`
-- 継続更新: `bunx skills update -p -y`
+- 初回導入 / 全体 reconcile: `bunx skills@1.7.0 add rebuildup/project-init --skill '*' --agent claude-code opencode codex -y`
+- fresh clone から lock を復元: `bunx skills@1.7.0 experimental_install`
+- 継続更新: `bunx skills@1.7.0 update -p -y`
 - `skills-lock.json` は `skills` CLI が生成・更新する source/freshness metadata として commit する。手で hash / source entry を捏造しない。
 - upstream-managed Skill 本文は手編集しない。project 固有の refinement / override は別の project-local Skill、adapter、ADR、docs に置き、次回 update で上書きされない構造にする。
 - update 後は Git diff と applicable quality gate を確認し、upstream 更新を無条件に current project policy とみなさない。

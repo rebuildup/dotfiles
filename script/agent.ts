@@ -131,7 +131,7 @@ examples:
   agent opencode zen
   agent opencode zen -- run "explain this repo"
   agent claude deepseek -- -p "say ok"
-  agent claude minimax -- -p "say ok"   # default MiniMax-M2.5 (--model overrides)
+  agent claude minimax -- -p "say ok"   # default MiniMax-M3 (--model overrides)
   agent pi openrouter -- -p "hello"
   agent dsh deepseek -- web
   agent claude -p "say ok"              # native: subscription login, no injection
@@ -963,10 +963,9 @@ function parseArgs(argv: string[]): Action {
   }
   if (argv[1].startsWith("-")) {
     // No provider name starts with '-': everything here belongs to the
-    // harness in native mode. '--' switches to verbatim passthrough;
-    // without it the whole tail is forwarded as-is.
-    const dashdash = argv.indexOf("--");
-    const passthru = dashdash >= 0 ? argv.slice(dashdash + 1) : argv.slice(1);
+    // harness in native mode. Only a '--' as the first harness token is a
+    // separator; any later '--' is forwarded with the rest of the tail.
+    const passthru = argv[1] === "--" ? argv.slice(2) : argv.slice(1);
     return ["native", harnessKey, passthru];
   }
   const providerKey = argv[1];

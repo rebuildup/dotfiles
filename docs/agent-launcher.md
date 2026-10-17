@@ -9,7 +9,7 @@ exactly one API provider, chosen explicitly at launch:
 agent list                                # configured routes
 agent claude openrouter                   # Claude Code via OpenRouter
 agent claude deepseek -- -p 'say ok'      # Claude Code via DeepSeek
-agent claude minimax -- -p 'say ok'      # default MiniMax-M2.5; --model overrides
+agent claude minimax -- -p 'say ok'      # default MiniMax-M3; --model overrides
 agent opencode zen                        # OpenCode on the free zen models
 agent opencode zen -- run "explain this repo"
 agent pi deepseek -- -p 'hello'
@@ -18,7 +18,7 @@ agent claude -p 'say ok'                  # native mode: no provider at all —
                                            # subscription login, zero injection
 agent opencode -- run "explain this repo"  # native opencode (own account)
 opencode-zen -- run "explain this repo"   # shortcut form of the line above it
-claude-minimax -p 'say ok'                # default MiniMax-M2.5; --agent-model overrides
+claude-minimax -p 'say ok'                # default MiniMax-M3; --agent-model overrides
 agent models deepseek                     # provider details + models
 agent check                               # validate the config (CI runs this)
 agent shortcuts                           # shortcut names derived from the routes
@@ -105,7 +105,7 @@ Every route additionally gets a short command name — `opencode-zen`,
   `dsh` remain the official binaries with their own auth; short names only
   ever add new commands, never wrap an existing one.
 - **MiniMax** keeps its contract: the default is the machine-verified
-  `MiniMax-M2.5`, any other id needs `--agent-model`/`--model`, and ids
+  `MiniMax-M3`, any other id needs `--agent-model`/`--model`, and ids
   outside the TOML model list fail closed.
 
 Link management lives in the launcher and is driven by the same TOML:
@@ -258,9 +258,9 @@ arrives, and every other provider's credential does not.
 
 | harness \ provider | zen | openrouter | deepseek | minimax |
 | --- | --- | --- | --- | --- |
-| claude | — (no Anthropic-compatible endpoint verified; zen free tier is client-bound: pi got `403 … only … within OpenCode`) | yes, default `z-ai/glm-5.3-flash` | yes, default `deepseek-flash` (route list: `deepseek-flash` only, because the endpoint silently remaps unknown names) | yes, default `MiniMax-M2.5` (verified; other ids via `--model`) |
-| opencode | yes, default `mimo-v2.6-flash-free` (free models; `opencode_id = "opencode"`) | yes | yes | yes, default `MiniMax-M2.5` |
-| pi | — (free tier refused outside OpenCode) | yes | yes | yes, default `MiniMax-M2.5` |
+| claude | — (no Anthropic-compatible endpoint verified; zen free tier is client-bound: pi got `403 … only … within OpenCode`) | yes, default `z-ai/glm-5.3-flash` | yes, default `deepseek-flash` (route list: `deepseek-flash` only, because the endpoint silently remaps unknown names) | yes, default `MiniMax-M3` (verified; other ids via `--model`) |
+| opencode | yes, default `mimo-v2.6-flash-free` (free models; `opencode_id = "opencode"`) | yes | yes | yes, default `MiniMax-M3` |
+| pi | — (free tier refused outside OpenCode) | yes | yes | yes, default `MiniMax-M3` |
 | dsh | — | — | passthrough (native dsh auth; install + `--version` verified, live session pending DeepSeek balance) | — |
 
 Not covered on purpose: `opencode`/`pi` on other providers, paid zen

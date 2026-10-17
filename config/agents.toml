@@ -67,8 +67,10 @@ env = "OPENROUTER_API_KEY"
 default_model = "z-ai/glm-5.3-flash"
 models = [
   "z-ai/glm-5.3-flash",
+  "z-ai/glm-5.3",
   "deepseek/deepseek-v4.1-flash",
   "deepseek/deepseek-v4-flash",
+  "deepseek/deepseek-v4-pro",
 ]
 
 [providers.deepseek]
@@ -89,7 +91,7 @@ env = "MINIMAX_API_KEY"
 # still has to be chosen explicitly with --model: a model name on the provider
 # website does not prove this account/plan may use it, and unknown ids fail
 # closed against the list below before a process starts.
-default_model = "MiniMax-M2.5"
+default_model = "MiniMax-M3"
 models = [
   "MiniMax-M3.1-Flash-Preview",
   "MiniMax-M3",
@@ -116,11 +118,11 @@ opencode_id = "opencode"
 models = [
   "mimo-v2.6-flash-free",
   "big-pickle",
-  "cat-jam-free",
+  "beam-free",
+  "jev-1.13-free",
   "deepseek-v4.1-flash-free",
+  "glm-5.3-flash-free",
   "longcat-2.5-preview-free",
-  "muse-spark-1.3-contributor-free",
-  "nemotron-3-ultra-free",
   "nemotron-3.5-lightning-free",
   "nemotron-3.5-super-vl-free",
   "space-bunny-free",
@@ -183,7 +185,7 @@ models = ["deepseek-flash"]
 note = "Anthropic-compatible endpoint; claude-* aliases are deliberately not exposed."
 
 [routes."claude.minimax"]
-note = "Default is the verified MiniMax-M2.5; M Plan entitlement is account-specific, so pick any other id with --model."
+note = "Default is the verified MiniMax-M3; M Plan entitlement is account-specific, so pick any other id with --model."
 
 [routes."opencode.zen"]
 note = "Free zen models through the OpenCode client (free tier is client-bound)."
@@ -193,7 +195,7 @@ note = "Free zen models through the OpenCode client (free tier is client-bound).
 [routes."opencode.deepseek"]
 
 [routes."opencode.minimax"]
-note = "Default is the verified MiniMax-M2.5; M Plan entitlement is account-specific, so pick any other id with --model."
+note = "Default is the verified MiniMax-M3; M Plan entitlement is account-specific, so pick any other id with --model."
 
 [routes."pi.openrouter"]
 
@@ -201,7 +203,7 @@ note = "Default is the verified MiniMax-M2.5; M Plan entitlement is account-spec
 note = "pi warns for ids outside its built-in catalog and passes them through."
 
 [routes."pi.minimax"]
-note = "Default is the verified MiniMax-M2.5; M Plan entitlement is account-specific, so pick any other id with --model."
+note = "Default is the verified MiniMax-M3; M Plan entitlement is account-specific, so pick any other id with --model."
 
 [routes."dsh.deepseek"]
 note = "Passthrough: dsh keeps its own native DeepSeek provider and auth (unverified here)."

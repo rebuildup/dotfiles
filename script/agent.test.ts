@@ -357,7 +357,7 @@ test(
       !stdout.includes("--model required"),
       "every configured route must resolve a default model",
     );
-    check(stdout.includes("MiniMax-M2.5"), "minimax default missing");
+    check(stdout.includes("MiniMax-M3"), "minimax default missing");
     check(stdout.includes("mimo-v2.6-flash-free"), "zen default missing");
     check(stdout.includes("opencode-zen"), "shortcut names must be listed");
   }),
@@ -439,10 +439,10 @@ test(
     const [argv, env] = fixture.child();
     check(argv.length === 0, `argv ${JSON.stringify(argv)}`);
     check(env["ANTHROPIC_BASE_URL"] === "https://api.minimax.io/anthropic", JSON.stringify(env));
-    check(env["ANTHROPIC_MODEL"] === "MiniMax-M2.5", JSON.stringify(env));
-    check(env["ANTHROPIC_DEFAULT_OPUS_MODEL"] === "MiniMax-M2.5", JSON.stringify(env));
-    check(env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] === "MiniMax-M2.5", JSON.stringify(env));
-    check(env["ANTHROPIC_SMALL_FAST_MODEL"] === "MiniMax-M2.5", JSON.stringify(env));
+    check(env["ANTHROPIC_MODEL"] === "MiniMax-M3", JSON.stringify(env));
+    check(env["ANTHROPIC_DEFAULT_OPUS_MODEL"] === "MiniMax-M3", JSON.stringify(env));
+    check(env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] === "MiniMax-M3", JSON.stringify(env));
+    check(env["ANTHROPIC_SMALL_FAST_MODEL"] === "MiniMax-M3", JSON.stringify(env));
     // secret rename: Infisical MINIMAX_M_PLAN_KEY -> harness MINIMAX_API_KEY
     check(env["MINIMAX_API_KEY"] === "secret-minimax-plan", env["MINIMAX_API_KEY"]);
     check(
@@ -1277,6 +1277,14 @@ test(
         `${args.join(" ")}: argv mismatch: ${JSON.stringify(argv)}`,
       );
     }
+    // a later '--' is forwarded with the tail, not used as the separator
+    const laterDashes = fixture.run(["claude", "-p", "x", "--", "--weird"], { config: REAL_CONFIG });
+    check(laterDashes.exitCode === 0, `later '--' run failed: ${laterDashes.stderr.toString()}`);
+    const [laterArgv] = fixture.child();
+    check(
+      JSON.stringify(laterArgv) === JSON.stringify(["-p", "x", "--", "--weird"]),
+      `later '--' must not drop earlier args: ${JSON.stringify(laterArgv)}`,
+    );
     // a non-flag second token stays a provider (typo fail-closed), not an arg
     const typo = fixture.run(["claude", "run"], { config: REAL_CONFIG });
     check(typo.exitCode === 2, `non-flag second token must stay a provider, got ${typo.exitCode}`);
@@ -1299,7 +1307,7 @@ test(
         result.exitCode === 2,
         `${args.join(" ")} must exit 2, got ${result.exitCode}: ${result.stderr.toString()}`,
       );
-      check(!existsSync(fixture.marker), `${args.join(" ")}: harness must not start`);
+      check(!existsSync(fixture.out), `${args.join(" ")}: harness must not start`);
     }
     // unknown harness in native mode is still exit 2 with the known list
     const unknown = fixture.run(["bogus"], { config: REAL_CONFIG });
