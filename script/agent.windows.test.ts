@@ -26,16 +26,14 @@ const SELF_HOST_API_URL = "https://secrets.rebuildup.dev/api";
 
 const describeWin = process.platform !== "win32" ? describe.skip : describe;
 
-/** Captures argv as "[a] [b]" (quotes stripped, boundaries preserved). */
+/**
+ * Captures the raw command tail (`%*`) into a file. Using `%*` instead of
+ * accumulating `%1`..`%n` keeps the original quoting intact, so quoted
+ * metacharacters (`"& ..."`, `"(...)"`, quoted paths) stay protected when
+ * cmd parses the capture line itself.
+ */
 const ARGV_CAPTURE = `@echo off
-setlocal
-set "line="
-:loop
-if "%~1"=="" goto done
-if defined line (set "line=%line% [%~1]") else (set "line=[%~1]")
-shift
-goto loop
-:done
+> "%AGENT_TEST_OUT%" echo %*
 `;
 
 const WIN_CONFIG = `
@@ -63,7 +61,7 @@ class WinFixture {
     this.bindir = join(this.tmp, "bin");
     mkdirSync(this.bindir, { recursive: true });
     this.out = join(this.tmp, "child.txt");
-    writeFileSync(join(this.bindir, "winpassthru.cmd"), ARGV_CAPTURE + `echo ARGV %line%> "%AGENT_TEST_OUT%"\r\n`);
+    writeFileSync(join(this.bindir, "winpassthru.cmd"), ARGV_CAPTURE);
     this.config = join(this.tmp, "config.toml");
     writeFileSync(this.config, WIN_CONFIG);
   }
@@ -159,8 +157,10 @@ describeWin("agent launcher Windows layers", () => {
       // single literal arguments — the shim must not re-parse them.
       const result = fixture.run(["win", "p1", "--", "alpha", "a b", "& echo injected", "(x)", "end"]);
       check(result.exitCode === 0, `run failed (exit ${result.exitCode}): ${result.stderr.toString()}`);
+      // The launcher quotes metacharacter args itself; %* preserves that
+      // exact command tail, so the expected string is deterministic.
       check(
-        fixture.captured() === "ARGV [alpha] [a b] [& echo injected] [(x)] [end]",
+        fixture.captured() === `alpha "a b" "& echo injected" "(x)" end`,
         `unexpected argv capture: ${fixture.captured()}`,
       );
       // exactly one line: "& echo injected" was quoted, never executed
@@ -212,7 +212,9 @@ describeWin("agent launcher Windows layers", () => {
       // Execute the generated entry point through cmd.exe; the route name in
       // argv must dispatch to the stub harness with intact arguments.
       if (existsSync(fixture.out)) rmSync(fixture.out);
-      const runEnv = fixture.env({ AGENT_TEST_CMD: `""${link}" one "two three""` });
+      // cmd's double-quote idiom only applies to a raw /c operand; through
+      // env-var expansion the plain quoted form is what parses correctly.
+      const runEnv = fixture.env({ AGENT_TEST_CMD: `"${link}" one "two three"` });
       const run = Bun.spawnSync({
         cmd: ["cmd.exe", "/d", "/c", "%AGENT_TEST_CMD%"],
         env: runEnv,
@@ -221,7 +223,7 @@ describeWin("agent launcher Windows layers", () => {
       });
       check(run.exitCode === 0, `generated .cmd failed (exit ${run.exitCode}): ${run.stderr.toString()}`);
       check(
-        fixture.captured() === "ARGV [one] [two three]",
+        fixture.captured() === `one "two three"`,
         `shortcut exec argv mismatch: ${fixture.captured()}`,
       );
     } finally {
@@ -241,7 +243,7 @@ describeWin("agent launcher Windows layers", () => {
       const capture = join(tmp, "infisical-capture.txt");
       writeFileSync(
         join(bin, "infisical.cmd"),
-        ARGV_CAPTURE + `> "%CAPTURE_FILE%" echo URL=%INFISICAL_API_URL% ARGS=%line%\r\n`,
+        `@echo off\r\n> "%CAPTURE_FILE%" echo URL=%INFISICAL_API_URL% ARGS=%*\r\n`,
       );
 
       const result = runPs1(
@@ -261,9 +263,25 @@ describeWin("agent launcher Windows layers", () => {
         `wrapper must pin the self-hosted API URL, got: ${captured}`,
       );
       check(!captured.includes("cloud.infisical.com"), "ambient Cloud URL leaked into infisical");
-      for (const token of ["[run]", "[--env=dev]", "[--]", "[echo]", "[hello]", "[two words]"]) {
+      for (const token of [
+        `--projectId=${realWorkspace}`,
+        "--env=dev",
+        "--project-config-dir=",
+        "hello",
+      ]) {
         check(captured.includes(token), `infisical argv lost ${token}, got: ${captured}`);
       }
+      // literal `--` separator between infisical flags and the command
+      const argsTail = captured.split("ARGS=")[1] ?? "";
+      check(
+        /(?:^|\s)--(?:\s|$)/.test(argsTail),
+        `infisical lost the '--' separator, got: ${captured}`,
+      );
+      // "two words" must be one argument at the end of the tail
+      check(
+        /hello\s+"?two words"?\s*$/.test(captured),
+        `two words was not one argv element, got: ${captured}`,
+      );
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
