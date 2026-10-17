@@ -294,7 +294,7 @@ differs is which entry-point layer was exercised on a real machine):
 | --- | --- | --- | --- | --- |
 | macOS | verified (real routes) | verified (`ps` name recovery) | verified | n/a |
 | WSL/Linux | unverified on a real machine yet (post-merge step) | unverified (`/proc/self/cmdline` path not yet exercised) | unverified | n/a |
-| Windows native | CI-verified only (windows-latest job: batch-shim argv/injection/`%`+`"` rejection, `.cmd` shortcut create+exec, `with-secrets.ps1` workspaceId/API-URL pinning) | n/a (`.cmd` used instead) | unverified (no real machine) | CI-verified (PowerShell 7 on windows-latest); **real machine unverified** |
+| Windows native | CI-verified only (windows-latest job: batch-shim argv/injection/`%`+`"` rejection, `.cmd` shortcut create+exec, `with-secrets.ps1` workspaceId/API-URL pinning) | n/a (`.cmd` used instead) | unverified (no real machine) | CI-verified (PowerShell 7 on windows-latest); real machine (2026-10-17, PowerShell 7.6): `agent.ps1 list/check`, `with-secrets.ps1` injection and `bun test script/agent.windows.test.ts` verified; **shortcut creation and interactive harness start still unverified** |
 
 ## Installation and migration (replaces the draft mise tasks)
 
