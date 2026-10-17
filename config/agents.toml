@@ -87,13 +87,14 @@ label = "MiniMax (M Plan)"
 base_url = "https://api.minimax.io/anthropic"
 secret = "MINIMAX_M_PLAN_KEY"
 env = "MINIMAX_API_KEY"
-# The default is the id verified on the real machine (M Plan). Anything else
-# still has to be chosen explicitly with --model: a model name on the provider
-# website does not prove this account/plan may use it, and unknown ids fail
-# closed against the list below before a process starts.
+# Model ids below are the ones GET /anthropic/v1/models returned for this
+# account (snapshot 2026-10-17). Ids that appear only in the provider's docs
+# are NOT listed: MiniMax-M3.1-Flash-Preview is documented but was absent from
+# this account's list, so it is unverified and fails closed until verified.
+# The default is the newest verified id. Unknown ids fail closed before a
+# process starts.
 default_model = "MiniMax-M3"
 models = [
-  "MiniMax-M3.1-Flash-Preview",
   "MiniMax-M3",
   "MiniMax-M2.7",
   "MiniMax-M2.7-highspeed",
