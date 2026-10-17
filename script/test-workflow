@@ -17,6 +17,14 @@ infisical_state="$tmp/infisical-authenticated"
 infisical_vault_state="$tmp/infisical-vault"
 mkdir -p "$repo" "$home" "$fake_bin"
 
+# script/link and script/check resolve their own roots with `pwd -P`. On
+# platforms where TMPDIR is itself a symlink (macOS /var -> private/var) the
+# recorded link targets use the physical path, so assertions must compare
+# against physical paths too.
+repo="$(cd "$repo" && pwd -P)"
+home="$(cd "$home" && pwd -P)"
+fake_bin="$(cd "$fake_bin" && pwd -P)"
+
 git -C "$source_root" archive HEAD | tar -x -C "$repo"
 git -C "$repo" init -q -b main
 git -C "$repo" config user.name 'Test Committer'
