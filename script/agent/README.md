@@ -26,9 +26,9 @@ A provider entrypoint:
 ## What does NOT go here
 
 - Login-shell global exports. The `~/.bashrc`-level exports belong in
-  the user's host, not in this repository. Interactive shells may
-  delegate `claude` through `config/agent-init.bash` without exporting
-  provider URL / model / credential state.
+  the user's host, not in this repository. Interactive shells source
+  `config/agent-init.bash`, which exports no provider URL, model, or
+  credential state.
 - Provider-specific Claude Code values that masquerade as `ANTHROPIC_*`
   canonical names in the common layer. If a downstream consumer expects
   `ANTHROPIC_AUTH_TOKEN`, the provider wrapper remaps it after
@@ -55,8 +55,12 @@ script/agent/mimo claude -p 'say ok'
 script/agent/minimax claude --version
 ```
 
-Interactive shells that source `config/agent-init.bash` may call
-`claude` directly; the function delegates to `script/agent/mimo`.
+`config/agent-init.bash` no longer wraps `claude`: plain `claude` is the
+native CLI with its official login. These per-provider entrypoints remain
+available as explicit, provider-tuned wrappers (ADR-0008). For the general
+cross-provider route table (OpenRouter / DeepSeek / MiniMax / Zen across
+Claude Code, OpenCode, Pi and DSH) use the unified `agent` launcher; see
+`docs/agent-launcher.md`.
 
 ## Migration to a future provider
 

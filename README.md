@@ -132,6 +132,12 @@ Canonical binding:
 
 A new machine reuses this binding. Normal setup only needs user authentication against the self-hosted instance; `infisical init` is not part of the normal bootstrap.
 
+## Agent launcher (`agent`)
+
+The native `claude` command keeps the official Claude Code login and is never wrapped, aliased or overridden. Routes to other API providers (OpenRouter, DeepSeek, MiniMax, OpenCode Zen) are explicit and opt-in through the unified `agent` launcher: one declarative config (`config/agents.toml`), one thin Bun/TypeScript implementation (`script/agent.ts`, linked to `~/.local/bin/agent` by `script/link`; PowerShell entry `script/agent.ps1` on Windows) that reads the TOML with `Bun.TOML.parse()`, builds a filtered process-scoped environment through the existing Infisical wrapper (`script/with-secrets`, or `script/with-secrets.ps1` on Windows) and starts the native harness CLI. Short `<harness>-<provider>` commands (e.g. `opencode-zen`) derive from the same routes.
+
+See [agent launcher](docs/agent-launcher.md). For example `agent list`, `agent claude deepseek -- -p 'say ok'`, `agent opencode zen` or plain `agent claude` (native mode: no provider, no injection).
+
 ## Agent configuration
 
 Global Claude Code, Codex, and OpenCode repositories are pinned as sibling submodules under `agents/`. A fresh clone does not need `--recurse-submodules`: `script/bootstrap` authenticates GitHub, stores the GitHub credential helper in machine-local `~/.gitconfig.local`, links the stable global Git config, then initializes the exact commits recorded by the parent repository.

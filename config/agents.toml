@@ -1,0 +1,207 @@
+# config/agents.toml — declarative harness/provider routes for the unified
+# `agent` launcher (script/agent.ts, run by Bun).
+#
+# This file is the source of truth for providers (endpoint, credential
+# secret/env names, models), harnesses (command, adapter) and routes
+# (which harness may start which provider). Adding or changing a model,
+# endpoint, credential mapping or route is a TOML edit only; the launcher
+# source hardcodes none of them.
+#
+# Security rules:
+#   - Never store secret VALUES here, only Infisical secret NAMES.
+#   - Credentials are injected process-scoped through the existing
+#     script/with-secrets (self-hosted Infisical, project binding tracked,
+#     environment `dev`). The launcher filters the injected environment so
+#     only the selected provider's credential reaches the harness process.
+#   - No implicit provider switching, no silent model fallback, no quota
+#     failover. Unknown or unconfigured combinations fail fast with a
+#     message that lists the supported ones.
+#   - Plain `claude` (without `agent`) always keeps official native auth.
+#   - `agent <harness>` without a provider runs that harness NATIVELY:
+#     no route lookup and no environment injection whatsoever (the
+#     harness's own subscription/account auth). Model flags still need a
+#     provider route; a failed route never falls back to native.
+
+[defaults]
+# Environment names that must never reach a harness child process: either
+# they are Infisical secrets of other providers, or the launcher re-derives
+# them itself. A name the current route keeps (provider secret/env) always
+# wins over this list. Variables injected by script/with-secrets that are not
+# in the route's keep set are dropped regardless of this list.
+drop_env = [
+  # Claude adapter protocol vars (re-derived per route)
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
+  "ANTHROPIC_BASE_URL",
+  "ANTHROPIC_MODEL",
+  "ANTHROPIC_SMALL_FAST_MODEL",
+  "ANTHROPIC_DEFAULT_OPUS_MODEL",
+  "ANTHROPIC_DEFAULT_SONNET_MODEL",
+  "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+  "CLAUDE_CODE_SUBAGENT_MODEL",
+  # Credential names of every provider known here, including legacy names
+  "DEEPSEEK_API_KEY",
+  "MIMO_API_KEY",
+  "MINIMAX_API_KEY",
+  "MINIMAX_M_PLAN_KEY",
+  "MINIMAX_TOKEN_PLAN_KEY",
+  "OPENCODE_API_KEY",
+  "OPENROUTER_API_KEY",
+  # Launcher/Infisical material, not harness material
+  "INFISICAL_TOKEN",
+  "INFISICAL_ACCESS_TOKEN",
+]
+
+# ---------------------------------------------------------------------------
+# Providers: endpoint + credential + model catalog (provider-native ids).
+# ---------------------------------------------------------------------------
+
+[providers.openrouter]
+label = "OpenRouter"
+# Anthropic-compatible endpoint, used by the claude adapter.
+base_url = "https://openrouter.ai/api"
+# Infisical secret name in environment `dev`.
+secret = "OPENROUTER_API_KEY"
+# Environment variable the harness itself reads (same name here).
+env = "OPENROUTER_API_KEY"
+default_model = "z-ai/glm-5.3-flash"
+models = [
+  "z-ai/glm-5.3-flash",
+  "deepseek/deepseek-v4.1-flash",
+  "deepseek/deepseek-v4-flash",
+]
+
+[providers.deepseek]
+label = "DeepSeek"
+base_url = "https://api.deepseek.com/anthropic"
+secret = "DEEPSEEK_API_KEY"
+env = "DEEPSEEK_API_KEY"
+default_model = "deepseek-flash"
+# Verified live native ids (deepseek-chat / deepseek-reasoner retired 2026-07-24).
+models = ["deepseek-flash", "deepseek-v4-pro"]
+
+[providers.minimax]
+label = "MiniMax (M Plan)"
+base_url = "https://api.minimax.io/anthropic"
+secret = "MINIMAX_M_PLAN_KEY"
+env = "MINIMAX_API_KEY"
+# The default is the id verified on the real machine (M Plan). Anything else
+# still has to be chosen explicitly with --model: a model name on the provider
+# website does not prove this account/plan may use it, and unknown ids fail
+# closed against the list below before a process starts.
+default_model = "MiniMax-M2.5"
+models = [
+  "MiniMax-M3.1-Flash-Preview",
+  "MiniMax-M3",
+  "MiniMax-M2.7",
+  "MiniMax-M2.7-highspeed",
+  "MiniMax-M2.5",
+  "MiniMax-M2.5-highspeed",
+  "MiniMax-M2.1",
+  "MiniMax-M2.1-highspeed",
+  "MiniMax-M2",
+]
+
+[providers.zen]
+label = "OpenCode Zen"
+# No Anthropic-compatible endpoint is verified for zen, so there is no
+# `claude` route for it: zen free-tier models answer only inside OpenCode
+# clients (verified: 403 from pi).
+secret = "OPENCODE_API_KEY"
+env = "OPENCODE_API_KEY"
+default_model = "mimo-v2.6-flash-free"
+# OpenCode addresses this provider as `opencode` (provider-native id differs
+# from this route key); the adapter prefixes `<opencode_id>/<model>`.
+opencode_id = "opencode"
+models = [
+  "mimo-v2.6-flash-free",
+  "big-pickle",
+  "cat-jam-free",
+  "deepseek-v4.1-flash-free",
+  "longcat-2.5-preview-free",
+  "muse-spark-1.3-contributor-free",
+  "nemotron-3-ultra-free",
+  "nemotron-3.5-lightning-free",
+  "nemotron-3.5-super-vl-free",
+  "space-bunny-free",
+]
+
+# ---------------------------------------------------------------------------
+# Harnesses: native command + adapter that knows how to select a provider.
+# ---------------------------------------------------------------------------
+
+[harnesses.claude]
+label = "Claude Code"
+command = "claude"
+adapter = "anthropic"
+
+[harnesses.opencode]
+label = "OpenCode"
+command = "opencode"
+adapter = "opencode"
+
+[harnesses.pi]
+label = "Pi"
+command = "pi"
+adapter = "pi"
+
+[harnesses.dsh]
+label = "DeepSeek Harness (dsh)"
+command = "dsh"
+adapter = "passthrough"
+
+# Claude adapter environment names (Claude Code's own protocol contract).
+# These are names, never values; values are derived at launch time.
+[harnesses.claude.env]
+base_url = "ANTHROPIC_BASE_URL"
+auth_token = "ANTHROPIC_AUTH_TOKEN"
+api_key = "ANTHROPIC_API_KEY"
+model = "ANTHROPIC_MODEL"
+small_fast_model = "ANTHROPIC_SMALL_FAST_MODEL"
+default_opus = "ANTHROPIC_DEFAULT_OPUS_MODEL"
+default_sonnet = "ANTHROPIC_DEFAULT_SONNET_MODEL"
+default_haiku = "ANTHROPIC_DEFAULT_HAIKU_MODEL"
+
+# OpenCode environment names (model selection is config-driven; the global
+# `opencode --model` flag does not exist in v2 and only prints help).
+[harnesses.opencode.env]
+config_content = "OPENCODE_CONFIG_CONTENT"
+
+# ---------------------------------------------------------------------------
+# Routes: explicit harness x provider combinations. A model id not covered
+# here (and not listed under the route/provider models) fails before any
+# process starts.
+# ---------------------------------------------------------------------------
+
+[routes."claude.openrouter"]
+note = "Anthropic-compatible endpoint; every model role maps to the route model."
+
+[routes."claude.deepseek"]
+# The DeepSeek Anthropic endpoint maps claude-* names internally and silently
+# maps anything else to deepseek-flash, so only the verified id is exposed.
+models = ["deepseek-flash"]
+note = "Anthropic-compatible endpoint; claude-* aliases are deliberately not exposed."
+
+[routes."claude.minimax"]
+note = "Default is the verified MiniMax-M2.5; M Plan entitlement is account-specific, so pick any other id with --model."
+
+[routes."opencode.zen"]
+note = "Free zen models through the OpenCode client (free tier is client-bound)."
+
+[routes."opencode.openrouter"]
+
+[routes."opencode.deepseek"]
+
+[routes."opencode.minimax"]
+note = "Default is the verified MiniMax-M2.5; M Plan entitlement is account-specific, so pick any other id with --model."
+
+[routes."pi.openrouter"]
+
+[routes."pi.deepseek"]
+note = "pi warns for ids outside its built-in catalog and passes them through."
+
+[routes."pi.minimax"]
+note = "Default is the verified MiniMax-M2.5; M Plan entitlement is account-specific, so pick any other id with --model."
+
+[routes."dsh.deepseek"]
+note = "Passthrough: dsh keeps its own native DeepSeek provider and auth (unverified here)."
