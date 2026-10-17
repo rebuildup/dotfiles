@@ -165,6 +165,31 @@ describe("compose", () => {
     expect(read(p.shared)).toEqual(SHARED);
   });
 
+  test("non-dangling symlink whose textual target looks like old layout but resolves elsewhere is foreign", () => {
+    // The textual target of the symlink at p.target lives under the local
+    // oldLayoutRoot path string, but realpathSync follows a chain of symlinks
+    // to a real file that lives outside the dotfiles repo. Migration must
+    // abort rather than backing up and overwriting that foreign file.
+    const p = fixture();
+    const foreignDir = join(p.root, "foreign", "home", ".claude");
+    mkdirSync(foreignDir, { recursive: true });
+    const foreignTarget = join(foreignDir, "settings.json");
+    writeFileSync(foreignTarget, JSON.stringify({ foreign: "untouched" }));
+    // Build a symlink chain: p.target -> <oldLayoutRoot>/settings.json (a
+    // symlink itself) -> foreignTarget. The textual target of p.target
+    // looks like old layout, but the resolved path does not.
+    const oldLayoutRoot = join(p.root, "repo", "home", ".claude");
+    const oldLayoutFile = join(oldLayoutRoot, "settings.json");
+    mkdirSync(oldLayoutRoot, { recursive: true });
+    symlinkSync(foreignTarget, oldLayoutFile);
+    symlinkSync(oldLayoutFile, p.target);
+
+    expect(() => compose(p)).toThrow(/move it aside manually before composing/);
+    // Foreign target file must remain byte-for-byte untouched.
+    expect(read(foreignTarget)).toEqual({ foreign: "untouched" });
+    expect(lstatSync(p.target).isSymbolicLink()).toBe(true);
+  });
+
   test("missing shared baseline is a skip, not an error", () => {
     const p = fixture();
     rmSync(p.shared);

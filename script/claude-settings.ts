@@ -223,11 +223,17 @@ export function plan(paths: Paths): Plan {
   if (stat?.isSymbolicLink()) {
     // Three kinds of symlink are replaceable:
     //   1. points at the shared baseline (the earlier direct-link layout)
-    //   2. points at, or used to point at, the old dotfiles layout
-    //      <repo>/home/.claude/settings.json — that file no longer exists
-    //      in dotfiles but pre-0.3.0 installations left a symlink behind.
-    //   3. dangling symlink whose textual target was under that old layout.
+    //   2. points at the old dotfiles layout <repo>/home/.claude/settings.json
+    //      that still exists on disk (the user has been editing it through
+    //      the symlink).
+    //   3. dangling symlink whose textual target was under that old layout
+    //      — pre-0.3.0 installations left such symlinks behind, and after
+    //      upgrading dotfiles the target file is gone.
     // Any other target is foreign; moving it aside is the operator's call.
+    // In particular, a non-dangling symlink whose textual target happens to
+    // look like the old layout but whose resolved path is somewhere else
+    // must not be migrated: only the resolved path tells us what would
+    // actually be unlinked and backed up.
     const linkText = readlinkSync(paths.target);
     let real: string | undefined;
     try {
@@ -244,7 +250,8 @@ export function plan(paths: Paths): Plan {
     };
     const absLinkText = resolve(dirname(paths.target), linkText);
     const isOldLayout =
-      (real !== undefined && isUnder(real)) || isUnder(absLinkText);
+      (real !== undefined && isUnder(real)) ||
+      (real === undefined && isUnder(absLinkText));
     const isSharedBaseline = real !== undefined && real === realpathSync(paths.shared);
 
     if (!isSharedBaseline && !isOldLayout) {

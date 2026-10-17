@@ -104,7 +104,7 @@ if HOME="$backup_home" "$backup_repo/script/link" 2>&1 | grep -q "settings.json.
   printf 'link reported a composer-owned backup file as drift\n' >&2
   exit 1
 fi
-if HOME="$backup_home" "$backup_repo/script/check" 2>&1 | grep -q "settings.json.bak\|pre-dotfiles"; then
+if XDG_CONFIG_HOME="$backup_home/.config" HOME="$backup_home" "$backup_repo/script/check" 2>&1 | grep -q "settings.json.bak\|pre-dotfiles"; then
   printf 'check reported a composer-owned backup file as drift\n' >&2
   exit 1
 fi
