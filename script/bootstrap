@@ -298,21 +298,34 @@ printf 'ok      GitHub HTTPS credential helper stored in %s\n' "$local_git_confi
 
 # Agent configuration repositories are private. Authenticate Git first, then
 # fetch the pinned submodule commits. Fresh clones intentionally do not require
-# --recurse-submodules. This runs before the final link/check because managed
-# agent entries are symlinks into these submodules and would otherwise dangle.
+# --recurse-submodules. Submodule-backed entries in home/ are linked next, the
+# shared Claude baseline is required (compose targets it), the live
+# ~/.claude/settings.json is composed from the shared baseline plus the
+# machine-local overlay, and only then does script/check run. Reversing the
+# compose/check pair makes script/check see drift on every fresh machine and
+# bootstrap terminates before Infisical setup.
 sync_agent_submodules
 
+shared_claude_baseline="$repo_root/agents/claude/settings.json"
+if [[ ! -f "$shared_claude_baseline" ]]; then
+  printf 'shared Claude baseline missing: %s\nrun: git submodule update --init agents/claude\n' "$shared_claude_baseline" >&2
+  exit 1
+fi
+
 "$repo_root/script/link"
-"$repo_root/script/check"
 
 # Compose the effective Claude settings from the shared baseline plus the
 # machine-local overlay. Live-only values (e.g. the Herdr hook) are imported
 # first and the previous file is backed up; nothing is overwritten silently.
-if command -v bun >/dev/null 2>&1; then
-  bun "$repo_root/script/claude-settings.ts" compose
-else
-  printf 'warning: bun not found; Claude settings not composed. Run: bun %s compose\n' "$repo_root/script/claude-settings.ts" >&2
+# Runs before script/check so the freshly composed live file matches what
+# check expects; bun is required (mise provides it).
+if ! command -v bun >/dev/null 2>&1; then
+  printf 'missing required command: bun (install via mise; bun is required to compose ~/.claude/settings.json)\n' >&2
+  exit 1
 fi
+bun "$repo_root/script/claude-settings.ts" compose
+
+"$repo_root/script/check"
 
 configure_infisical_vault
 

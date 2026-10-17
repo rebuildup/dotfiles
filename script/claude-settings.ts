@@ -297,7 +297,17 @@ function main() {
     process.exit(1);
   }
 
-  for (const line of compose(paths)) console.log(line);
+  // compose CLI is invoked from script/bootstrap with a synced submodule.
+  // A "skip" result means the shared baseline is missing or unreadable;
+  // surface it as a non-zero exit so bootstrap does not silently leave
+  // ~/.claude/settings.json stale. script/check still tolerates skip because
+  // a check-only invocation against a tree without submodules is a valid
+  // read of "nothing to verify".
+  const actions = compose(paths);
+  for (const line of actions) console.log(line);
+  if (actions.some((line) => line.startsWith("skip "))) {
+    process.exit(1);
+  }
 }
 
 if (import.meta.main) main();

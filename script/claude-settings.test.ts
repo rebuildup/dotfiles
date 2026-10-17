@@ -160,7 +160,7 @@ describe("compose", () => {
     expect(read(p.shared)).toEqual(SHARED);
   });
 
-  test("missing shared baseline is a skip, not an error", () => {
+  test("missing shared baseline is a skip at function level; CLI surfaces it as exit 1", () => {
     const p = fixture();
     rmSync(p.shared);
     writeFileSync(p.target, "keep");
