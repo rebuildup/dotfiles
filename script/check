@@ -6,6 +6,32 @@ source_root="$repo_root/home"
 target_root="${HOME:?HOME must be set}"
 status=0
 
+# Mirrors script/link: a top-level symlink or submodule checkout is one managed
+# target, everything else is checked file by file.
+unit_names=""
+
+shopt -s nullglob dotglob
+for entry in "$source_root"/*; do
+  [[ -e "$entry" || -L "$entry" ]] || continue
+  if [[ -L "$entry" || -e "$entry/.git" ]]; then
+    unit_names+=" $(basename "$entry")"
+  fi
+done
+shopt -u nullglob dotglob
+
+sources() {
+  local name source relative first
+  for name in $unit_names; do
+    printf '%s\0' "$source_root/$name"
+  done
+  while IFS= read -r -d '' source; do
+    relative="${source#"$source_root"/}"
+    first="${relative%%/*}"
+    [[ " $unit_names " == *" $first "* ]] && continue
+    printf '%s\0' "$source"
+  done < <(find "$source_root" -type f -print0)
+}
+
 while IFS= read -r -d '' source; do
   relative="${source#"$source_root"/}"
   target="$target_root/$relative"
@@ -27,6 +53,6 @@ while IFS= read -r -d '' source; do
   fi
 
   printf 'ok      %s\n' "$target"
-done < <(find "$source_root" -type f -print0)
+done < <(sources)
 
 exit "$status"
