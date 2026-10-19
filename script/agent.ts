@@ -131,7 +131,7 @@ examples:
   agent opencode zen
   agent opencode zen -- run "explain this repo"
   agent claude deepseek -- -p "say ok"
-  agent claude minimax -- -p "say ok"   # default MiniMax-M3.1-Flash-Preview (--model overrides)
+  agent claude minimax -- -p "say ok"   # default MiniMax-M3.1-Flash (--model overrides)
   agent pi openrouter -- -p "hello"
   agent dsh deepseek -- web
   agent claude -p "say ok"              # native: subscription login, no injection
