@@ -104,34 +104,13 @@ Every route additionally gets a short command name — `opencode-zen`,
 - **Native commands are untouched**: plain `claude`, `opencode`, `pi` and
   `dsh` remain the official binaries with their own auth; short names only
   ever add new commands, never wrap an existing one.
-- **MiniMax** keeps its contract: the provider default is the
-  officially documented `MiniMax-M3.1-Flash` (live M Plan smoke test pending) (reasoning is always
-  on; effort defaults to `max`), `opencode.minimax` keeps the verified
-  `MiniMax-M3` as a route-level default because OpenCode v2 silently
-  previously ignored the Preview ID and the formal ID is not yet verified, and on the `claude.minimax` and
-  `pi.minimax` routes the other verified id (`MiniMax-M3`) is selectable
-  with `--agent-model`/`--model`. Ids outside the per-route model list
-  fail closed (exit 2 before any process starts).
-
-Link management lives in the launcher and is driven by the same TOML:
-
-```bash
-agent shortcuts            # list every short name + link status
-agent shortcuts check      # exit non-zero unless every link points at the launcher
-agent shortcuts create     # create the entry points (idempotent)
-agent shortcuts remove     # remove only the launcher's own entry points
-```
-
-`create` refuses to overwrite anything it does not own: an existing file,
-a foreign symlink (or foreign `.cmd`), or another command with the same
-name already on `PATH` is reported as a conflict and left untouched (exit
-1). `remove` deletes only entries that resolve to this launcher — user
-files, foreign links and the native harness commands are never touched.
-
-## Implementation: `script/agent.ts` (Bun + TypeScript)
-
-One implementation serves every platform (ADR-0009):
-
+- **MiniMax** uses the official `MiniMax-M3.1-Flash` model ID (2026-10-19).
+  Reasoning is always enabled, with `max` as the default effort. Live M Plan
+  verification for the formal ID is still pending. The `opencode.minimax`
+  route continues to default to `MiniMax-M3`, since the formal ID has not
+  yet been verified in OpenCode and an unsupported ID may silently fall back.
+  On `claude.minimax` and `pi.minimax`, `MiniMax-M3` can still be selected
+  explicitly with `--agent-model` or `--model`.
 - **Runtime**: Bun executes `script/agent.ts`; the config is read with
   `Bun.TOML.parse()` — no dependencies, no Python anywhere in the
   launcher or its tests. `bun` itself is a machine baseline tool
