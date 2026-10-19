@@ -35,9 +35,12 @@ for s:sub in ['backup', 'swap', 'undo']
     call mkdir(s:cache_dir . '/' . s:sub, 'p')
   endif
 endfor
-execute 'set backupdir=' . s:cache_dir . '/backup'
-execute 'set directory=' . s:cache_dir . '/swap'
-execute 'set undodir=' . s:cache_dir . '/undo'
+" :set は空白で値分割されるため、$HOME に空白を含む Windows ユーザー名が
+" いると execute 'set backupdir=...' は E518 で途中まで切れる。オプションへ
+" 直接代入する形なら空白を保持できる。
+let &backupdir = s:cache_dir . '/backup'
+let &directory = s:cache_dir . '/swap'
+let &undodir = s:cache_dir . '/undo'
 set undofile
 
 " Vim のみ backup file (~) を作る。

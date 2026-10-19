@@ -39,14 +39,12 @@ def strip_jsonc(s):
 
 
 def main():
-    src = r'C:\Users\rebui\AppData\Roaming\Code\User\snippets\rust.json'
-    dst = r'C:\Users\rebui\AppData\Local\nvim\snippets\rust.json'
-
-    if os.path.islink(dst):
-        os.unlink(dst)
-    elif os.path.exists(dst):
-        os.remove(dst)
-    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    src = os.path.join(
+        os.environ['APPDATA'], 'Code', 'User', 'snippets', 'rust.json'
+    )
+    dst = os.path.join(
+        os.environ['LOCALAPPDATA'], 'nvim', 'snippets', 'rust.json'
+    )
 
     with open(src, 'r', encoding='utf-8') as f:
         content = f.read()
@@ -55,9 +53,19 @@ def main():
     parsed = json.loads(clean)
     print(f"Parsed OK, {len(parsed)} snippets")
 
-    with open(dst, 'w', encoding='utf-8') as f:
+    # dst is a dotfiles symlink into the repository. Writing through the
+    # resolved target keeps the managed entry a link; removing dst first would
+    # replace it with an unmanaged copy that script/check reports as drift.
+    target = os.path.realpath(dst)
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+
+    # Parse before touching the destination, then swap atomically so a failed
+    # run cannot leave a half-written snippet file behind.
+    tmp = target + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
         f.write(clean)
-    print(f"Wrote {dst}")
+    os.replace(tmp, target)
+    print(f"Wrote {target}")
 
 
 if __name__ == '__main__':
