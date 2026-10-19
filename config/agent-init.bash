@@ -6,7 +6,7 @@
 #   agent list                             # configured routes
 #   agent claude openrouter                # Claude Code via OpenRouter
 #   agent claude deepseek -- -p 'say ok'   # Claude Code via DeepSeek
-#   agent claude minimax -- <args>         # default MiniMax-M3.1-Flash-Preview; --model overrides
+#   agent claude minimax -- <args>         # default MiniMax-M3.1-Flash; --model overrides
 #   agent opencode zen                     # OpenCode on free zen models
 #   opencode-zen -- run "…"                # shortcut form (agent shortcuts create)
 #
