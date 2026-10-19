@@ -432,11 +432,11 @@ test(
 test(
   "test_minimax_default_model",
   withFixture((fixture) => {
-    // no --model: the verified default applies (fail closed is kept by the
+    // no --model: the configured default applies (fail closed is kept by the
     // models list — unknown ids are rejected before a process starts).
-    // claude.minimax inherits the provider default (M3.1-Flash-Preview);
+    // claude.minimax inherits the provider default (M3.1-Flash);
     // opencode.minimax keeps MiniMax-M3 as a route-level override because
-    // OpenCode v2 has no catalog entry for M3.1.
+    // Formal M3.1 ID has not yet been verified with this OpenCode route.
     const result = fixture.run(["claude", "minimax"], { config: REAL_CONFIG });
     check(result.exitCode === 0, result.stderr.toString());
     const [argv, env] = fixture.child();
@@ -521,7 +521,7 @@ test(
     const parsedM3 = JSON.parse(envOcM3["OPENCODE_CONFIG_CONTENT"] as string);
     check(parsedM3.model === "minimax/MiniMax-M3", JSON.stringify(parsedM3));
 
-    // pi.minimax inherits the provider default (M3.1-Flash-Preview)
+    // pi.minimax inherits the provider default (M3.1-Flash)
     const pi = fixture.run(["pi", "minimax"], { config: REAL_CONFIG });
     check(pi.exitCode === 0, pi.stderr.toString());
     const [argvPi, envPi] = fixture.child();
