@@ -1,0 +1,118 @@
+{
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	"Procon IO": {
+		"prefix": "proconio",
+		"body": "use proconio::input;\n\nfn main() {\n\t\n}",
+		"description": "setup for atcoder"
+	},
+	"Procon IO Input": {
+		"prefix": "input",
+		"body": "input! {\n\t$1\n}",
+		"description": "input! macro"
+	},
+	"Input N": {
+		"prefix": "inn",
+		"body": "n:usize",
+		"description": "input! macro for n"
+	},
+	"Input N M": {
+		"prefix": "innm",
+		"body": "n:usize, m:usize",
+		"description": "input! macro for n and m"
+	},
+	"Input N M K": {
+		"prefix": "innmk",
+		"body": "n:usize, m:usize, k:usize",
+		"description": "input! macro for n, m and k"
+	},
+	"Input Vec N": {
+		"prefix": "invn",
+		"body": "v: [usize; n]",
+		"description": "input! macro for vector of size n"
+	},
+	"Input Vec N M": {
+		"prefix": "invnm",
+		"body": "v: [[usize; m]; n]",
+		"description": "input! macro for vector of size n and m"
+	},
+	"Standard I String": {
+		"prefix": "stdrs",
+		"body": "fn read_s() -> String {\n\tlet mut b = String::new();\n\tstd::io::stdin().read_line(&mut b).unwrap();\n\tb.trim().to_string()\n}",
+		"description": "read string from stdin"
+	},
+	"Standard I U32": {
+		"prefix": "stdru",
+		"body": "fn read_u() -> u32 {\n\tlet mut b = String::new();\n\tstd::io::stdin().read_line(&mut b).unwrap();\n\tb.trim().parse::<u32>().unwrap()\n}",
+		"description": "read u32 from stdin"
+	},
+	"Standard I I64": {
+		"prefix": "stdri",
+		"body": "fn read_i() -> i64 {\n\tlet mut b = String::new();\n\tstd::io::stdin().read_line(&mut b).unwrap();\n\tb.trim().parse::<i64>().unwrap()\n}",
+		"description": "read i64 from stdin"
+	},
+	"Standard I Vec String": {
+		"prefix": "stdrvs",
+		"body": "fn read_vs() -> Vec<String> {\n\tlet mut b = String::new();\n\tstd::io::stdin().read_line(&mut b).unwrap();\n\tb.trim().split_whitespace().map(|s| s.to_string()).collect()\n}",
+		"description": "read vector of strings from stdin"
+	},
+	"Standard I Vec I64": {
+		"prefix": "stdrvi",
+		"body": "fn read_vi() -> Vec<i64> {\n\tlet mut b = String::new();\n\tstd::io::stdin().read_line(&mut b).unwrap();\n\tb.trim().split_whitespace().map(|s| s.parse::<i64>().unwrap()).collect()\n}",
+		"description": "read vector of i64 from stdin"
+	},
+	"Standard I Vec Char": {
+		"prefix": "stdrvc",
+		"body": "fn read_vc() -> Vec<char> { \n\tlet mut b = Strig::new();\n\tio::stdin().read_line(&mut b).unwrap();\n\tb.trim().chars().collect()\n}",
+		"description": "read vector of char from stdin"
+	},
+	"Repeat 0..n": {
+		"prefix": "repn",
+		"body": "for i in 0..n {\n\t$0\n}",
+		"description": "repeat 0..n"
+	},
+	"Binary Search": {
+		"prefix": "nibun",
+		"body": "let mut left = 0;\nlet mut right = a.len();\nwhile left < right {\n\tlet mid = (left + right) / 2;\n\tif a[mid] < x {\n\t\tleft = mid + 1;\n\t} else {\n\t\tright = mid;\n\t}\n}\n$0",
+		"description": "binary search template"
+	},
+	"Math Pi": {
+		"prefix": "pi",
+		"body": "std::f64::consts::PI",
+		"description": ""
+	},
+	"PrintLine": {
+		"prefix": "pl",
+		"body": "println!(\"{}\",$0);",
+		"description": ""
+	},
+	"WordMatch": {
+		"prefix": "wordmatch",
+		"body": "$0.matches(&$1).count()",
+		"description": ""
+	},
+	"String to U32": {
+		"prefix": "s2u",
+		"body": "let $0s = read_s();\nlet $0:u32 = $0.parse().unwrap();"
+	}
+}

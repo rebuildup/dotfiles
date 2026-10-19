@@ -247,6 +247,14 @@ The current common Git baseline includes:
 - global ignore via `~/.config/git/ignore`
 - machine/user-local `~/.gitconfig.local`
 
+The editor baseline is shared between Vim and Neovim:
+
+- `~/vimfiles/shared/base.vim` — the single source of truth for both editors (encoding, `~/.cache/vim` backup/swap/undo, display, folding, search, indent, statusline, `list`, window/tab/normal/insert/visual mappings, transparent background). Sourced by Vim's `_vimrc` and by Neovim's `init.lua`.
+- `~/vimfiles/keymap/onishi.vim` — 大西配列 key placement; sourced last from `base.vim` so it overrides the defaults above.
+- `%LOCALAPPDATA%\Programs\Vim\_vimrc` and `%LOCALAPPDATA%\nvim\` (Neovim config, lockfiles, `scripts/`, `snippets/`) mirror their real Windows locations under `home/AppData/Local/` so neither editor needs an environment variable to find its config.
+
+`set background=transparent` is rejected with E474 by both Vim and Neovim, so transparency is applied as `guibg=NONE` on `Normal` / `NormalNC` / `SignColumn` / `EndOfBuffer`, re-applied on `ColorScheme`.
+
 ## Decisions and research
 
 - [`ADR-0001`](docs/adr/ADR-0001.md) — plain symlink home-mirror deployment
