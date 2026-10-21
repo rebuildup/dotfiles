@@ -543,9 +543,9 @@ test(
     const [argv, env] = fixture.child();
     check(argv.length === 0, `argv ${JSON.stringify(argv)}`);
     check(env["ANTHROPIC_BASE_URL"] === "https://openrouter.ai/api", JSON.stringify(env));
-    check(env["ANTHROPIC_MODEL"] === "minimax/minimax-m3.1-flash:free", JSON.stringify(env));
-    check(env["ANTHROPIC_DEFAULT_SONNET_MODEL"] === "minimax/minimax-m3.1-flash:free", JSON.stringify(env));
-    check(env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] === "minimax/minimax-m3.1-flash:free", JSON.stringify(env));
+    check(env["ANTHROPIC_MODEL"] === "nvidia/nemotron-3-ultra-550b-a55b:free", JSON.stringify(env));
+    check(env["ANTHROPIC_DEFAULT_SONNET_MODEL"] === "nvidia/nemotron-3-ultra-550b-a55b:free", JSON.stringify(env));
+    check(env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] === "nvidia/nemotron-3-ultra-550b-a55b:free", JSON.stringify(env));
     check(env["ANTHROPIC_AUTH_TOKEN"] === "secret-openrouter", env["ANTHROPIC_AUTH_TOKEN"]);
     check(env["OPENROUTER_API_KEY"] === "secret-openrouter", env["OPENROUTER_API_KEY"]);
     // ... but no other provider's secret reaches the child
@@ -581,7 +581,7 @@ test(
     const [, envOc] = fixture.child();
     const parsed = JSON.parse(envOc["OPENCODE_CONFIG_CONTENT"] as string);
     check(
-      parsed.model === "openrouter/minimax/minimax-m3.1-flash:free",
+      parsed.model === "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
       `opencode model id wrong: ${JSON.stringify(parsed)}`,
     );
     check(envOc["OPENROUTER_API_KEY"] === "secret-openrouter", envOc["OPENROUTER_API_KEY"]);
@@ -594,7 +594,7 @@ test(
     check(argvPi.includes("--provider"), `pi argv missing --provider: ${JSON.stringify(argvPi)}`);
     check(argvPi.includes("openrouter"), `pi argv missing provider id: ${JSON.stringify(argvPi)}`);
     check(
-      argvPi.includes("minimax/minimax-m3.1-flash:free"),
+      argvPi.includes("nvidia/nemotron-3-ultra-550b-a55b:free"),
       `pi argv missing model: ${JSON.stringify(argvPi)}`,
     );
     check(envPi["OPENROUTER_API_KEY"] === "secret-openrouter", envPi["OPENROUTER_API_KEY"]);
