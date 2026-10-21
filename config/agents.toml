@@ -89,22 +89,25 @@ models = [
 # (1000 req/day with >= $10 purchase history, 20 req/min) — the paid
 # `openrouter` route remains the path for anything beyond that.
 [providers.openrouter-free]
+# Default chosen from the live free catalog because the MiniMax M3.1 Flash
+# launch promotion ends 2026-10-22 12:00 UTC. Exact harness E2E for the
+# replacement default must still be verified; no paid fallback is allowed.
 label = "OpenRouter (free models)"
 base_url = "https://openrouter.ai/api"
 secret = "OPENROUTER_API_KEY"
 env = "OPENROUTER_API_KEY"
-default_model = "minimax/minimax-m3.1-flash:free"
+default_model = "nvidia/nemotron-3-ultra-550b-a55b:free"
 # OpenCode addresses OpenRouter as its native provider id `openrouter` (the
 # paid provider above relies on the key == opencode_id default); the free
 # provider must map to the same id or OpenCode would see an unknown provider.
-# Live opencode route verification: pending (issue #70 E2E).
+# Actual model-specific OpenCode E2E for the new default is pending.
 opencode_id = "openrouter"
 # pi likewise knows OpenRouter natively as provider id `openrouter`; the
 # launcher route key `openrouter-free` is launcher-side routing only.
-# Live pi route verification: pending (issue #70 E2E).
+# Actual model-specific Pi E2E for the new default is pending.
 pi_id = "openrouter"
 models = [
-  "minimax/minimax-m3.1-flash:free",
+  # MiniMax M3.1 Flash :free retires 2026-10-22 12:00 UTC; omitted to avoid dead routes.
   "nvidia/nemotron-3.5-super-vl:free",
   "nvidia/nemotron-3.5-lightning:free",
   "nvidia/nemotron-3-ultra-550b-a55b:free",
@@ -251,7 +254,7 @@ note = "Free zen models through the OpenCode client (free tier is client-bound).
 [routes."opencode.openrouter"]
 
 [routes."opencode.openrouter-free"]
-note = "Free models only (pricing 0/0, verified 2026-10-21); model ids are OpenRouter-native (`minimax/minimax-m3.1-flash:free`)."
+note = "Free models only (pricing 0/0, verified 2026-10-21); model ids are OpenRouter-native (`nvidia/nemotron-3-ultra-550b-a55b:free`)."
 
 [routes."opencode.deepseek"]
 
