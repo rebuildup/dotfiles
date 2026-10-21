@@ -73,6 +73,55 @@ models = [
   "deepseek/deepseek-v4-pro",
 ]
 
+# Free-only slice of OpenRouter: every id here was verified live against the
+# public /api/v1/models catalog on 2026-10-21 as pricing.prompt = 0 AND
+# pricing.completion = 0. The list is a curated allowlist — ids are added only
+# after a live check, so a model that OpenRouter later moves to paid pricing
+# fails closed here instead of silently billing. Excluded on purpose:
+#   - `openrouter/free` (meta auto-router: which model answers is
+#     non-deterministic, so "the specified free model responded" cannot be
+#     verified),
+#   - `nvidia/nemotron-3.5-content-safety:free` (tools = false, safety
+#     classifier, not a coding model),
+#   - `google/lyria-3-*-preview` (audio-output generative models, tools = false).
+# Same endpoint and credential as the paid `openrouter` provider, so no new
+# Infisical secret is needed. Free-tier rate limits are account-based
+# (1000 req/day with >= $10 purchase history, 20 req/min) — the paid
+# `openrouter` route remains the path for anything beyond that.
+[providers.openrouter-free]
+label = "OpenRouter (free models)"
+base_url = "https://openrouter.ai/api"
+secret = "OPENROUTER_API_KEY"
+env = "OPENROUTER_API_KEY"
+default_model = "minimax/minimax-m3.1-flash:free"
+# OpenCode addresses OpenRouter as its native provider id `openrouter` (the
+# paid provider above relies on the key == opencode_id default); the free
+# provider must map to the same id or OpenCode would see an unknown provider.
+# Live opencode route verification: pending (issue #70 E2E).
+opencode_id = "openrouter"
+# pi likewise knows OpenRouter natively as provider id `openrouter`; the
+# launcher route key `openrouter-free` is launcher-side routing only.
+# Live pi route verification: pending (issue #70 E2E).
+pi_id = "openrouter"
+models = [
+  "minimax/minimax-m3.1-flash:free",
+  "nvidia/nemotron-3.5-super-vl:free",
+  "nvidia/nemotron-3.5-lightning:free",
+  "nvidia/nemotron-3-ultra-550b-a55b:free",
+  "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+  "nvidia/nemotron-3-super-120b-a12b:free",
+  "poolside/laguna-s-2.1:free",
+  "poolside/laguna-xs-2.1:free",
+  "cohere/north-mini-code:free",
+  "xingchen-agi/xing4.0-29b-a4b:free",
+  "dots-studio/dots-3-note-preview:free",
+  "thinkingmachines/inkling:free",
+  "thinkingmachines/inkling-small:free",
+  "google/gemma-4-26b-a4b-it:free",
+  "google/gemma-4-31b-it:free",
+  "liquid/lfm-2.5-2.6b:free",
+]
+
 [providers.deepseek]
 label = "DeepSeek"
 base_url = "https://api.deepseek.com/anthropic"
@@ -184,6 +233,9 @@ config_content = "OPENCODE_CONFIG_CONTENT"
 [routes."claude.openrouter"]
 note = "Anthropic-compatible endpoint; every model role maps to the route model."
 
+[routes."claude.openrouter-free"]
+note = "Free models only (pricing 0/0, verified 2026-10-21); the paid openrouter route stays separate and is never a fallback here."
+
 [routes."claude.deepseek"]
 # The DeepSeek Anthropic endpoint maps claude-* names internally and silently
 # maps anything else to deepseek-flash, so only the verified id is exposed.
@@ -198,6 +250,9 @@ note = "Free zen models through the OpenCode client (free tier is client-bound).
 
 [routes."opencode.openrouter"]
 
+[routes."opencode.openrouter-free"]
+note = "Free models only (pricing 0/0, verified 2026-10-21); model ids are OpenRouter-native (`minimax/minimax-m3.1-flash:free`)."
+
 [routes."opencode.deepseek"]
 
 [routes."opencode.minimax"]
@@ -210,6 +265,9 @@ models = ["MiniMax-M3"]
 note = "Keep MiniMax-M3 as the known working route default; the formal MiniMax-M3.1-Flash id needs a live OpenCode catalog/selection smoke test before it can be enabled. Unlisted ids are rejected with exit 2."
 
 [routes."pi.openrouter"]
+
+[routes."pi.openrouter-free"]
+note = "Free models only (pricing 0/0, verified 2026-10-21); pi may warn for ids outside its catalog and passes them through."
 
 [routes."pi.deepseek"]
 note = "pi warns for ids outside its built-in catalog and passes them through."
