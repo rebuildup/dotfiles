@@ -533,6 +533,87 @@ test(
 );
 
 test(
+  "test_openrouter_free_routes",
+  withFixture((fixture) => {
+    // claude.openrouter-free: the provider default applies and every model
+    // role maps to it. The credential is the SAME OpenRouter secret as the
+    // paid provider (no new Infisical secret was created for the free slice).
+    const result = fixture.run(["claude", "openrouter-free"], { config: REAL_CONFIG });
+    check(result.exitCode === 0, result.stderr.toString());
+    const [argv, env] = fixture.child();
+    check(argv.length === 0, `argv ${JSON.stringify(argv)}`);
+    check(env["ANTHROPIC_BASE_URL"] === "https://openrouter.ai/api", JSON.stringify(env));
+    check(env["ANTHROPIC_MODEL"] === "nvidia/nemotron-3-ultra-550b-a55b:free", JSON.stringify(env));
+    check(env["ANTHROPIC_DEFAULT_SONNET_MODEL"] === "nvidia/nemotron-3-ultra-550b-a55b:free", JSON.stringify(env));
+    check(env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] === "nvidia/nemotron-3-ultra-550b-a55b:free", JSON.stringify(env));
+    check(env["ANTHROPIC_AUTH_TOKEN"] === "secret-openrouter", env["ANTHROPIC_AUTH_TOKEN"]);
+    check(env["OPENROUTER_API_KEY"] === "secret-openrouter", env["OPENROUTER_API_KEY"]);
+    // ... but no other provider's secret reaches the child
+    for (const leak of [
+      "DEEPSEEK_API_KEY",
+      "OPENCODE_API_KEY",
+      "MIMO_API_KEY",
+      "INFISICAL_TOKEN",
+      "FAKE_INFISICAL_INJECTED",
+      "MINIMAX_M_PLAN_KEY",
+    ]) {
+      check(!(leak in env), `secret leaked to child: ${leak}`);
+    }
+    check(existsSync(fixture.marker), "with-secrets wrapper was not used");
+
+    // The paid default model id is NOT in the free allowlist: selecting it on
+    // the free route must fail closed before any process starts. This is the
+    // regression test for "no implicit fallback to the paid openrouter route".
+    const paid = fixture.run(["claude", "openrouter-free", "--model", "z-ai/glm-5.3-flash"], {
+      config: REAL_CONFIG,
+    });
+    check(paid.exitCode === 2, `paid model on free route must exit 2, got ${paid.exitCode}`);
+    check(
+      paid.stderr.toString().includes("unknown model"),
+      `expected 'unknown model' in stderr, got: ${paid.stderr.toString()}`,
+    );
+    check(!existsSync(fixture.marker), "credentials must not be fetched for a rejected model");
+
+    // opencode.openrouter-free: OpenCode addresses OpenRouter natively as
+    // provider id `openrouter`, so the model id keeps that prefix.
+    const oc = fixture.run(["opencode", "openrouter-free"], { config: REAL_CONFIG });
+    check(oc.exitCode === 0, oc.stderr.toString());
+    const [, envOc] = fixture.child();
+    const parsed = JSON.parse(envOc["OPENCODE_CONFIG_CONTENT"] as string);
+    check(
+      parsed.model === "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+      `opencode model id wrong: ${JSON.stringify(parsed)}`,
+    );
+    check(envOc["OPENROUTER_API_KEY"] === "secret-openrouter", envOc["OPENROUTER_API_KEY"]);
+
+    // pi.openrouter-free: pi knows OpenRouter as provider id `openrouter`
+    // (route key `openrouter-free` is launcher-side routing only).
+    const pi = fixture.run(["pi", "openrouter-free"], { config: REAL_CONFIG });
+    check(pi.exitCode === 0, pi.stderr.toString());
+    const [argvPi, envPi] = fixture.child();
+    check(argvPi.includes("--provider"), `pi argv missing --provider: ${JSON.stringify(argvPi)}`);
+    check(argvPi.includes("openrouter"), `pi argv missing provider id: ${JSON.stringify(argvPi)}`);
+    check(
+      argvPi.includes("nvidia/nemotron-3-ultra-550b-a55b:free"),
+      `pi argv missing model: ${JSON.stringify(argvPi)}`,
+    );
+    check(envPi["OPENROUTER_API_KEY"] === "secret-openrouter", envPi["OPENROUTER_API_KEY"]);
+
+    // an unverified paid-ish id fails closed on every free route
+    for (const [harness, provider] of [
+      ["claude", "openrouter-free"],
+      ["opencode", "openrouter-free"],
+      ["pi", "openrouter-free"],
+    ] as Array<[string, string]>) {
+      const rejected = fixture.run([harness, provider, "--model", "z-ai/glm-5.3"], {
+        config: REAL_CONFIG,
+      });
+      check(rejected.exitCode === 2, `${harness} free route must reject z-ai/glm-5.3 (paid)`);
+    }
+  }),
+);
+
+test(
   "test_require_model_fail_closed",
   withFixture((fixture) => {
     const config = join(fixture.tmp, "require.toml");

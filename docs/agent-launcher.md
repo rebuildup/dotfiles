@@ -8,6 +8,7 @@ exactly one API provider, chosen explicitly at launch:
 ```bash
 agent list                                # configured routes
 agent claude openrouter                   # Claude Code via OpenRouter
+agent claude openrouter-free -- -p 'hi'   # Claude Code via OpenRouter free models
 agent claude deepseek -- -p 'say ok'      # Claude Code via DeepSeek
 agent claude minimax -- -p 'say ok'      # default MiniMax-M3.1-Flash; --model overrides
 agent opencode zen                        # OpenCode on the free zen models
@@ -238,26 +239,40 @@ shortcut names would collide.
 The launcher's mock tests assert both directions: the selected credential
 arrives, and every other provider's credential does not.
 
+## OpenRouter free default lifecycle
+
+The former `minimax/minimax-m3.1-flash:free` launch promotion ends on
+2026-10-22 at 12:00 UTC (OpenRouter model page). The default is
+`nvidia/nemotron-3-ultra-550b-a55b:free`, a currently free model with tool calling in the public
+catalog. The original MiniMax free model passed live Claude/Pi/OpenCode E2E
+(response and file-edit tool invocation) on 2026-10-21, but the replacement
+model has **not yet** passed the same harness-specific E2E. Validate it on
+Mac, Windows, and WSL before relying on it for unattended development. A
+free-route failure must not switch to a paid model.
+
 ## Route matrix and verification status
 
-| harness \ provider | zen | openrouter | deepseek | minimax |
-| --- | --- | --- | --- | --- |
-| claude | — (no Anthropic-compatible endpoint verified; zen free tier is client-bound: pi got `403 … only … within OpenCode`) | yes, default `z-ai/glm-5.3-flash` | yes, default `deepseek-flash` (route list: `deepseek-flash` only, because the endpoint silently remaps unknown names) | yes, default `MiniMax-M3.1-Flash` (official model ID; live M Plan verification pending; reasoning always on; effort defaults to `max`) |
-| opencode | yes, default `mimo-v2.6-flash-free` (free models; `opencode_id = "opencode"`) | yes | yes | yes, route default `MiniMax-M3` (route model list `["MiniMax-M3"]` only; OpenCode v2 previously silently fell back to Zen for the Preview ID; formal ID not yet verified — keep M3 as the known route default; `--model MiniMax-M3.1-Flash` exits 2 here) |
-| pi | — (free tier refused outside OpenCode) | yes | yes | yes, default `MiniMax-M3.1-Flash` (official ID; verify real M Plan response and catalog behavior) |
-| dsh | — | — | passthrough (native dsh auth; install + `--version` verified, live session pending DeepSeek balance) | — |
+| harness \ provider | zen | openrouter | openrouter-free | deepseek | minimax |
+| --- | --- | --- | --- | --- | --- |
+| claude | — (no Anthropic-compatible endpoint verified; zen free tier is client-bound: pi got `403 … only … within OpenCode`) | yes, default `z-ai/glm-5.3-flash` | free models only, default `nvidia/nemotron-3-ultra-550b-a55b:free` (same endpoint + `OPENROUTER_API_KEY` as the paid provider; allowlist = live-verified pricing 0/0 ids only — paid ids exit 2) | yes, default `deepseek-flash` (route list: `deepseek-flash` only, because the endpoint silently remaps unknown names) | yes, default `MiniMax-M3.1-Flash` (official model ID; live M Plan verification pending; reasoning always on; effort defaults to `max`) |
+| opencode | yes, default `mimo-v2.6-flash-free` (free models; `opencode_id = "opencode"`) | yes | free models only, default `nvidia/nemotron-3-ultra-550b-a55b:free` (`opencode_id = "openrouter"` — OpenCode's native OpenRouter provider id; live route verification pending) | yes | yes, route default `MiniMax-M3` (route model list `["MiniMax-M3"]` only; OpenCode v2 previously silently fell back to Zen for the Preview ID; formal ID not yet verified — keep M3 as the known route default; `--model MiniMax-M3.1-Flash` exits 2 here) |
+| pi | — (free tier refused outside OpenCode) | yes | free models only, default `nvidia/nemotron-3-ultra-550b-a55b:free` (`pi_id = "openrouter"` — pi's native OpenRouter provider id; the route key is launcher-side routing only; live route verification pending) | yes | yes, default `MiniMax-M3.1-Flash` (official ID; verify real M Plan response and catalog behavior) |
+| dsh | — | — | — | passthrough (native dsh auth; install + `--version` verified, live session pending DeepSeek balance) | — |
 
 Not covered on purpose: `opencode`/`pi` on other providers, paid zen
-models (add them to the TOML deliberately), and any automatic fallback
-between models or providers.
+models (add them to the TOML deliberately), any automatic fallback
+between models or providers, and any paid OpenRouter id on an
+`openrouter-free` route (the free allowlist is closed — an unlisted or
+later-monetized id fails closed instead of silently billing).
 
 Verification is reported in two tiers, matching issue #45's acceptance
 criteria:
 
-- **Mock/syntax**: `bun test script/agent.test.ts` (27 cases:
+- **Mock/syntax**: `bun test script/agent.test.ts` (34 cases:
   help/list/models, unknown harness/provider/model, `--model` precedence,
-  MiniMax default vs. `require_model` fail-closed, secret filtering both
-  ways, missing secret, forbidden passthrough flags, shortcut
+  MiniMax default vs. `require_model` fail-closed, openrouter-free allowlist
+  (paid ids exit 2, same credential as the paid provider), secret filtering
+  both ways, missing secret, forbidden passthrough flags, shortcut
   equivalence/args/`--agent-model`/unknown names/link management, native
   commands staying unwrapped, config validation failures) plus
   `agent check`, `agent shortcuts` and `bun script/agent.ts …` smoke runs
@@ -340,7 +355,9 @@ Names only, all already registered in the Infisical `dev` environment of
 project `d4c2fc09-a923-4a38-9cf4-b51769aadb76` (no new secrets are created):
 
 - `OPENROUTER_API_KEY`, `DEEPSEEK_API_KEY`, `OPENCODE_API_KEY`,
-  `MINIMAX_M_PLAN_KEY` (harness env `MINIMAX_API_KEY`).
+  `MINIMAX_M_PLAN_KEY` (harness env `MINIMAX_API_KEY`). The
+  `openrouter-free` provider reuses `OPENROUTER_API_KEY` — no free-tier
+  credential exists or is needed.
 - Legacy/untouched names that are deliberately filtered out of every child:
   `MINIMAX_TOKEN_PLAN_KEY`, `MIMO_API_KEY`, `ANTHROPIC_AUTH_TOKEN`.
 
