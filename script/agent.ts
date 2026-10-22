@@ -167,6 +167,8 @@ interface Provider {
   // resolveCatalogModel); `models` then only orders preferences.
   catalog: string | null;
   min_context: number;
+  // extra child env for the anthropic adapter (non-secret tuning only)
+  env_extra: Record<string, string>;
 }
 
 interface Harness {
@@ -322,6 +324,11 @@ function loadConfig(path?: string): Config {
     if (catalog && !base_url) {
       throw new AgentError(`${where}: catalog = "openrouter" needs base_url`);
     }
+    const rawExtra = table["env_extra"] ?? {};
+    if (!isPlainObject(rawExtra) || Object.values(rawExtra).some((v) => typeof v !== "string")) {
+      throw new AgentError(`${where}: env_extra must map string -> string`);
+    }
+    const env_extra = rawExtra as Record<string, string>;
     const min_context = table["min_context"] ?? 128000;
     if (typeof min_context !== "number" || !Number.isInteger(min_context) || min_context < 0) {
       throw new AgentError(`${where}: 'min_context' must be a non-negative integer`);
@@ -339,6 +346,7 @@ function loadConfig(path?: string): Config {
       pi_id: optionalStr(table, "pi_id", where) || key,
       catalog,
       min_context,
+      env_extra,
     };
   }
   if (Object.keys(providers).length === 0) {
@@ -1328,7 +1336,8 @@ function planAnthropic(
     // CLAUDE_CODE_SUBAGENT_MODEL stays unset because it is not needed.
     [env["default_opus"], model],
     [env["default_sonnet"], model],
-    [env["default_haiku"], model]
+    [env["default_haiku"], model],
+    ...Object.entries(provider.env_extra)
   );
 }
 

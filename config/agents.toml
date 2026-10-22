@@ -99,6 +99,10 @@ secret = "OPENROUTER_API_KEY"
 env = "OPENROUTER_API_KEY"
 catalog = "openrouter"
 min_context = 128000
+# Failed requests (429/400) also count against the free daily quota, and a
+# daily-limit 429 cannot recover by retrying. Claude Code defaults to ~10
+# retries per request; keep it low so a limit/retirement error surfaces fast.
+env_extra = { CLAUDE_CODE_MAX_RETRIES = "2" }
 # OpenCode addresses OpenRouter as its native provider id `openrouter` (the
 # paid provider above relies on the key == opencode_id default); the free
 # provider must map to the same id or OpenCode would see an unknown provider.

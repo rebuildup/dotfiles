@@ -249,7 +249,7 @@ default model; it is chosen at **launch** from OpenRouter's public catalog
 
 - **Eligible** = every `pricing.*` value is exactly `0`, the id is a `:free`
   variant, `tools` is in `supported_parameters`, context ≥ `min_context`
-  (128k), text in/out only, and `expiration_date` is not within 24h.
+  (128k), text input supported and text-only output (image input is allowed), and `expiration_date` is not within 24h.
 - **Order** = models expiring within 14 days last; then the preference order
   of `models` in `config/agents.toml` (coding-oriented first, editable, never
   widens eligibility); then larger context; then id.
@@ -271,6 +271,15 @@ default model; it is chosen at **launch** from OpenRouter's public catalog
   OpenRouter-side failover during a session, opt in explicitly with
   `--model openrouter/free` (the official free router: a tool-capable free
   model per request; the answering model varies, so it is never auto-picked).
+- **Retry cap**: failed requests (429/400) also consume the free daily quota
+  and a daily-limit 429 is not cured by switching models, so the claude
+  route sets `CLAUDE_CODE_MAX_RETRIES=2` (`env_extra` in the provider).
+  Pi/OpenCode retry behavior is not capped by the launcher.
+- **Residual risk of stale cache**: freshness of pricing is only guaranteed
+  as of the last successful fetch. With a stale cache (fetch failed) a model
+  could have been moved to paid since; the `:free` id requirement and
+  OpenRouter's own rejection of retired variants limit this, but it is not
+  verified at launch. A warning is printed whenever stale data is used.
 - Free-tier limits are account-wide (20 req/min; 1000 req/day with ≥ $10
   purchase history). `429 free-models-per-day` cannot be worked around
   without paying and is surfaced as is.

@@ -589,6 +589,7 @@ test(
     check(childEnv["ANTHROPIC_AUTH_TOKEN"] === "secret-openrouter", childEnv["ANTHROPIC_AUTH_TOKEN"]);
     check(childEnv["OPENROUTER_API_KEY"] === "secret-openrouter", childEnv["OPENROUTER_API_KEY"]);
     check(result.stderr.toString().includes("vendor/zzz-big:free"), "selection must be reported");
+    check(childEnv["CLAUDE_CODE_MAX_RETRIES"] === "2", "free route must cap harness retries");
     for (const leak of ["DEEPSEEK_API_KEY", "OPENCODE_API_KEY", "MIMO_API_KEY", "INFISICAL_TOKEN", "MINIMAX_M_PLAN_KEY"]) {
       check(!(leak in childEnv), `secret leaked to child: ${leak}`);
     }
