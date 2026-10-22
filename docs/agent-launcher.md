@@ -239,39 +239,64 @@ shortcut names would collide.
 The launcher's mock tests assert both directions: the selected credential
 arrives, and every other provider's credential does not.
 
-## OpenRouter free default lifecycle
+## OpenRouter free models: live selection (issue #72)
 
-The former `minimax/minimax-m3.1-flash:free` launch promotion ends on
-2026-10-22 at 12:00 UTC (OpenRouter model page). The default is
-`nvidia/nemotron-3-ultra-550b-a55b:free`, a currently free model with tool calling in the public
-catalog. The original MiniMax free model passed live Claude/Pi/OpenCode E2E
-(response and file-edit tool invocation) on 2026-10-21, but the replacement
-model has **not yet** passed the same harness-specific E2E. Validate it on
-Mac, Windows, and WSL before relying on it for unattended development. A
-free-route failure must not switch to a paid model.
+`minimax/minimax-m3.1-flash:free` was retired on 2026-10-22 (`400 … the
+:free variant has been retired`), which showed that pinning any single free
+model breaks without notice. `openrouter-free` therefore no longer has a
+default model; it is chosen at **launch** from OpenRouter's public catalog
+(`GET /api/v1/models`, no credential sent):
+
+- **Eligible** = every `pricing.*` value is exactly `0`, the id is a `:free`
+  variant, `tools` is in `supported_parameters`, context ≥ `min_context`
+  (128k), text in/out only, and `expiration_date` is not within 24h.
+- **Order** = models expiring within 14 days last; then the preference order
+  of `models` in `config/agents.toml` (coding-oriented first, editable, never
+  widens eligibility); then larger context; then id.
+- `--model <id>` must also be eligible. A retired, monetized, unknown or
+  unfit id exits 2 with the reason and the currently eligible models.
+- **No candidate** or **catalog unreachable with no usable cache** exits 1
+  with the reason. There is no paid fallback anywhere; the paid `openrouter`
+  route is a separate, explicit choice.
+- **Cache**: `<user cache dir>/dotfiles-agent/openrouter-free-models.json`
+  (`$XDG_CACHE_HOME`, `~/.cache`, or `%LOCALAPPDATA%`; override with
+  `AGENT_CACHE_DIR`). Fresh for 1h (no request at all inside that window);
+  after a failed fetch (429/5xx/timeout/bad body) a cache up to 7 days old is
+  reused with a warning. `agent models openrouter-free` always refreshes and
+  prints the live selection order — run it after a model-retired error.
+- **Runtime switching** is not possible per harness: the model is fixed for
+  a session, `models`/`fallbacks` are request-body fields Claude Code, Pi
+  and OpenCode cannot set, and a proxy is out of scope for this launcher. A
+  model that dies mid-session is handled by relaunching (re-selects). For
+  OpenRouter-side failover during a session, opt in explicitly with
+  `--model openrouter/free` (the official free router: a tool-capable free
+  model per request; the answering model varies, so it is never auto-picked).
+- Free-tier limits are account-wide (20 req/min; 1000 req/day with ≥ $10
+  purchase history). `429 free-models-per-day` cannot be worked around
+  without paying and is surfaced as is.
 
 ## Route matrix and verification status
 
 | harness \ provider | zen | openrouter | openrouter-free | deepseek | minimax |
 | --- | --- | --- | --- | --- | --- |
-| claude | — (no Anthropic-compatible endpoint verified; zen free tier is client-bound: pi got `403 … only … within OpenCode`) | yes, default `z-ai/glm-5.3-flash` | free models only, default `nvidia/nemotron-3-ultra-550b-a55b:free` (same endpoint + `OPENROUTER_API_KEY` as the paid provider; allowlist = live-verified pricing 0/0 ids only — paid ids exit 2) | yes, default `deepseek-flash` (route list: `deepseek-flash` only, because the endpoint silently remaps unknown names) | yes, default `MiniMax-M3.1-Flash` (official model ID; live M Plan verification pending; reasoning always on; effort defaults to `max`) |
-| opencode | yes, default `mimo-v2.6-flash-free` (free models; `opencode_id = "opencode"`) | yes | free models only, default `nvidia/nemotron-3-ultra-550b-a55b:free` (`opencode_id = "openrouter"` — OpenCode's native OpenRouter provider id; live route verification pending) | yes | yes, route default `MiniMax-M3` (route model list `["MiniMax-M3"]` only; OpenCode v2 previously silently fell back to Zen for the Preview ID; formal ID not yet verified — keep M3 as the known route default; `--model MiniMax-M3.1-Flash` exits 2 here) |
-| pi | — (free tier refused outside OpenCode) | yes | free models only, default `nvidia/nemotron-3-ultra-550b-a55b:free` (`pi_id = "openrouter"` — pi's native OpenRouter provider id; the route key is launcher-side routing only; live route verification pending) | yes | yes, default `MiniMax-M3.1-Flash` (official ID; verify real M Plan response and catalog behavior) |
+| claude | — (no Anthropic-compatible endpoint verified; zen free tier is client-bound: pi got `403 … only … within OpenCode`) | yes, default `z-ai/glm-5.3-flash` | free models only, model selected live (see above) (same endpoint + `OPENROUTER_API_KEY` as the paid provider; live catalog eligibility: pricing all 0 — paid ids exit 2) | yes, default `deepseek-flash` (route list: `deepseek-flash` only, because the endpoint silently remaps unknown names) | yes, default `MiniMax-M3.1-Flash` (official model ID; live M Plan verification pending; reasoning always on; effort defaults to `max`) |
+| opencode | yes, default `mimo-v2.6-flash-free` (free models; `opencode_id = "opencode"`) | yes | free models only, model selected live (see above) (`opencode_id = "openrouter"` — OpenCode's native OpenRouter provider id; live route verification pending) | yes | yes, route default `MiniMax-M3` (route model list `["MiniMax-M3"]` only; OpenCode v2 previously silently fell back to Zen for the Preview ID; formal ID not yet verified — keep M3 as the known route default; `--model MiniMax-M3.1-Flash` exits 2 here) |
+| pi | — (free tier refused outside OpenCode) | yes | free models only, model selected live (see above) (`pi_id = "openrouter"` — pi's native OpenRouter provider id; the route key is launcher-side routing only; live route verification pending) | yes | yes, default `MiniMax-M3.1-Flash` (official ID; verify real M Plan response and catalog behavior) |
 | dsh | — | — | — | passthrough (native dsh auth; install + `--version` verified, live session pending DeepSeek balance) | — |
 
 Not covered on purpose: `opencode`/`pi` on other providers, paid zen
 models (add them to the TOML deliberately), any automatic fallback
 between models or providers, and any paid OpenRouter id on an
-`openrouter-free` route (the free allowlist is closed — an unlisted or
-later-monetized id fails closed instead of silently billing).
+`openrouter-free` route (eligibility is re-checked against the live catalog at every launch — a
+retired or later-monetized id fails closed instead of silently billing).
 
 Verification is reported in two tiers, matching issue #45's acceptance
 criteria:
 
-- **Mock/syntax**: `bun test script/agent.test.ts` (34 cases:
+- **Mock/syntax**: `bun test script/agent.test.ts` (40 cases:
   help/list/models, unknown harness/provider/model, `--model` precedence,
-  MiniMax default vs. `require_model` fail-closed, openrouter-free allowlist
-  (paid ids exit 2, same credential as the paid provider), secret filtering
+  MiniMax default vs. `require_model` fail-closed, openrouter-free live selection
+  (paid/retired/unfit ids exit 2, no candidate / stale cache / 429 / 503, same credential as the paid provider), secret filtering
   both ways, missing secret, forbidden passthrough flags, shortcut
   equivalence/args/`--agent-model`/unknown names/link management, native
   commands staying unwrapped, config validation failures) plus

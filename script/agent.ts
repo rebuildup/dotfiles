@@ -45,6 +45,7 @@ import {
   mkdirSync,
   readFileSync,
   realpathSync,
+  renameSync,
   symlinkSync,
   unlinkSync,
   writeFileSync,
@@ -162,6 +163,10 @@ interface Provider {
   models: string[];
   opencode_id: string;
   pi_id: string;
+  // "openrouter": models are selected from the live public catalog (see
+  // resolveCatalogModel); `models` then only orders preferences.
+  catalog: string | null;
+  min_context: number;
 }
 
 interface Harness {
@@ -289,6 +294,7 @@ function loadConfig(path?: string): Config {
     }
     const table = tableValue;
     const secret = optionalStr(table, "secret", where);
+    const base_url = optionalStr(table, "base_url", where);
     const env = optionalStr(table, "env", where) || secret;
     const models = stringList(table["models"] ?? [], where, "models");
     const default_model = optionalStr(table, "default_model", where);
@@ -306,10 +312,24 @@ function loadConfig(path?: string): Config {
         `${where}: default_model '${default_model}' is not in models [${models.join(", ")}]`
       );
     }
+    const catalog = optionalStr(table, "catalog", where);
+    if (catalog !== null && catalog !== "openrouter") {
+      throw new AgentError(`${where}: unknown catalog '${catalog}' (expected "openrouter")`);
+    }
+    if (catalog && (default_model || require_model)) {
+      throw new AgentError(`${where}: catalog providers select their model live; drop default_model/require_model`);
+    }
+    if (catalog && !base_url) {
+      throw new AgentError(`${where}: catalog = "openrouter" needs base_url`);
+    }
+    const min_context = table["min_context"] ?? 128000;
+    if (typeof min_context !== "number" || !Number.isInteger(min_context) || min_context < 0) {
+      throw new AgentError(`${where}: 'min_context' must be a non-negative integer`);
+    }
     providers[key] = {
       key,
       label: requireStr(table, "label", where),
-      base_url: optionalStr(table, "base_url", where),
+      base_url,
       secret,
       env,
       default_model,
@@ -317,6 +337,8 @@ function loadConfig(path?: string): Config {
       models,
       opencode_id: optionalStr(table, "opencode_id", where) || key,
       pi_id: optionalStr(table, "pi_id", where) || key,
+      catalog,
+      min_context,
     };
   }
   if (Object.keys(providers).length === 0) {
@@ -467,6 +489,12 @@ function routeDefaultModel(route: Route, provider: Provider): string | null {
 
 function validateRouteDefaults(route: Route, provider: Provider): void {
   const where = `routes.'${route.key}'`;
+  if (provider.catalog) {
+    if (route.default_model || route.require_model || route.models) {
+      throw new AgentError(`${where}: catalog provider '${provider.key}' selects models live; drop route model settings`);
+    }
+    return;
+  }
   const defaultModel = routeDefaultModel(route, provider);
   const models = effectiveModels(route, provider);
   if (routeRequiresModel(route, provider)) {
@@ -520,6 +548,212 @@ function resolveModel(route: Route, provider: Provider, cliModel: string | null)
     );
   }
   return model;
+}
+
+// ---------------------------------------------------------------------------
+// Live free-model catalog (OpenRouter). Selection happens once, at launch:
+// the harnesses fix the model for the whole session and the launcher is not
+// a proxy, so mid-session failover is delegated to OpenRouter itself via the
+// explicit opt-in router id (`openrouter/free`). Nothing here can select a
+// priced model: eligibility requires every pricing field to be exactly 0.
+// ---------------------------------------------------------------------------
+
+const FREE_ROUTER_ID = "openrouter/free";
+const CATALOG_TTL_MS = 60 * 60 * 1000; // re-fetch at most hourly
+const CATALOG_STALE_MAX_MS = 7 * 24 * 60 * 60 * 1000; // usable when the fetch fails
+const EXPIRY_MARGIN_MS = 24 * 60 * 60 * 1000; // closer than this = effectively retired
+const EXPIRY_DEPRIORITIZE_MS = 14 * 24 * 60 * 60 * 1000; // ranked last, still selectable
+
+interface CatalogModel {
+  id: string;
+  context_length: number;
+  pricing: Record<string, string>;
+  supported_parameters: string[];
+  input_modalities: string[];
+  output_modalities: string[];
+  expiration_date: string | null;
+}
+
+interface Catalog {
+  fetched_at: number;
+  models: CatalogModel[];
+  source: "live" | "cache" | "stale";
+}
+
+function cacheDir(): string {
+  const base =
+    process.env.AGENT_CACHE_DIR ||
+    (IS_WINDOWS
+      ? process.env.LOCALAPPDATA || join(homedir(), "AppData", "Local")
+      : process.env.XDG_CACHE_HOME || join(homedir(), ".cache"));
+  return process.env.AGENT_CACHE_DIR ? base : join(base, "dotfiles-agent");
+}
+
+function catalogUrl(provider: Provider): string {
+  return process.env.AGENT_CATALOG_URL || `${(provider.base_url ?? "").replace(/\/+$/, "")}/v1/models`;
+}
+
+function normalizeCatalog(data: unknown): CatalogModel[] {
+  if (!Array.isArray(data)) throw new Error("catalog has no data array");
+  const models: CatalogModel[] = [];
+  for (const entry of data) {
+    if (!isPlainObject(entry) || typeof entry["id"] !== "string") continue;
+    const pricing = isPlainObject(entry["pricing"]) ? entry["pricing"] : {};
+    const arch = isPlainObject(entry["architecture"]) ? entry["architecture"] : {};
+    const strings = (value: unknown): string[] =>
+      Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
+    models.push({
+      id: entry["id"],
+      context_length: typeof entry["context_length"] === "number" ? entry["context_length"] : 0,
+      pricing: Object.fromEntries(Object.entries(pricing).map(([k, v]) => [k, String(v)])),
+      supported_parameters: strings(entry["supported_parameters"]),
+      // raw API rows nest modalities under `architecture`; cached rows are flat
+      input_modalities: strings(arch["input_modalities"] ?? entry["input_modalities"]),
+      output_modalities: strings(arch["output_modalities"] ?? entry["output_modalities"]),
+      expiration_date: typeof entry["expiration_date"] === "string" ? entry["expiration_date"] : null,
+    });
+  }
+  if (models.length === 0) throw new Error("catalog is empty");
+  return models;
+}
+
+function readCatalogCache(file: string): { fetched_at: number; models: CatalogModel[] } | null {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(file, "utf8"));
+    if (!isPlainObject(parsed) || typeof parsed["fetched_at"] !== "number") return null;
+    return { fetched_at: parsed["fetched_at"], models: normalizeCatalog(parsed["models"]) };
+  } catch {
+    return null;
+  }
+}
+
+async function loadCatalog(provider: Provider, forceRefresh: boolean): Promise<Catalog> {
+  const file = join(cacheDir(), `${provider.key}-models.json`);
+  const now = Date.now();
+  const cached = readCatalogCache(file);
+  if (cached && !forceRefresh && now - cached.fetched_at < CATALOG_TTL_MS) {
+    return { ...cached, source: "cache" };
+  }
+  let failure: string;
+  try {
+    // The catalog is public: no credential is sent.
+    const response = await fetch(catalogUrl(provider), { signal: AbortSignal.timeout(10_000) });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const body: unknown = await response.json();
+    const models = normalizeCatalog(isPlainObject(body) ? body["data"] : undefined);
+    try {
+      mkdirSync(dirname(file), { recursive: true });
+      const tmp = `${file}.${process.pid}.tmp`;
+      writeFileSync(tmp, JSON.stringify({ fetched_at: now, models }));
+      renameSync(tmp, file);
+    } catch (exc) {
+      console.error(`${PROGRAM}: warning: cannot write model cache ${file}: ${exc}`);
+    }
+    return { fetched_at: now, models, source: "live" };
+  } catch (exc) {
+    failure = exc instanceof Error ? exc.message : String(exc);
+  }
+  if (cached && now - cached.fetched_at < CATALOG_STALE_MAX_MS) {
+    const hours = Math.round((now - cached.fetched_at) / 3_600_000);
+    console.error(
+      `${PROGRAM}: warning: model catalog fetch failed (${failure}); using cache from ${hours}h ago`
+    );
+    return { ...cached, source: "stale" };
+  }
+  throw new AgentError(
+    `cannot determine available free models: catalog fetch failed (${failure}) and no usable cache ` +
+      `(${file}). No model is guessed and no paid fallback is used.`,
+    EXIT_RUNTIME
+  );
+}
+
+/** Why a catalog entry may not be used on a free route; null = eligible. */
+function freeIneligibleReason(model: CatalogModel, provider: Provider, now: number): string | null {
+  const prices = Object.entries(model.pricing);
+  if (!("prompt" in model.pricing) || !("completion" in model.pricing)) return "no pricing information";
+  const paid = prices.find(([, v]) => !(Number(v) === 0));
+  if (paid) return `not free (pricing.${paid[0]} = ${paid[1]})`;
+  if (!model.id.endsWith(":free") && model.id !== FREE_ROUTER_ID) return "not a :free variant";
+  if (!model.supported_parameters.includes("tools")) return "no tool calling support";
+  if (model.context_length < provider.min_context) {
+    return `context ${model.context_length} < required ${provider.min_context}`;
+  }
+  if (model.input_modalities.length > 0 && !model.input_modalities.includes("text")) return "no text input";
+  if (model.output_modalities.length > 0 && model.output_modalities.some((m) => m !== "text")) {
+    return "non-text output";
+  }
+  if (model.expiration_date) {
+    const expires = Date.parse(model.expiration_date);
+    if (Number.isFinite(expires) && expires - now < EXPIRY_MARGIN_MS) {
+      return `retired or retiring (expiration_date ${model.expiration_date})`;
+    }
+  }
+  return null;
+}
+
+/** Automatically selectable models, best first. The router id is opt-in only. */
+function rankFreeModels(catalog: Catalog, provider: Provider, now: number): CatalogModel[] {
+  const tier = (m: CatalogModel): number => {
+    const expires = m.expiration_date ? Date.parse(m.expiration_date) : NaN;
+    return Number.isFinite(expires) && expires - now < EXPIRY_DEPRIORITIZE_MS ? 1 : 0;
+  };
+  const preference = (m: CatalogModel): number => {
+    const index = provider.models.indexOf(m.id);
+    return index === -1 ? provider.models.length : index;
+  };
+  return catalog.models
+    .filter((m) => m.id !== FREE_ROUTER_ID && freeIneligibleReason(m, provider, now) === null)
+    .sort(
+      (a, b) =>
+        tier(a) - tier(b) ||
+        preference(a) - preference(b) ||
+        b.context_length - a.context_length ||
+        (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+    );
+}
+
+async function resolveCatalogModel(
+  route: Route,
+  provider: Provider,
+  cliModel: string | null,
+  forceRefresh = false
+): Promise<string> {
+  if (!cliModel && process.env.AGENT_MODEL) {
+    console.error("agent: warning: AGENT_MODEL is no longer read; use --model");
+  }
+  const catalog = await loadCatalog(provider, forceRefresh);
+  const now = Date.now();
+  const ranked = rankFreeModels(catalog, provider, now);
+  const top = ranked
+    .slice(0, 5)
+    .map((m) => m.id)
+    .join("\n  ");
+  if (cliModel) {
+    const entry = catalog.models.find((m) => m.id === cliModel);
+    const reason = entry ? freeIneligibleReason(entry, provider, now) : "not in the live OpenRouter catalog (retired or unknown)";
+    if (reason) {
+      throw new AgentError(
+        `model '${cliModel}' cannot be used on route '${route.key}': ${reason}.\n` +
+          `Currently eligible free models:\n  ${top || "(none)"}\n` +
+          `Explicit opt-in router for automatic runtime failover: ${FREE_ROUTER_ID}`
+      );
+    }
+    return cliModel;
+  }
+  const chosen = ranked[0];
+  if (!chosen) {
+    throw new AgentError(
+      `no eligible free model for route '${route.key}' (${catalog.models.length} catalog entries; ` +
+        `need pricing 0, :free, tool calling, context >= ${provider.min_context}, not retiring). ` +
+        `Stopping instead of using a paid model; retry later or run 'agent models ${provider.key}'.`,
+      EXIT_RUNTIME
+    );
+  }
+  console.error(
+    `${PROGRAM}: ${provider.key} -> ${chosen.id} ` +
+      `(context ${chosen.context_length}, catalog ${catalog.source})`
+  );
+  return chosen.id;
 }
 
 // ---------------------------------------------------------------------------
@@ -1445,6 +1679,8 @@ async function cmdRun(
       );
     }
     model = null;
+  } else if (provider.catalog) {
+    model = await resolveCatalogModel(route, provider, cliModel);
   } else {
     model = resolveModel(route, provider, cliModel);
   }
@@ -1503,9 +1739,9 @@ function cmdList(config: Config): number {
     const route = config.routes[key];
     const provider = config.providers[route.provider];
     const defaultModel = routeDefaultModel(route, provider);
-    const cell = defaultModel ?? "--model required";
+    const cell = provider.catalog ? "(live catalog)" : (defaultModel ?? "--model required");
     let notes = route.note || "";
-    if (defaultModel === null) {
+    if (defaultModel === null && !provider.catalog) {
       notes = `(explicit --model) ${notes}`.trimEnd();
     }
     console.log(
@@ -1520,7 +1756,7 @@ function cmdList(config: Config): number {
   return 0;
 }
 
-function cmdModels(config: Config, providerKey: string): number {
+async function cmdModels(config: Config, providerKey: string): Promise<number> {
   const provider = config.providers[providerKey];
   if (!provider) {
     const known = Object.keys(config.providers).sort().join(", ");
@@ -1548,7 +1784,11 @@ function cmdModels(config: Config, providerKey: string): number {
   for (const route of routes) {
     const harness = config.harnesses[route.harness];
     const defaultModel = routeDefaultModel(route, provider);
-    const suffix = defaultModel ? ` (default ${defaultModel})` : " (--model required)";
+    const suffix = provider.catalog
+      ? " (model selected live)"
+      : defaultModel
+        ? ` (default ${defaultModel})`
+        : " (--model required)";
     console.log(`  ${route.key.padEnd(22)} [${harness.adapter}]${suffix}`);
     if (route.note) {
       console.log(`    note: ${route.note}`);
@@ -1559,6 +1799,17 @@ function cmdModels(config: Config, providerKey: string): number {
         console.log(`      ${model}`);
       }
     }
+  }
+  if (provider.catalog) {
+    // explicit, user-initiated command: always refreshes the cache
+    const catalog = await loadCatalog(provider, true);
+    const now = Date.now();
+    const ranked = rankFreeModels(catalog, provider, now);
+    console.log(`live free models (selection order; catalog ${catalog.source}, min context ${provider.min_context}):`);
+    ranked.forEach((m, i) => console.log(`  ${m.id}   [context ${m.context_length}${i === 0 ? "; auto-selected" : ""}]`));
+    if (ranked.length === 0) console.log("  (none eligible)");
+    console.log(`  ${FREE_ROUTER_ID}   [opt-in router: OpenRouter picks a free model per request]`);
+    return 0;
   }
   console.log("models:");
   for (const model of provider.models) {
@@ -1653,7 +1904,7 @@ async function main(argv: string[]): Promise<number> {
     return cmdCheck(config);
   }
   if (action[0] === "models") {
-    return cmdModels(config, action[1]);
+    return await cmdModels(config, action[1]);
   }
   if (action[0] === "shortcuts") {
     return cmdShortcuts(config, action[1]);
