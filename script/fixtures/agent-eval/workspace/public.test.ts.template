@@ -1,0 +1,11 @@
+import { test, expect } from 'bun:test';
+import { lookup } from './src/catalog';
+import { subtotal } from './src/pricing';
+import { reserve } from './src/reserve';
+test('existing lookup normalization',()=>expect(lookup({tea:{priceCents:105,stock:4}},' TEA ')?.priceCents).toBe(105));
+test('pricing regression: ordinary totals are preserved',()=>{expect(subtotal(105,2)).toBe(210);expect(subtotal(105,2,10)).toBe(189);});
+test('reservation reduces stock and returns total',()=>{
+ const input={tea:{priceCents:105,stock:4}};
+ expect(reserve(input,[{sku:' TEA ',quantity:2}],10)).toEqual({inventory:{tea:{priceCents:105,stock:2}},totalCents:189});
+ expect(input.tea.stock).toBe(4);
+});

@@ -25,6 +25,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { evaluationFixtureDigest } from "./agent-eval-fixture";
 
 const REPO = dirname(dirname(realpathSync(import.meta.path)));
 const LAUNCHER = join(REPO, "script", "agent.ts");
@@ -45,6 +46,7 @@ const HARNESSES = ["claude", "opencode", "pi", "dsh"];
 
 const FAKE_HARNESS = `#!/usr/bin/env bash
 set -euo pipefail
+if [[ "\${1:-}" == "--version" ]]; then printf "test-harness-1\\n"; exit 0; fi
 {
   printf 'ARGV\\n'
   for arg in "$@"; do printf '%s\\n' "$arg"; done
@@ -552,7 +554,7 @@ const FREE_ENTRY = "vendor/free-a:free";
 function seedCatalog(
   fixture: Fixture,
   models: unknown[],
-  options: { ageMs?: number; url?: string } = {},
+  options: { ageMs?: number; url?: string; quality?: boolean } = {},
 ): Record<string, string> {
   const dir = join(fixture.tmp, "cache");
   mkdirSync(dir, { recursive: true });
@@ -560,12 +562,143 @@ function seedCatalog(
     join(dir, "openrouter-free-models.json"),
     JSON.stringify({ fetched_at: Date.now() - (options.ageMs ?? 0), models }),
   );
+  const evidence = join(dir, "quality.json");
+  if (options.quality !== false) seedQuality(evidence, models);
   return {
+    AGENT_QUALITY_FILE: evidence,
     AGENT_CACHE_DIR: dir,
     // unreachable: any accidental network use fails the fetch loudly
     AGENT_CATALOG_URL: options.url ?? "http://127.0.0.1:1/v1/models",
   };
 }
+
+/** Successful records here are synthetic unit-test evidence, never installed. */
+function seedQuality(file: string, models: unknown[], counts: Record<string, number> = {}): void {
+  const at = new Date(Date.now() - 1000).toISOString();
+  const digest = evaluationFixtureDigest();
+  const ids = ["test/reference:free", ...models.map(m => (m as {id:string}).id)];
+  const evaluations = ["claude", "opencode", "pi"].flatMap(harness => ids.map(model_id => ({
+    model_id, provider:"openrouter", harness, harness_version:"test-harness-1", evaluated_at:at,
+    evaluation_version:"agent-e2e-v1", fixture_digest:digest, benchmarks:[],
+    trials:Array.from({length:counts[model_id] ?? 3}, (_, i) => ({
+      id:`${model_id}-${harness}-${i}`, evaluated_at:at, success:true, integrity_passed:true,
+      observed_model:model_id, tool_calls:4,tool_failures:0,duration_ms:1000,failure_kind:null,failure_reason:null,
+    })),
+  })));
+  writeFileSync(file, JSON.stringify({schema_version:1,evaluation_version:"agent-e2e-v1",fixture_digest:digest,
+    calibration:{calibrated_at:at,rationale:"Synthetic test baseline, not production evidence",
+      baselines:["claude","opencode","pi"].map(harness => ({model_id:"test/reference:free",harness,evaluated_at:at}))},evaluations}));
+}
+
+test(
+  "unverified catalog candidates never auto-launch or fetch credentials",
+  withFixture((fixture) => {
+    const env = seedCatalog(fixture, [catalogEntry(FREE_ENTRY)], {quality:false});
+    const result = fixture.run(["claude", "openrouter-free"], { config: REAL_CONFIG, env });
+    check(result.exitCode === 1, `unverified model started: ${result.stderr}`);
+    check(result.stderr.toString().includes("no qualified free model"), result.stderr.toString());
+    check(!existsSync(fixture.marker), "unverified selection fetched credentials");
+    const explicit = fixture.run(["claude", "openrouter-free", "--model", FREE_ENTRY], {config: REAL_CONFIG, env});
+    check(explicit.exitCode === 2, "explicit unverified model needs opt-in");
+    check(explicit.stderr.toString().includes("--allow-unverified"), explicit.stderr.toString());
+  }),
+);
+
+test(
+  "unverified opt-in requires an explicit model and still enforces availability",
+  withFixture((fixture) => {
+    const env = seedCatalog(fixture, [catalogEntry(FREE_ENTRY), catalogEntry("v/paid:free", {pricing:{prompt:"1",completion:"0"}})]);
+    const allowed = fixture.run(["claude", "openrouter-free", "--model", FREE_ENTRY, "--allow-unverified"], {config:REAL_CONFIG,env});
+    check(allowed.exitCode === 0, allowed.stderr.toString());
+    const noModel = fixture.run(["claude", "openrouter-free", "--allow-unverified"], {config:REAL_CONFIG,env});
+    check(noModel.exitCode === 2, "opt-in must not make auto-selection unverified");
+    const paid = fixture.run(["claude", "openrouter-free", "--model", "v/paid:free", "--allow-unverified"], {config:REAL_CONFIG,env});
+    check(paid.exitCode === 2 && paid.stderr.toString().includes("not free"), paid.stderr.toString());
+    check(!existsSync(fixture.marker), "paid model fetched credentials");
+  }),
+);
+
+test(
+  "ambiguous pricing expiry and modalities fail closed even with opt-in",
+  withFixture((fixture) => {
+    const bad = [
+      catalogEntry("v/space:free", {pricing:{prompt:" ",completion:"0"}}),
+      catalogEntry("v/noncanonical:free", {pricing:{prompt:"0.0",completion:"0"}}),
+      catalogEntry("v/date:free", {expiration_date:"bogus"}),
+      catalogEntry("v/emptydate:free", {expiration_date:""}),
+      catalogEntry("v/datedtype:free", {expiration_date:123}),
+      catalogEntry("v/input:free", {input_modalities:[]}),
+      catalogEntry("v/output:free", {output_modalities:[]}),
+    ];
+    const env = seedCatalog(fixture, bad);
+    for (const row of bad) {
+      const result = fixture.run(["claude", "openrouter-free", "--model", row.id, "--allow-unverified"], {config:REAL_CONFIG,env});
+      check(result.exitCode === 2 && /not free|expiration_date|text input|text output/.test(result.stderr.toString()), `invalid metadata not rejected for ${row.id}: ${result.stderr}`);
+      check(!existsSync(fixture.marker), "invalid metadata fetched credentials");
+    }
+  }),
+);
+
+test(
+  "calibration references actual complete evidence and does not invent qualification",
+  withFixture((fixture) => {
+    const env = seedCatalog(fixture, [catalogEntry(FREE_ENTRY)]);
+    const store = JSON.parse(readFileSync(env.AGENT_QUALITY_FILE, "utf8"));
+    store.calibration = null;
+    writeFileSync(env.AGENT_QUALITY_FILE, JSON.stringify(store));
+    const before = fixture.run(["select", "claude", "openrouter-free"], {config:REAL_CONFIG,env});
+    check(before.exitCode === 1, "uncalibrated store must not select");
+    const calibrated = fixture.run(["evaluate", "calibrate", "claude", "--model", FREE_ENTRY, "--reason", "three independently graded trials completed"], {config:REAL_CONFIG,env});
+    check(calibrated.exitCode === 0, calibrated.stderr.toString());
+    check(!existsSync(fixture.marker), "calibration must not request credentials");
+    const after = fixture.run(["select", "claude", "openrouter-free"], {config:REAL_CONFIG,env});
+    check(after.exitCode === 0 && after.stdout.toString().trim() === FREE_ENTRY, after.stderr.toString());
+    const data = JSON.parse(readFileSync(env.AGENT_QUALITY_FILE, "utf8"));
+    check(data.calibration.baselines[0].model_id === FREE_ENTRY, "calibration must identify actual model");
+    data.evaluations.find((e: {model_id:string;harness:string}) => e.model_id === FREE_ENTRY && e.harness === "claude").trials.pop();
+    writeFileSync(env.AGENT_QUALITY_FILE, JSON.stringify(data));
+    const insufficient = fixture.run(["evaluate", "calibrate", "claude", "--model", FREE_ENTRY, "--reason", "insufficient trial count must fail"], {config:REAL_CONFIG,env});
+    check(insufficient.exitCode !== 0, "calibration must not qualify two trials");
+  }),
+);
+
+test(
+  "harness version inspection receives no provider or Infisical credentials",
+  withFixture((fixture) => {
+    const env = seedCatalog(fixture, [catalogEntry(FREE_ENTRY)]);
+    const command = join(fixture.bindir, "claude");
+    writeFileSync(command, FAKE_HARNESS.replace('then printf "test-harness-1', 'then if env | grep -Eq "^(OPENROUTER_API_KEY|DEEPSEEK_API_KEY|INFISICAL_TOKEN|ANTHROPIC_AUTH_TOKEN)="; then exit 99; fi; printf "test-harness-1'));
+    const result = fixture.run(["select", "claude", "openrouter-free"], {config:REAL_CONFIG,env:{...env,
+      OPENROUTER_API_KEY:"test-selected-key",DEEPSEEK_API_KEY:"test-other-key",INFISICAL_TOKEN:"test-session",ANTHROPIC_AUTH_TOKEN:"test-other-token"}});
+    check(result.exitCode === 0, result.stderr.toString());
+    check(!existsSync(fixture.marker), "selection must not inject secrets");
+  }),
+);
+
+test(
+  "free OpenCode cannot delegate model selection to an existing server",
+  withFixture((fixture) => {
+    const env = seedCatalog(fixture, [catalogEntry(FREE_ENTRY)]);
+    for (const tail of [["--server", "http://localhost:9999"], ["--server=http://localhost:9999"], ["attach", "http://localhost:9999"], ["run", "--attach", "http://localhost:9999"]]) {
+      const result = fixture.run(["opencode", "openrouter-free", "--", ...tail], {config:REAL_CONFIG,env});
+      check(result.exitCode === 2 && result.stderr.toString().includes("process-scoped"), `server could bypass selected free model: ${result.stderr}`);
+      check(!existsSync(fixture.marker), "invalid server route fetched credentials");
+    }
+  }),
+);
+
+test(
+  "stderr-only harness versions remain bound to current quality evidence",
+  withFixture((fixture) => {
+    const env = seedCatalog(fixture, [catalogEntry(FREE_ENTRY)]);
+    const store = JSON.parse(readFileSync(env.AGENT_QUALITY_FILE,"utf8"));
+    for (const row of store.evaluations) row.harness_version="0.73.1";
+    writeFileSync(env.AGENT_QUALITY_FILE, JSON.stringify(store));
+    writeFileSync(join(fixture.bindir,"pi"),FAKE_HARNESS.replace('printf "test-harness-1', 'printf "0.73.1').replace('exit 0; fi','exit 0; fi').replace('then printf "0.73.1\\n";', 'then printf "0.73.1\\n" >&2;'));
+    const result = fixture.run(["select","pi","openrouter-free"],{config:REAL_CONFIG,env});
+    check(result.exitCode === 0,result.stderr.toString());
+  }),
+);
 
 test(
   "test_openrouter_free_routes_select_live",
@@ -576,20 +709,20 @@ test(
       // paid sibling of a retired free id: must never be picked
       catalogEntry("minimax/minimax-m3.1-flash", { pricing: { prompt: "0.00000015", completion: "0.0000006" } }),
     ]);
-    // fresh cache => the (unreachable) network is never touched; the unlisted
-    // models rank by context, so the biggest one wins
+    // Fresh cache never touches the network. Equal-quality records tie by id,
+    // not by context length or a manually configured preference.
     const result = fixture.run(["claude", "openrouter-free"], { config: REAL_CONFIG, env });
     check(result.exitCode === 0, result.stderr.toString());
     const [argv, childEnv] = fixture.child();
     check(argv.length === 0, `argv ${JSON.stringify(argv)}`);
     check(childEnv["ANTHROPIC_BASE_URL"] === "https://openrouter.ai/api", JSON.stringify(childEnv));
     for (const role of ["ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL"]) {
-      check(childEnv[role] === "vendor/zzz-big:free", `${role}=${childEnv[role]}`);
+      check(childEnv[role] === "vendor/free-a:free", `${role}=${childEnv[role]}`);
     }
     check(childEnv["ANTHROPIC_AUTH_TOKEN"] === "secret-openrouter", childEnv["ANTHROPIC_AUTH_TOKEN"]);
     check(childEnv["OPENROUTER_API_KEY"] === "secret-openrouter", childEnv["OPENROUTER_API_KEY"]);
-    check(result.stderr.toString().includes("vendor/zzz-big:free"), "selection must be reported");
-    check(childEnv["CLAUDE_CODE_MAX_RETRIES"] === "2", "free route must cap harness retries");
+    check(result.stderr.toString().includes(FREE_ENTRY), "selection must be reported");
+    check(childEnv["CLAUDE_CODE_MAX_RETRIES"] === "0", "free route must cap harness retries");
     for (const leak of ["DEEPSEEK_API_KEY", "OPENCODE_API_KEY", "MIMO_API_KEY", "INFISICAL_TOKEN", "MINIMAX_M_PLAN_KEY"]) {
       check(!(leak in childEnv), `secret leaked to child: ${leak}`);
     }
@@ -599,12 +732,12 @@ test(
     check(oc.exitCode === 0, oc.stderr.toString());
     const [, envOc] = fixture.child();
     const parsed = JSON.parse(envOc["OPENCODE_CONFIG_CONTENT"] as string);
-    check(parsed.model === "openrouter/vendor/zzz-big:free", JSON.stringify(parsed));
+    check(parsed.model === "openrouter/vendor/free-a:free", JSON.stringify(parsed));
 
     const pi = fixture.run(["pi", "openrouter-free"], { config: REAL_CONFIG, env });
     check(pi.exitCode === 0, pi.stderr.toString());
     const [argvPi] = fixture.child();
-    check(argvPi.join(" ").includes("--provider openrouter --model vendor/zzz-big:free"), JSON.stringify(argvPi));
+    check(argvPi.join(" ").includes("--provider openrouter --model vendor/free-a:free"), JSON.stringify(argvPi));
 
     // explicit eligible model and the opt-in router are accepted
     const explicit = fixture.run(["claude", "openrouter-free", "--model", FREE_ENTRY], { config: REAL_CONFIG, env });
@@ -614,7 +747,7 @@ test(
 );
 
 test(
-  "test_openrouter_free_preference_order_and_expiry",
+  "test_openrouter_free_quality_ranking_and_expiry",
   withFixture((fixture) => {
     const soon = new Date(Date.now() + 5 * 86_400_000).toISOString();
     const env = seedCatalog(fixture, [
@@ -622,9 +755,13 @@ test(
       catalogEntry("cohere/north-mini-code:free", { context_length: 256000 }), // preferred #1
       catalogEntry("nvidia/nemotron-3-ultra-550b-a55b:free", { context_length: 1000000 }),
     ]);
+    seedQuality(env.AGENT_QUALITY_FILE, [catalogEntry("cohere/north-mini-code:free"), catalogEntry("poolside/laguna-s-2.1:free"), catalogEntry("nvidia/nemotron-3-ultra-550b-a55b:free")], {"nvidia/nemotron-3-ultra-550b-a55b:free":6});
     const result = fixture.run(["claude", "openrouter-free"], { config: REAL_CONFIG, env });
     check(result.exitCode === 0, result.stderr.toString());
-    check(fixture.child()[1]["ANTHROPIC_MODEL"] === "cohere/north-mini-code:free", "preference order ignored");
+    check(fixture.child()[1]["ANTHROPIC_MODEL"] === "nvidia/nemotron-3-ultra-550b-a55b:free", "quality evidence must beat configured North-first order");
+    const select = fixture.run(["select", "claude", "openrouter-free"], {config:REAL_CONFIG,env});
+    check(select.exitCode === 0 && select.stdout.toString().trim() === "nvidia/nemotron-3-ultra-550b-a55b:free", select.stderr.toString());
+    check(!existsSync(fixture.marker), "select must not fetch credentials or start harness session");
 
     // an entry expiring within 24h is treated as already retired
     const retired = seedCatalog(fixture, [
@@ -683,8 +820,8 @@ test(
     check(auto.exitCode === 0, auto.stderr.toString());
     check(fixture.child()[1]["ANTHROPIC_MODEL"] === FREE_ENTRY, "router must not be auto-selected");
     const explicit = fixture.run(["claude", "openrouter-free", "--model", "openrouter/free"], { config: REAL_CONFIG, env });
-    check(explicit.exitCode === 0, explicit.stderr.toString());
-    check(fixture.child()[1]["ANTHROPIC_MODEL"] === "openrouter/free", "explicit router rejected");
+    check(explicit.exitCode === 2, "random router cannot carry stable quality evidence");
+    check(explicit.stderr.toString().includes("stable model identity"), explicit.stderr.toString());
   }),
 );
 
@@ -709,9 +846,10 @@ test(
     // 429 / 5xx from the catalog endpoint: expired cache is reused (stale, with a warning)
     const stale = seedCatalog(fixture, [catalogEntry(FREE_ENTRY)], { ageMs: 3 * 3_600_000 });
     const reused = fixture.run(["claude", "openrouter-free"], { config: REAL_CONFIG, env: stale });
-    check(reused.exitCode === 0, reused.stderr.toString());
+    check(reused.exitCode === 1, reused.stderr.toString());
     check(reused.stderr.toString().includes("using cache"), reused.stderr.toString());
-    check(fixture.child()[1]["ANTHROPIC_MODEL"] === FREE_ENTRY, "stale cache not used");
+    check(reused.stderr.toString().includes("discovery-only"), "stale prices cannot authorize execution");
+    check(!existsSync(fixture.marker), "stale pricing fetched credentials");
 
     // cache too old: refuse instead of guessing a model
     const tooOld = seedCatalog(fixture, [catalogEntry(FREE_ENTRY)], { ageMs: 8 * 86_400_000 });
@@ -762,17 +900,17 @@ test(
       const cache = join(fixture.tmp, "cache-http");
       for (const failing of ["429", "503"] as const) {
         mode = failing;
-        const failed = await run(["claude", "openrouter-free"], { AGENT_CACHE_DIR: cache, AGENT_CATALOG_URL: url });
+        const failed = await run(["claude", "openrouter-free", "--model", "vendor/live-new:free", "--allow-unverified"], { AGENT_CACHE_DIR: cache, AGENT_CATALOG_URL: url });
         check(failed.code === 1, `${failing}: exit ${failed.code}: ${failed.stderr}`);
         check(failed.stderr.includes(`HTTP ${failing}`), failed.stderr);
       }
       mode = "ok";
-      const ok = await run(["claude", "openrouter-free"], { AGENT_CACHE_DIR: cache, AGENT_CATALOG_URL: url });
+      const ok = await run(["claude", "openrouter-free", "--model", "vendor/live-new:free", "--allow-unverified"], { AGENT_CACHE_DIR: cache, AGENT_CATALOG_URL: url });
       check(ok.code === 0, ok.stderr);
       check(ok.stderr.includes("vendor/live-new:free"), ok.stderr);
       const before = hits;
       // cached now: no further requests inside the TTL
-      const again = await run(["claude", "openrouter-free"], { AGENT_CACHE_DIR: cache, AGENT_CATALOG_URL: url });
+      const again = await run(["claude", "openrouter-free", "--model", "vendor/live-new:free", "--allow-unverified"], { AGENT_CACHE_DIR: cache, AGENT_CATALOG_URL: url });
       check(again.code === 0, again.stderr);
       check(hits === before, `unexpected catalog re-fetch inside TTL (${hits - before})`);
       // the explicit models command refreshes
@@ -1007,7 +1145,7 @@ test(
     // Plain `claude`/`opencode` never go through the launcher.
     const env = fixture.baseEnv();
     const result = Bun.spawnSync({
-      cmd: [join(fixture.bindir, "claude"), "--version"],
+      cmd: [join(fixture.bindir, "claude"), "--help"],
       env,
       stdout: "pipe",
       stderr: "pipe",
