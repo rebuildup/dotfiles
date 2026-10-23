@@ -1876,7 +1876,12 @@ async function cmdCalibrate(config: Config, args: string[]): Promise<number> {
   const file = qualityPath(provider);
   const lock = `${file}.lock`;
   try { writeFileSync(lock, "calibration", { flag: "wx", mode: 0o600 }); }
-  catch { throw new AgentError("quality evidence is locked by another evaluation/calibration", EXIT_RUNTIME); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      throw new AgentError("quality evidence is locked by another evaluation/calibration", EXIT_RUNTIME);
+    }
+    throw new AgentError(`cannot create calibration lock: ${error instanceof Error ? error.message : String(error)}`, EXIT_RUNTIME);
+  }
   try {
     const store = await loadQualityStore(file);
     const evaluation = store.evaluations.filter(e => e.model_id === args[2] && e.harness === harness.key)

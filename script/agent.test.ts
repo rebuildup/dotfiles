@@ -665,6 +665,42 @@ test(
   }),
 );
 
+if (process.platform !== "win32") {
+  test(
+    "calibration distinguishes filesystem errors from an existing lock",
+    withFixture((fixture) => {
+      const env = seedCatalog(fixture, [catalogEntry(FREE_ENTRY)]);
+      chmodSync(env.AGENT_CACHE_DIR, 0o500);
+      let result;
+      try {
+        result = fixture.run(
+          [
+            "evaluate",
+            "calibrate",
+            "claude",
+            "--model",
+            FREE_ENTRY,
+            "--reason",
+            "lock creation error reporting",
+          ],
+          { config: REAL_CONFIG, env },
+        );
+      } finally {
+        chmodSync(env.AGENT_CACHE_DIR, 0o700);
+      }
+      check(result!.exitCode !== 0, "read-only evidence directory must fail");
+      check(
+        result!.stderr.toString().includes("cannot create calibration lock"),
+        result!.stderr.toString(),
+      );
+      check(
+        !result!.stderr.toString().includes("locked by another"),
+        "filesystem errors must not be reported as lock conflicts",
+      );
+    }),
+  );
+}
+
 test(
   "harness version inspection receives no provider or Infisical credentials",
   withFixture((fixture) => {
