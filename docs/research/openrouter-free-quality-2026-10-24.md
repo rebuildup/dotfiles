@@ -142,3 +142,43 @@ The PR's historical API E2E remained incomplete due to a reported daily quota
 error (`used 11545`, `limit 1000`, zero monetary usage). That old observation
 cannot establish the current account quota, and no new authenticated check or
 inference result is claimed by this research.
+
+## Bounded local E2E screening (2026-10-24 JST)
+
+Initial screening used Pi `0.73.1`, fixture digest
+`5c4dbd1cf076d6bc8a554b358aa0cdd9c13bd3d41d61395d29416e1f9a515b76`,
+`isolated-default-v1`, one trial, a 12-forwarded-inference-request cap and a
+180-second task timeout. All calls used the exact `:free` model ID. Runs were
+serial; API errors and task failures stopped the run. Raw sanitized per-run
+logs and hashes are machine-local under `~/.cache/dotfiles-agent/`; they are
+not committed.
+
+| Model | Pi result | Requests | Duration | Interpretation |
+| --- | --- | ---: | ---: | --- |
+| `poolside/laguna-s-2.1:free` | 13 tool calls, 2 tool failures; no passing final grade | 9 | 180.060 s | Actual model observed; task timeout, counted as capability failure. |
+| `cohere/north-mini-code:free` | 11 tool calls, 1 tool failure; public regression failed | 9 | 49.323 s | Actual model observed; capability failure. |
+| `nvidia/nemotron-3-super-120b-a12b:free` | No model response | 1 | 3.146 s | HTTP 404, `Provider returned error`; infrastructure/provider failure, not a capability result. No retry. |
+| `nvidia/nemotron-3-ultra-550b-a55b:free` | 15 tool calls, 2 tool failures; no passing final grade | 12 | 149.767 s | Actual model observed; per-trial request budget exhausted, counted as capability failure. |
+
+The first current-key preflight reported 960 daily requests remaining. These
+four guarded runs made 31 inference attempts; the counter later reported 932.
+The evaluator's guarded attempt counts and the provider's daily counter differ
+by three in this observation window, so the counter is not treated as an exact
+per-call ledger.
+
+One diagnostic run gave Nemotron 3 Ultra more headroom. It used the same Pi,
+fixture and generation profile with one trial, a 24-request cap and a
+240-second timeout. The exact model was observed and three tool calls occurred
+before an OpenRouter HTTP 200 stream carried provider code 503,
+`Upstream error from Nvidia: Service temporarily overloaded`. This is recorded
+as an infrastructure failure and was not retried. It is a separate condition
+profile and cannot be pooled with the initial screen. That run used four
+guarded inference attempts. The latest current-key preflight reported 930
+requests remaining; the counter decrease did not match guarded attempts
+one-for-one.
+
+No run was calibrated as a baseline. No model qualified. Claude Code and
+OpenCode were not evaluated; the results above apply only to Pi and the
+recorded fixture/conditions. These results do not establish the best model
+across harnesses, and the failed runs cannot be replaced with later cherry-
+picked batches under the same fresh evaluation profile.

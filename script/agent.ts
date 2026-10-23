@@ -1821,6 +1821,9 @@ async function cmdModels(config: Config, providerKey: string): Promise<number> {
     const candidates = catalog.models.filter(m => m.id.endsWith(":free") || provider.models.includes(m.id));
     const available = rankFreeModels(catalog, provider, now);
     console.log(`free model discovery (catalog ${catalog.source}, min context ${provider.min_context}):`);
+    console.log(
+      `quality evidence: ${qualityPath(provider)}; public benchmark context: config/openrouter-benchmarks.json`,
+    );
     for (const route of routes) {
       const assessments = await qualityAssessments(provider, config.harnesses[route.harness], available);
       const chosen = rankQualified(assessments)[0];
@@ -1828,7 +1831,11 @@ async function cmdModels(config: Config, providerKey: string): Promise<number> {
       for (const m of candidates) {
         const reason = freeIneligibleReason(m, provider, now);
         const quality = assessments.find(a => a.model_id === m.id);
-        console.log(`    ${m.id}: ${reason ? "unavailable: " + reason : quality!.status + ": " + quality!.reasons.join("; ")}`);
+        const metrics = quality?.metrics;
+        const measured = metrics
+          ? ` [completed ${metrics.successes}/${metrics.capability_trials}; tool failures ${metrics.tool_failures}/${metrics.tool_calls}; mean ${Math.round(metrics.duration_ms)}ms; infrastructure failures ${metrics.infrastructure_failures}]`
+          : "";
+        console.log(`    ${m.id}: ${reason ? "unavailable: " + reason : quality!.status + ": " + quality!.reasons.join("; ")}${measured}`);
       }
       for (const missing of provider.models.filter(id => !catalog.models.some(m => m.id === id))) console.log(`    ${missing}: unavailable: absent from catalog`);
     }

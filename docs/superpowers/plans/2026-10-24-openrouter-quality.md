@@ -31,13 +31,25 @@ and ADR-0012.
 ## Tasks
 
 - [x] Inspect main, Issue #72, PR #73, related issues and baseline tests.
-- [ ] Quality worker: tests first for strict evidence, calibration and ranking;
+- [x] Quality worker: tests first for strict evidence, calibration and ranking;
   implement `agent-quality.ts`; version/provider/harness/freshness are checked.
-- [ ] Evaluator worker: tests first for fixture grading, transcript identity,
+- [x] Evaluator worker: tests first for fixture grading, transcript identity,
   quota and request budget; implement explicit sequential temporary-project E2E.
-- [ ] Parent: tests first for availability failures, opt-in and selection CLI;
+- [x] Parent: tests first for availability failures, opt-in and selection CLI;
   integrate configuration, quality ranking and lazy evaluation command.
-- [ ] Research worker: official catalog, quotas and attributed benchmark records.
-- [ ] Run required repository gates, real quota preflight and bounded E2E if possible.
-- [ ] Publish current changes to PR #73, get independent review, fix issues,
-  and merge only if the requested acceptance criteria are demonstrated.
+- [x] Research worker: official catalog, quotas and attributed benchmark records.
+- [x] Run required repository gates, real quota preflight and bounded E2E screening.
+- [ ] Publish final changes to PR #73 and get final independent review.
+- [ ] Demonstrate repeatable passing evidence for a baseline and evaluate
+  Claude Code, Pi and OpenCode before qualifying or adopting any model.
+- [ ] Merge only after all requested acceptance criteria are demonstrated.
+
+## Current acceptance status
+
+Implementation and local gates are complete. The recorded live screen covers
+four requested models in Pi only, under one fixed condition profile; none
+qualified. The installed-workstation `./script/check` reports existing links
+to the primary checkout while this work runs in an isolated worktree, missing
+machine-local targets, and the absent Claude settings submodule. No adoption,
+calibration or merge is justified until the outstanding real-harness evidence
+is collected.

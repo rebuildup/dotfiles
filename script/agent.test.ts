@@ -580,6 +580,7 @@ function seedQuality(file: string, models: unknown[], counts: Record<string, num
   const evaluations = ["claude", "opencode", "pi"].flatMap(harness => ids.map(model_id => ({
     model_id, provider:"openrouter", harness, harness_version:"test-harness-1", evaluated_at:at,
     evaluation_version:"agent-e2e-v1", fixture_digest:digest, benchmarks:[],
+    conditions:{max_requests_per_trial:24,timeout_seconds:240,generation_profile:"isolated-default-v1"},
     trials:Array.from({length:counts[model_id] ?? 3}, (_, i) => ({
       id:`${model_id}-${harness}-${i}`, evaluated_at:at, success:true, integrity_passed:true,
       observed_model:model_id, tool_calls:4,tool_failures:0,duration_ms:1000,failure_kind:null,failure_reason:null,
@@ -627,6 +628,8 @@ test(
       catalogEntry("v/date:free", {expiration_date:"bogus"}),
       catalogEntry("v/emptydate:free", {expiration_date:""}),
       catalogEntry("v/datedtype:free", {expiration_date:123}),
+      catalogEntry("v/impossibledate:free", {expiration_date:"2026-11-31"}),
+      catalogEntry("v/invalidmodality:free", {output_modalities:["text",8]}),
       catalogEntry("v/input:free", {input_modalities:[]}),
       catalogEntry("v/output:free", {output_modalities:[]}),
     ];

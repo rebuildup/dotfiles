@@ -83,6 +83,10 @@ export function parseEvaluationArgs(args: string[]) {
     throw new Error(
       "evaluation requires an explicit provider/model:free ID; routers and paid models are excluded",
     );
+  if (result.maxRequests < result.trials)
+    throw new Error(
+      "--max-requests must permit at least one request per trial",
+    );
   return result;
 }
 export function isolatedEnvironment(
@@ -145,12 +149,73 @@ export function prepareFixture(root: string) {
   );
   return snapshot(root);
 }
+/** Drop Pi's repeated partial message snapshots as they arrive, keeping final evidence. */
+export async function collectProcessOutput(
+  stream: ReadableStream<Uint8Array>,
+  eventStream = false,
+  onOverflow?: () => void,
+) {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let output = "",
+    pending = "",
+    rawBytes = 0,
+    retainedBytes = 0,
+    overflow = false;
+  const retain = (line: string) => {
+    if (eventStream) {
+      try {
+        const event = JSON.parse(line);
+        if (["message_update", "tool_execution_update"].includes(event.type))
+          return;
+      } catch {}
+    }
+    retainedBytes += Buffer.byteLength(line);
+    if (retainedBytes > MAX_OUTPUT) {
+      overflow = true;
+      return;
+    }
+    output += line;
+  };
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    rawBytes += value.length;
+    if (rawBytes > (eventStream ? 128 * 1024 * 1024 : MAX_OUTPUT)) {
+      overflow = true;
+      break;
+    }
+    const text = decoder.decode(value, { stream: true });
+    if (!eventStream) retain(text);
+    else {
+      pending += text;
+      let end: number;
+      while ((end = pending.indexOf("\n")) !== -1) {
+        retain(pending.slice(0, end + 1));
+        pending = pending.slice(end + 1);
+        if (overflow) break;
+      }
+      if (Buffer.byteLength(pending) > MAX_OUTPUT) overflow = true;
+    }
+    if (overflow) break;
+  }
+  if (!overflow) {
+    pending += decoder.decode();
+    if (pending) retain(pending);
+  }
+  if (overflow) {
+    onOverflow?.();
+    await reader.cancel();
+  }
+  return { output, overflow, rawBytes };
+}
 async function boundedProcess(
   command: string[],
   cwd: string,
   env: Record<string, string>,
   timeout: number,
   signal?: AbortSignal,
+  eventStream = false,
 ) {
   const child = Bun.spawn(command, {
     cwd,
@@ -180,26 +245,16 @@ async function boundedProcess(
   }, timeout * 1000);
   signal?.addEventListener("abort", kill, { once: true });
   if (signal?.aborted) kill();
-  async function read(stream: ReadableStream<Uint8Array>) {
-    const reader = stream.getReader();
-    let output = "",
-      size = 0;
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      size += value.length;
-      if (size > MAX_OUTPUT) {
-        overflow = true;
-        kill();
-        break;
-      }
-      output += new TextDecoder().decode(value);
-    }
-    return output;
+  async function read(stream: ReadableStream<Uint8Array>, events = false) {
+    const result = await collectProcessOutput(stream, events, () => {
+      overflow = true;
+      kill();
+    });
+    return result.output;
   }
   try {
     const [stdout, stderr, code] = await Promise.all([
-      read(child.stdout),
+      read(child.stdout, eventStream),
       read(child.stderr),
       child.exited,
     ]);
@@ -381,12 +436,39 @@ interface GuardOptions {
   minIntervalMs?: number;
 }
 export function createRequestGuard(options: GuardOptions) {
-  const controller = new AbortController();
+  let controller = new AbortController();
   let nextRequestAt = Date.now() + (options.minIntervalMs ?? 3100);
   let requests = 0;
+  let trialRequests = 0;
+  let trialBudget = options.maxRequests;
+  let budgetExhausted: "trial" | "aggregate" | null = null;
   const modelObservations: Array<{ request: number; model: string }> = [];
   let failureKind: FailureKind | null = null;
   let failureReason: string | null = null;
+  let failureDetails: Record<string, unknown> | null = null;
+  const diagnostic = (value: unknown, max: number): string | null =>
+    typeof value === "string"
+      ? redactedLog(value.split(options.apiKey).join("[REDACTED]")).slice(
+          0,
+          max,
+        )
+      : null;
+  const apiError = (status: number, error: any, retryAfter: string | null) => {
+    const scalar = (value: unknown, max: number) =>
+      typeof value === "number" && Number.isFinite(value)
+        ? value
+        : diagnostic(value, max);
+    failureDetails = {
+      http_status: status,
+      code: scalar(error?.code ?? error?.status, 40),
+      message: diagnostic(error?.message, 400),
+      provider_code: scalar(error?.metadata?.provider_code, 80),
+      retry_after: scalar(error?.metadata?.retry_after ?? retryAfter, 40),
+    };
+    failureReason = (
+      "OpenRouter API error: " + JSON.stringify(failureDetails)
+    ).slice(0, 800);
+  };
   const observedModels = new Set<string>();
   const fail = (kind: FailureKind, reason: string, status = 429) => {
     failureKind ??= kind;
@@ -442,20 +524,31 @@ export function createRequestGuard(options: GuardOptions) {
           { status: 400 },
         );
       }
-      if (requests >= options.maxRequests)
+      if (requests >= options.maxRequests) {
+        budgetExhausted = "aggregate";
         return fail(
           "launcher",
           "evaluation aggregate request budget exhausted",
         );
+      }
+      if (trialRequests >= trialBudget) {
+        budgetExhausted = "trial";
+        return fail(
+          "launcher",
+          "evaluation per-trial request budget exhausted",
+        );
+      }
       requests++;
+      trialRequests++;
       const requestNo = requests;
+      const requestController = controller;
       const scheduledAt = Math.max(Date.now(), nextRequestAt);
       nextRequestAt = scheduledAt + (options.minIntervalMs ?? 3100);
       const delay = scheduledAt - Date.now();
       if (delay > 0)
         await new Promise<void>((resolve) => {
           const timer = setTimeout(resolve, delay);
-          controller.signal.addEventListener(
+          requestController.signal.addEventListener(
             "abort",
             () => {
               clearTimeout(timer);
@@ -464,6 +557,11 @@ export function createRequestGuard(options: GuardOptions) {
             { once: true },
           );
         });
+      if (requestController.signal.aborted)
+        return Response.json(
+          { error: { message: "evaluation trial cancelled" } },
+          { status: 499 },
+        );
       if (controller.signal.aborted)
         return fail(
           failureKind ?? "launcher",
@@ -487,7 +585,10 @@ export function createRequestGuard(options: GuardOptions) {
             headers,
             body: JSON.stringify(body),
             redirect: "error",
-            signal: AbortSignal.timeout(180000),
+            signal: AbortSignal.any([
+              requestController.signal,
+              AbortSignal.timeout(180000),
+            ]),
           },
         );
         if ([401, 403, 429].includes(response.status)) {
@@ -497,7 +598,6 @@ export function createRequestGuard(options: GuardOptions) {
           failureKind = "api";
           failureReason = `OpenRouter HTTP ${response.status}; evaluation stopped`;
         }
-        if (failureKind) controller.abort();
         const raw = await limitedResponseText(response);
         if (raw.length > MAX_OUTPUT)
           return fail(
@@ -505,9 +605,12 @@ export function createRequestGuard(options: GuardOptions) {
             "upstream response exceeded evaluation limit",
             502,
           );
-        const records = raw
-          .split("\n")
-          .map((line) => (line.startsWith("data: ") ? line.slice(6) : line));
+        const records = [
+          raw,
+          ...raw
+            .split("\n")
+            .map((line) => (line.startsWith("data: ") ? line.slice(6) : line)),
+        ];
         for (const record of records) {
           try {
             const parsed = JSON.parse(record);
@@ -519,8 +622,11 @@ export function createRequestGuard(options: GuardOptions) {
                   : [401, 403].includes(Number(code))
                     ? "auth"
                     : "api";
-              failureReason =
-                "OpenRouter response contained an API error; evaluation stopped";
+              apiError(
+                response.status,
+                parsed.error,
+                response.headers.get("retry-after"),
+              );
               controller.abort();
             }
             for (const model of [parsed.model, parsed.message?.model])
@@ -530,13 +636,22 @@ export function createRequestGuard(options: GuardOptions) {
               }
           } catch {}
         }
+        if (failureKind) {
+          if (!failureDetails)
+            apiError(
+              response.status,
+              null,
+              response.headers.get("retry-after"),
+            );
+          controller.abort();
+        }
         if ([...observedModels].some((model) => model !== options.model))
           return fail(
             "api",
             "actual API model differed from requested model",
             502,
           );
-        return new Response(raw, {
+        return new Response(raw.split(options.apiKey).join("[REDACTED]"), {
           status: response.status,
           headers: {
             "content-type":
@@ -544,6 +659,11 @@ export function createRequestGuard(options: GuardOptions) {
           },
         });
       } catch {
+        if (requestController.signal.aborted)
+          return Response.json(
+            { error: { message: "evaluation trial cancelled" } },
+            { status: 499 },
+          );
         return fail(
           "api",
           "OpenRouter transport failed; evaluation stopped",
@@ -553,7 +673,30 @@ export function createRequestGuard(options: GuardOptions) {
     },
   });
   return {
-    signal: controller.signal,
+    get signal() {
+      return controller.signal;
+    },
+    beginTrial(budget: number) {
+      if (!Number.isSafeInteger(budget) || budget < 1)
+        throw new Error("invalid per-trial request budget");
+      if (
+        requests >= options.maxRequests ||
+        (failureKind !== null && budgetExhausted === null)
+      )
+        return false;
+      controller.abort();
+      trialBudget = budget;
+      trialRequests = 0;
+      budgetExhausted = null;
+      failureKind = null;
+      failureReason = null;
+      failureDetails = null;
+      controller = new AbortController();
+      return true;
+    },
+    get budgetExhausted() {
+      return budgetExhausted;
+    },
     url: `http://127.0.0.1:${server.port}`,
     get requests() {
       return requests;
@@ -563,6 +706,9 @@ export function createRequestGuard(options: GuardOptions) {
     },
     get failureReason() {
       return failureReason;
+    },
+    get failureDetails() {
+      return failureDetails;
     },
     get observedModels() {
       return [...observedModels];
@@ -576,7 +722,11 @@ export function createRequestGuard(options: GuardOptions) {
         ),
       ];
     },
+    endTrial() {
+      controller.abort();
+    },
     stop() {
+      controller.abort();
       server.stop(true);
     },
   };
@@ -851,6 +1001,7 @@ export async function evaluationMain(args: string[]): Promise<number> {
         maxRequests: Math.min(options.maxRequests, quotaBefore),
         catalog,
       });
+      const perTrialBudget = Math.floor(options.maxRequests / options.trials);
       const root = dirname(import.meta.dir);
       const temp = mkdtempSync(join(tmpdir(), "dotfiles-agent-eval-"));
       const trials: import("./agent-quality").Trial[] = [];
@@ -875,7 +1026,7 @@ export async function evaluationMain(args: string[]): Promise<number> {
           );
         writePrivate(config, replaced);
         for (let trialIndex = 0; trialIndex < options.trials; trialIndex++) {
-          if (guard.failureKind || guard.requests >= options.maxRequests) break;
+          if (!guard.beginTrial(perTrialBudget)) break;
           const trialRoot = join(temp, `trial-${trialIndex}`);
           const home = join(trialRoot, "home");
           const cwd = join(trialRoot, "workspace");
@@ -939,7 +1090,9 @@ export async function evaluationMain(args: string[]): Promise<number> {
             env,
             options.timeout,
             guard.signal,
+            true,
           );
+          guard.endTrial();
           const transcript = observeTranscript(
             options.harness,
             result.stdout,
@@ -949,13 +1102,27 @@ export async function evaluationMain(args: string[]): Promise<number> {
           const observed =
             responseModels.length === 1 ? responseModels[0] : null;
           const grade = await gradeFixture(cwd, before);
+          const healthyModel =
+            guard.requests > requestsBefore &&
+            responseModels.length === 1 &&
+            observed === options.model &&
+            !transcript.modelMismatch;
           let failureKind: FailureKind | null = guard.failureKind;
           let failureReason = guard.failureReason;
-          if (!failureKind && (result.timedOut || result.overflow)) {
-            failureKind = "launcher";
-            failureReason = result.timedOut
-              ? "evaluation timeout"
-              : "harness output exceeded limit";
+          if (
+            (!failureKind || guard.budgetExhausted) &&
+            (result.timedOut || result.overflow || guard.budgetExhausted)
+          ) {
+            failureKind = result.overflow
+              ? "launcher"
+              : healthyModel
+                ? "capability"
+                : "launcher";
+            failureReason = result.overflow
+              ? "harness output exceeded limit"
+              : result.timedOut
+                ? "evaluation task timeout"
+                : `evaluation request budget exhausted (${perTrialBudget} per trial)`;
           }
           if (
             !failureKind &&
@@ -1010,6 +1177,7 @@ export async function evaluationMain(args: string[]): Promise<number> {
                 stderr: result.stderr.slice(0, 1000000),
                 grade,
                 inference_requests: guard.requests - requestsBefore,
+                upstream_error: guard.failureDetails,
               },
               null,
               2,
@@ -1034,6 +1202,7 @@ export async function evaluationMain(args: string[]): Promise<number> {
           Object.assign(trials[trials.length - 1], {
             log_path: logPath,
             log_sha256: createHash("sha256").update(log).digest("hex"),
+            upstream_error: guard.failureDetails,
           });
           if (failureKind && failureKind !== "capability") break;
         }
@@ -1059,15 +1228,12 @@ export async function evaluationMain(args: string[]): Promise<number> {
         fixture_digest: fixtureDigest(),
         benchmarks: publicBenchmarks(options.model),
         trials,
-      };
-      Object.assign(evaluation, {
         conditions: {
-          max_requests: options.maxRequests,
+          max_requests_per_trial: perTrialBudget,
           timeout_seconds: options.timeout,
-          trials_requested: options.trials,
-          expected_initial_test_failure: true,
+          generation_profile: "isolated-default-v1",
         },
-      });
+      };
       if (
         store.evaluation_version !== EVALUATION_VERSION ||
         store.fixture_digest !== fixtureDigest()

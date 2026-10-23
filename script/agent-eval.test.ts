@@ -19,6 +19,7 @@ import {
   parseEvaluationArgs,
   isolatedEnvironment,
   evaluationMain,
+  collectProcessOutput,
 } from "./agent-eval";
 
 const createRequestGuard = (options: Parameters<typeof rawRequestGuard>[0]) =>
@@ -375,7 +376,10 @@ test("mocked full launcher evaluation isolates credentials, forwards once and pe
   const model = "mock/coding:free";
   const solution = `import type {Inventory} from './catalog';export function reserve(input:Inventory,lines:Array<{sku:string;quantity:number}>,discount=0){if(!Number.isInteger(discount)||discount<0||discount>100)throw Error('discount');const quantities:Record<string,number>={};for(const line of lines){if(!Number.isSafeInteger(line.quantity)||line.quantity<1)throw Error('quantity');const sku=line.sku.trim().toLowerCase();quantities[sku]=(quantities[sku]??0)+line.quantity;}const inventory=Object.fromEntries(Object.entries(input).map(([sku,item])=>[sku,{...item}]));let total=0;for(const [sku,quantity] of Object.entries(quantities)){if(!input[sku]||input[sku].stock<quantity)throw Error('stock');inventory[sku].stock-=quantity;total+=input[sku].priceCents*quantity;}return {inventory,totalCents:Math.round(total*(100-discount)/100)};}`;
   try {
-    const fake = join(temp, "fake-pi");
+    const fake = join(
+      temp,
+      process.platform === "win32" ? "fake-pi.ts" : "fake-pi",
+    );
     writeFileSync(
       fake,
       `#!${process.execPath}\nimport {readFileSync,writeFileSync} from 'node:fs';
@@ -392,6 +396,13 @@ call('final');result=Bun.spawnSync([process.execPath,'test','public.test.ts']);e
 `,
     );
     chmodSync(fake, 0o700);
+    const nativeCommand =
+      process.platform === "win32" ? join(temp, "fake-pi.cmd") : fake;
+    if (process.platform === "win32")
+      writeFileSync(
+        nativeCommand,
+        '@echo off\r\n"' + process.execPath + '" "' + fake + '" %*\r\n',
+      );
     const source = readFileSync(
       join(import.meta.dir, "../config/agents.toml"),
       "utf8",
@@ -401,7 +412,7 @@ call('final');result=Bun.spawnSync([process.execPath,'test','public.test.ts']);e
       config,
       source.replace(
         /(\[harnesses\.pi\][\s\S]*?command\s*=\s*)"[^"]*"/,
-        "$1" + JSON.stringify(fake),
+        "$1" + JSON.stringify(nativeCommand),
       ),
     );
     process.env.AGENT_CONFIG = config;
@@ -456,6 +467,91 @@ call('final');result=Bun.spawnSync([process.execPath,'test','public.test.ts']);e
     expect(store.evaluations[0].trials[0].success).toBe(true);
     expect(store.evaluations[0].trials[0].tool_failures).toBe(0);
     expect(JSON.stringify(store)).not.toContain("real-secret");
+    expect(store.evaluations[0].conditions).toEqual({
+      max_requests_per_trial: 2,
+      timeout_seconds: 20,
+      generation_profile: "isolated-default-v1",
+    });
+    const goldenHarness = readFileSync(fake, "utf8");
+    writeFileSync(
+      fake,
+      goldenHarness.replace(
+        "const emit=",
+        `for(let i=0;i<2;i++)await (await fetch(config.providers.openrouter.baseUrl+'/chat/completions',{method:'POST',body:JSON.stringify({model,messages:[]})})).text();\nconst emit=`,
+      ),
+    );
+    expect(
+      await evaluationMain([
+        "pi",
+        "--model",
+        model,
+        "--max-requests",
+        "2",
+        "--trials",
+        "2",
+        "--timeout",
+        "20",
+      ]),
+    ).toBe(1);
+    const budgetStore = JSON.parse(
+      readFileSync(join(temp, "quality.json"), "utf8"),
+    );
+    const budgetEvaluation = budgetStore.evaluations.at(-1);
+    expect(budgetEvaluation.conditions.max_requests_per_trial).toBe(1);
+    expect(budgetEvaluation.trials).toHaveLength(2);
+    expect(
+      budgetEvaluation.trials.every(
+        (trial: any) =>
+          trial.failure_kind === "capability" && trial.observed_model === model,
+      ),
+    ).toBe(true);
+    expect(inference).toBe(3);
+    writeFileSync(
+      fake,
+      goldenHarness.replace(
+        "const emit=",
+        "await Bun.sleep(20000);\nconst emit=",
+      ),
+    );
+    expect(
+      await evaluationMain([
+        "pi",
+        "--model",
+        model,
+        "--max-requests",
+        "1",
+        "--timeout",
+        "5",
+      ]),
+    ).toBe(1);
+    const timed = JSON.parse(
+      readFileSync(join(temp, "quality.json"), "utf8"),
+    ).evaluations.at(-1);
+    expect(timed.trials[0].failure_kind).toBe("capability");
+    expect(timed.trials[0].failure_reason).toContain("timeout");
+    writeFileSync(
+      fake,
+      goldenHarness.replace(
+        "await (await fetch",
+        "await Bun.sleep(20000);\nawait (await fetch",
+      ),
+    );
+    expect(
+      await evaluationMain([
+        "pi",
+        "--model",
+        model,
+        "--max-requests",
+        "1",
+        "--timeout",
+        "1",
+      ]),
+    ).toBe(1);
+    const cold = JSON.parse(
+      readFileSync(join(temp, "quality.json"), "utf8"),
+    ).evaluations.at(-1);
+    expect(cold.trials[0].failure_kind).toBe("launcher");
+    expect(cold.trials[0].observed_model).toBeNull();
   } finally {
     globalThis.fetch = nativeFetch;
     for (const key of Object.keys(process.env))
@@ -463,7 +559,7 @@ call('final');result=Bun.spawnSync([process.execPath,'test','public.test.ts']);e
     Object.assign(process.env, previous);
     rmSync(temp, { recursive: true, force: true });
   }
-});
+}, 30000);
 
 test("HTTP 200 streaming error stops infrastructure evaluation without model rejection", async () => {
   const guard = createRequestGuard({
@@ -577,4 +673,124 @@ test("echoed test text is not proof of a debug/test tool execution", () => {
   expect(result.debuggedPublicRegression).toBe(false);
   expect(result.finalTestPassed).toBe(false);
   expect(result.toolFailures).toBe(1);
+});
+
+test("Pi repeated partial-state telemetry does not consume retained evidence budget", async () => {
+  const encoder = new TextEncoder();
+  const delta = encoder.encode(
+    JSON.stringify({
+      type: "message_update",
+      assistantMessageEvent: { partial: { content: "x".repeat(100000) } },
+    }) + "\n",
+  );
+  let count = 0;
+  const stream = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (count++ < 100) controller.enqueue(delta);
+      else {
+        controller.enqueue(encoder.encode('{"type":"agent_end"}\n'));
+        controller.close();
+      }
+    },
+  });
+  const result = await collectProcessOutput(stream, true);
+  expect(result.overflow).toBe(false);
+  expect(result.output).toBe('{"type":"agent_end"}\n');
+  expect(result.rawBytes).toBeGreaterThan(8 * 1024 * 1024);
+});
+
+test("collector still rejects excessive final evidence and oversized single lines", async () => {
+  const encoder = new TextEncoder();
+  let count = 0;
+  const line = encoder.encode(
+    JSON.stringify({ type: "message_end", text: "x".repeat(1024 * 1024) }) +
+      "\n",
+  );
+  const evidence = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (count++ < 10) controller.enqueue(line);
+      else controller.close();
+    },
+  });
+  expect((await collectProcessOutput(evidence, true)).overflow).toBe(true);
+  const oversized = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(encoder.encode("x".repeat(9 * 1024 * 1024)));
+      controller.close();
+    },
+  });
+  expect((await collectProcessOutput(oversized, true)).overflow).toBe(true);
+});
+
+test("upstream quota details are bounded and redact keys before diagnostic persistence", async () => {
+  const guard = createRequestGuard({
+    model: "x/y:free",
+    apiKey: "sensitive-key-value",
+    maxRequests: 2,
+    minIntervalMs: 0,
+    fetch: async () =>
+      Response.json(
+        {
+          error: {
+            code: 429,
+            message:
+              "Rate limit exceeded: free-models-per-min sensitive-key-value Bearer fake-token-0123456789",
+            metadata: {
+              provider_code: "RATE_LIMIT",
+              retry_after: "60",
+              headers: { authorization: "never include this" },
+            },
+          },
+        },
+        { status: 429 },
+      ),
+  });
+  try {
+    await fetch(guard.url + "/api/v1/chat/completions", {
+      method: "POST",
+      body: JSON.stringify({ model: "x/y:free", messages: [] }),
+    });
+    expect(guard.failureReason).toContain("free-models-per-min");
+    expect(guard.failureReason).not.toContain("sensitive-key-value");
+    expect(guard.failureReason).not.toContain("fake-token-0123456789");
+    expect(guard.failureDetails).toEqual({
+      http_status: 429,
+      code: 429,
+      message:
+        "Rate limit exceeded: free-models-per-min [REDACTED] Bearer [REDACTED]",
+      provider_code: "RATE_LIMIT",
+      retry_after: "60",
+    });
+    expect(JSON.stringify(guard.failureDetails)).not.toContain("authorization");
+  } finally {
+    guard.stop();
+  }
+});
+
+test("trial budgets reset only local stop state and preserve total HTTP cap", async () => {
+  const guard = createRequestGuard({
+    model: "x/y:free",
+    apiKey: "key",
+    maxRequests: 2,
+    fetch: async () => Response.json({ model: "x/y:free" }),
+  });
+  try {
+    const request = () =>
+      fetch(guard.url + "/api/v1/chat/completions", {
+        method: "POST",
+        body: JSON.stringify({ model: "x/y:free", messages: [] }),
+      });
+    expect(guard.beginTrial(1)).toBe(true);
+    await request();
+    expect((await request()).status).toBe(429);
+    expect(guard.budgetExhausted).toBe("trial");
+    expect(guard.signal.aborted).toBe(true);
+    expect(guard.beginTrial(1)).toBe(true);
+    expect(guard.signal.aborted).toBe(false);
+    await request();
+    expect(guard.requests).toBe(2);
+    expect(guard.beginTrial(1)).toBe(false);
+  } finally {
+    guard.stop();
+  }
 });
