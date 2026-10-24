@@ -1,0 +1,63 @@
+# 分散開発ノード: 実装・検証計画
+
+状態: 設計提案と接続前調査。join/leave等は未実装。この文書内の予定commandを現在利用可能な機能と誤認しないこと。
+
+[Issue #74](https://github.com/rebuildup/dotfiles/issues/74) / [提案ADR](adr/distributed-development-nodes.md) / [調査と証拠](research/distributed-nodes-2026-10-24.md)
+
+## 1. 接続PoC
+
+WindowsにSSHが未設定のため、最初はWindows上で専用setupを実行する必要がある。pc-setupにOpenSSH capability/service/firewallの検査と、今回専用公開鍵の登録手順を置く。管理者権限が必要なOS操作と一般user鍵登録を分ける。既存authorized_keys/sshd_config/firewall ruleを無断上書きせず、変更前の状態とundoを残す。
+
+Mac側は専用client key、専用SSH configとknown_hostsをmachine-localに作る。private keyの保存先はGit/`home/`外。Windowsが提示するhost fingerprintを別経路で照合する。SSHパスワードやInfisical secretをチャットへ送らない。
+
+Herdrは通常のOpenSSH configを読むため、専用configを作るだけでは接続されない。既存configへ競合検査付き管理Includeを非破壊追加する方式を検証し、専用aliasの`IdentityFile`、`IdentitiesOnly`、`UserKnownHostsFile`、`StrictHostKeyChecking`が`ssh -G`の実効値に現れることを確認する。既存file/foreign symlinkを置換せず、Include位置による既存Host設定の優先順位にも注意する。
+
+Windows TailscaleがOnlineになった後、専用OpenSSH接続でOS/instance/実行userを照合し、双方から小さなnonceを往復する。NAT traversalはVPN側で行い、研究室routerのport開放を前提にしない。現在の既存tailnet PoCとHeadscale PoCは別結果として残す。
+
+この段階が成立するまで後段の本登録は実行しない。
+
+## 2. 安全な登録
+
+pc-setupにnode別OpenSSH/Windows転送の冪等setupを実装する。dotfilesに薄いuser-level node wrapperを置き、mise taskを共通入口にする。globalな`node`実行ファイル名はNode.jsと衝突するため使わない。
+
+予定interfaceは`mise run devnode -- <join|leave|list|status|repair|verify>`。正式command/flagsは接続PoCで必要な情報が判明してから確定する。controller側は既存Infisical user loginで承認、target側は自分のMIだけでruntime取得。roles/path対応が実版で使えるか確認し、読取許可と他path/identity管理拒否の両方を試験する。
+
+testsはID衝突/並行登録、途中失敗からの再試行、secret非出力、別instanceへの権限引継ぎ拒否、provider実応答を対象とする。mockの成功を実機登録の証拠にしない。
+
+## 3. WSL追加・模擬再生成
+
+同一Windows上の複数WSLを、固有instance/鍵/MI/SSH endpointで登録する。転送portはhostごとに衝突検査して割り当て、Ubuntu/Ubuntu2固定にしない。非TCP公開やLAN全体への無制限listenを避ける。WSL→gateway対応の変更がWSLのroleを変更しないことを検査する。
+
+実WSLは破棄せず、新しい隔離stateで再登録を模擬する。旧instanceをretireし、新しいID/鍵/MIで旧表示名を明示的に引き継ぐ。旧token・SSH鍵・VPN nodeによる再参加/操作が拒否され、別nodeが影響を受けないことを確認する。
+
+Windows VPNのみ、WSL VPNのみ、Windows+WSL VPNの3経路を区別する。MTU/interface/route、direct/relay、転送サイズ別成功/失敗、SSH大量転送を記録する。二重実行試験は既存接続を壊さない隔離対象で行う。MTUを根拠なく全体変更しない。
+
+## 4. Herdr相互操作
+
+OS導入はpc-setupに維持する。Herdr catalogは直接編集せず公式CLIを使う。installed 0.9.5で確認済みの構文は次の通り。`SSH_TARGET`はレビュー済専用SSH接続定義を指す。
+
+```sh
+herdr machine add SSH_TARGET --label INSTANCE_LABEL --remote-session devnode-poc
+herdr machine list --json
+herdr machine status PROFILE_ID --json
+herdr --machine PROFILE_ID workspace create --cwd REMOTE_REPO --label devnode-poc --no-focus
+herdr --machine PROFILE_ID agent list
+```
+
+machine addはremote server準備を行うため、read-only probeとは区別する。workspace/pane/agentのIDは返却結果から取得し、別serverのIDを流用しない。agent prompt/wait/read/reconnectも同じprofileを明示する。pane操作はHerdr skillの前提を満たす専用sessionでのみ行い、既存focused sessionを外から操作しない。
+
+`agent start --kind`は任意launcherの指定欄ではない。既存provider launcherはnode-localで起動し、そのprocessをHerdrが検出できるか実機確認する。検出未成立ならlauncher統合を完了扱いにしない。OS/capability selectorは承認済候補を絞るだけとし、複数候補は明示選択する。遠隔失敗時にlocalへfallbackしない。
+
+並列依頼はHerdr公式APIへの独立呼出しで行う。成果物はGit commit/Issue/PRへ保存し、失われ得るterminal履歴だけに依存させない。
+
+## 5. 失効・障害復旧
+
+leave/repairは段階別外部結果を照合する。retiredをactiveに戻すrepairは禁止し、新instance登録を要求する。node一覧はOS、オンライン状態、agent能力、SSH/MI/Herdrの理由コードと最終観測時刻を出す。未検証はunknownでありofflineやauth deniedと混同しない。
+
+失効は既存SSH接続/remote agentの継続も観測し、開いているprocessまで止めたかを区別する。token期限切れ、単回token replay、権限外network port、権限外secret pathを実provider上でnegative testする。Infisical停止試験は本番instanceを止めず、試験processの到達性のみ遮断する。
+
+## 6. 納品・review
+
+実装はOS provisioningをpc-setup、user wrapperをdotfilesへ分け、各repoにIssue/PRとSHA付き検証結果を残す。設計段階のdotfiles PRはDraftで、実装・PoC完了のPRとは扱わない。現在remoteにrelease integration branchがないため、設計レビュー用Draftのみmainを暫定baseとする。mergeは行わず、実装着手前にcurrent release lineを確定してrebase/retargetする。これは通常release deliveryからの限定的deviationであり、main直接landingの許可ではない。
+
+dotfilesは`script/test`、`script/test-workflow`、`script/check-secrets`、適用する`script/check`/`script/secrets-doctor`を実行する。pc-setupの実装時は同repoの`scripts/ci.sh`とOS別検証を行う。未達/未検証の必須PoCが残る限り完成とはしない。
