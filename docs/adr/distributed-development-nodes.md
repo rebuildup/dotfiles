@@ -1,6 +1,6 @@
 # 分散開発ノードの認証・接続境界
 
-- 状態: 提案。接続PoC未成立、採用・本番登録は未実施
+- 状態: 設計承認済み（2026-10-24）。SSH接続PoCと本登録は未成立、Headscale採用は実機検証待ち
 - 日付: 2026-10-24
 - 実装追跡: https://github.com/rebuildup/dotfiles/issues/74
 - 関連: [調査と実機証拠](../research/distributed-nodes-2026-10-24.md)、[段階的実装計画](../distributed-nodes.md)
@@ -88,6 +88,8 @@ joinはinstance IDをidempotency keyにする。同じinstance・同じ承認内
 leaveはMI/発行済token、SSH認可、Herdr接続と、対象が専有するnetwork資源をそれぞれ撤回する。VPN peerはinstance専有か共有gateway参照かをinventoryで区別する。WSL一台のleaveでは共有WindowsのVPN peerを削除せず、そのWSL専用の転送/port許可/SSH認可だけを撤回する。他のWSLの到達性が維持されることをnegative testと対で確認する。専有peerの場合だけpeer/登録鍵を削除する。Herdr machine removeだけでは失効完了ではない。未到達・provider停止・token撤回未確認はpendingで残す。中央側の遮断を先行できても、remote authorized_keys残存と既存SSH/agent processの終了状況は別に記録する。全条件の証拠がない場合、完全失効とは表示しない。
 
 ## 障害と運用コスト
+
+共有gateway自体のleaveは、依存WSLが存在する場合は拒否する。各WSLの接続先移行または明示retireを確認してからgateway資源を撤回し、名前一致だけで依存先を付け替えない。
 
 Headscaleは公開HTTPSと状態DB、backup/更新の継続運用が必要。DERPを使う場合はその公開到達性も必要。ノード間直結とrelayの性能を分けて測る。Headscale停止中も既存peer通信が続き得るため即時失効の保証はできない。
 

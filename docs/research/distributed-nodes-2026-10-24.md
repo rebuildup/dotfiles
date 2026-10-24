@@ -60,8 +60,9 @@
 | 20:52 JST、Windows起動後UUU peer | Online=true | Windows VPN参加を観測 |
 | 同時点Tailscale ping UUU | DERP(tok)経由107ms、pong | Mac–Windows VPN疎通成立。direct未成立、SSH成功ではない |
 | 同時点TCP 22 probe | exit 1 | OpenSSH初期設定が必要 |
+| Mac loopback一時sshd、127.0.0.1:22229 | 専用key/host pin/nonceでssh-verified | clientの正常経路を実SSHで確認。Windows相互接続ではない |
 
-Tailscale再接続は既存非default設定を保持して実行した。login-server変更、VPN登録鍵発行、SSH信頼変更、Windows設定変更、WSL削除、既存Herdr pane操作はしていない。Tailscaleは調査後Runningの状態。
+Tailscale再接続は既存非default設定を保持して実行した。login-server変更、VPN登録鍵発行、既存SSH信頼変更、Windows設定変更、WSL削除、既存Herdr pane操作はしていない。Tailscaleは調査後Runningの状態。Macに今回専用のclient key/PoC instance stateを新規生成した。loopback試験のdaemon/鍵/stateは終了後に撤去した。
 
 ## 必須PoCの進捗
 
@@ -82,4 +83,10 @@ Tailscale再接続は既存非default設定を保持して実行した。login-s
 
 基点worktreeで`script/test`と`script/test-workflow`はexit 0。`script/check-secrets`はexit 0。`script/secrets-doctor`もexit 0。`script/check`を実HOMEに向けると元checkoutへのsymlinkや既存missing/driftでexit 1になる。検証のために実HOMEを新worktreeへrelinkしていない。`script/test`内の隔離HOMEではlink/checkが成功する。これは本基盤のE2E成功を意味しない。
 
-追加の`bun test`は52 pass / 26 skip / 0 fail。Windows用skipは実Windows成功の証拠に含めない。
+接続PoC実装後、exact Bun 1.4.2で`bun test`は58 pass / 26 skip / 0 fail。Windows用skipは実Windows成功の証拠に含めない。追加6検査は冪等な専用key生成、不明state/symlink拒否、入力境界、host fingerprint不一致/変更拒否、SSH失敗時の非成功、接続前のhost pin drift拒否を検査する。独立reviewのpin drift指摘を回帰検査RED→GREENで修正した。
+
+Windows bootstrapは[pc-setup PR #131](https://github.com/rebuildup/pc-setup/pull/131)へ分離した。macOS上のPowerShell contract/parserとCIは成功したが、Windows ACL/firewall/auth/undoは未検証。
+
+## 検証runtimeの補足
+
+通常の`mise exec`開始時に過去upgrade予約の旧版auto-pruneが走ったため中断し、削除済み旧7版を元のversionで復旧した。no-config installの副作用で消えたglobal convenience linkも既存設定/選択targetから復旧した。global/worktree TOML hash一致、current version本体を維持した。検証は既存exact Bun 1.4.2実体とpc-setupの既存Python3.14.9実体による明示fallbackで続行した。これは本PoCに新runtimeを導入した結果ではない。

@@ -1,8 +1,25 @@
 # 分散開発ノード: 実装・検証計画
 
-状態: 設計提案と接続前調査。join/leave等は未実装。この文書内の予定commandを現在利用可能な機能と誤認しないこと。
+状態: 設計承認済み。接続PoCのprepare/trust/verifyを実装、Windows実機SSH往復待ち。join/leave等は未実装。
 
 [Issue #74](https://github.com/rebuildup/dotfiles/issues/74) / [提案ADR](adr/distributed-development-nodes.md) / [調査と証拠](research/distributed-nodes-2026-10-24.md)
+
+## 現在使える接続PoC
+
+`script/devnode.ts`はnode登録やMI発行をしない。machine-localな専用鍵とinstance IDの準備、別経路で確認したhost fingerprintのpin、SSH nonce往復だけを行う。Windows bootstrapは[pc-setup #130](https://github.com/rebuildup/pc-setup/issues/130)が所有する。
+
+```sh
+mise run devnode -- prepare --name win-uuu
+# prepareはssh-keygenでpassphrase入力。無人PoC用の明示opt-inは --no-passphrase。
+# .pubだけを対象Windowsへ渡し、Windows側bootstrapとStartを実行する。
+mise run devnode -- trust --name win-uuu --host VPN_IP --port 22222 --user ACCOUNT --fingerprint SHA256:CONFIRMED_FINGERPRINT
+# Windows debug listenerはkeyscanで終了するためStartを再実行してから:
+mise run devnode -- verify --name win-uuu
+```
+
+既定stateは`~/.local/state/dotfiles/devnodes/LABEL/`。鍵はGitや`home/`で管理しない。同名rerunは同じidentityを維持し、不明directoryやsymlinkは採用しない。別環境には別state/鍵を作る。`trust`はfingerprint不一致と既存接続変更を拒否する。`verify`の成功はSSHだけで、Herdr/MIはunverifiedと表示する。暗黙local fallbackはない。PoC clientはmacOSで検証済み、Windows clientのACLは未検証。
+
+このPoCは専用`ssh -F`を使い、既存`~/.ssh/config`を変更しない。Herdr catalog同期/管理Includeは後段の未実装機能である。必要なCLIはpc-setup管理のBun/OpenSSH。ローカルmiseにglobal toolの自動準備がある場合、既存のexact Bun 1.4.2実体で`bun script/devnode.ts ...`を実行する明示fallbackを使える。miseの設定を回避するため別の恒久runtimeを導入しない。
 
 ## 1. 接続PoC
 
@@ -44,7 +61,7 @@ herdr --machine PROFILE_ID workspace create --cwd REMOTE_REPO --label devnode-po
 herdr --machine PROFILE_ID agent list
 ```
 
-machine addはremote server準備を行うため、read-only probeとは区別する。workspace/pane/agentのIDは返却結果から取得し、別serverのIDを流用しない。agent prompt/wait/read/reconnectも同じprofileを明示する。pane操作はHerdr skillの前提を満たす専用sessionでのみ行い、既存focused sessionを外から操作しない。
+machine addはremote server準備を行うため、read-only probeとは区別する。workspace/pane/agentのIDは返却結果から取得し、別serverのIDを流用しない。agent prompt/wait/readとmachine reconnectは同じprofileを明示する。pane操作はHerdr skillの前提を満たす専用sessionでのみ行い、既存focused sessionを外から操作しない。
 
 `agent start --kind`は任意launcherの指定欄ではない。既存provider launcherはnode-localで起動し、そのprocessをHerdrが検出できるか実機確認する。検出未成立ならlauncher統合を完了扱いにしない。OS/capability selectorは承認済候補を絞るだけとし、複数候補は明示選択する。遠隔失敗時にlocalへfallbackしない。
 
@@ -58,6 +75,6 @@ leave/repairは段階別外部結果を照合する。retiredをactiveに戻すr
 
 ## 6. 納品・review
 
-実装はOS provisioningをpc-setup、user wrapperをdotfilesへ分け、各repoにIssue/PRとSHA付き検証結果を残す。設計段階のdotfiles PRはDraftで、実装・PoC完了のPRとは扱わない。現在remoteにrelease integration branchがないため、設計レビュー用Draftのみmainを暫定baseとする。mergeは行わず、実装着手前にcurrent release lineを確定してrebase/retargetする。これは通常release deliveryからの限定的deviationであり、main直接landingの許可ではない。
+実装はOS provisioningをpc-setup、user wrapperをdotfilesへ分け、各repoにIssue/PRとSHA付き検証結果を残す。dotfilesは既存0.3 operating baselineから次のminor defaultとして`release-0-4-0`、pc-setupは0.6 integration後の`release-0-7-0`をmainの既存SHAから作成し、ticket PRのbaseにする。このversion選択は実装者の運用判断であり、完成・リリース・mergeの許可ではない。PoC必須条件が残るためPRはDraftに維持する。
 
 dotfilesは`script/test`、`script/test-workflow`、`script/check-secrets`、適用する`script/check`/`script/secrets-doctor`を実行する。pc-setupの実装時は同repoの`scripts/ci.sh`とOS別検証を行う。未達/未検証の必須PoCが残る限り完成とはしない。
