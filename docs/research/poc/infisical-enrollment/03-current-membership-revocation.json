@@ -1,0 +1,174 @@
+{
+  "runId": "1f6bfe00-934f-4fcc-b835-7f1f025c843a",
+  "name": "devnode-poc-1f6bfe00-934f-4fcc-b835-7f1f025c843a",
+  "site": "https://secrets.rebuildup.dev",
+  "organizationId": "d808df2c-ec67-4046-b733-8c0db0bfa47d",
+  "startedAt": "2026-10-24T13:57:11.447Z",
+  "schemaSha256": "62b0ba9edfe97e201a63ff3ef7ab373f1ee2ed4076f74f828724405e03a2cf82",
+  "sourceSha256": "75db0a8c25dc7a836514c3a2ecf1ce296c123f8be1dbaa4e08187d2f8f6b3b7c",
+  "observations": [
+    {
+      "label": "existing user can read this organization plan",
+      "pass": true,
+      "httpStatus": 200
+    },
+    {
+      "label": "created project has this run's owned name",
+      "pass": true
+    },
+    {
+      "label": "synthetic secret created only in disposable project/dev",
+      "pass": true,
+      "httpStatus": 200
+    },
+    {
+      "label": "instance-specific Machine Identity created",
+      "pass": true,
+      "httpStatus": 200
+    },
+    {
+      "label": "created Machine Identity ownership matches",
+      "pass": true
+    },
+    {
+      "label": "Universal Auth bounded to 120 seconds with no renewable period",
+      "pass": true,
+      "httpStatus": 200
+    },
+    {
+      "label": "built-in viewer granted only to disposable project",
+      "pass": true,
+      "httpStatus": 200
+    },
+    {
+      "label": "registration client secret is one-use and 120-second TTL",
+      "pass": true,
+      "httpStatus": 200
+    },
+    {
+      "label": "first bootstrap login succeeds with bounded token",
+      "pass": true,
+      "httpStatus": 200
+    },
+    {
+      "label": "replay response arrives before bootstrap credential expiry",
+      "pass": true
+    },
+    {
+      "label": "identical registration credential replay rejected",
+      "pass": true,
+      "httpStatus": 401
+    },
+    {
+      "label": "node can read its synthetic secret in explicit project/dev",
+      "pass": true,
+      "httpStatus": 200
+    },
+    {
+      "label": "write denial response arrives before token expiry",
+      "pass": true
+    },
+    {
+      "label": "viewer cannot mutate even its own project's secret",
+      "pass": true,
+      "httpStatus": 403
+    },
+    {
+      "label": "cross-project denial response arrives before token expiry",
+      "pass": true
+    },
+    {
+      "label": "node denied access to existing dotfiles project using nonexistent synthetic key",
+      "pass": true,
+      "httpStatus": 403
+    },
+    {
+      "label": "node's owned project membership revoked",
+      "pass": true,
+      "httpStatus": 200
+    },
+    {
+      "label": "revoked membership is absent in provider metadata",
+      "pass": true,
+      "httpStatus": 404
+    },
+    {
+      "label": "revocation proof runs before natural token expiry",
+      "pass": true
+    },
+    {
+      "label": "membership-revocation response arrives before token expiry",
+      "pass": true
+    },
+    {
+      "label": "previously issued token denied after membership revocation",
+      "pass": false,
+      "httpStatus": 200
+    },
+    {
+      "label": "membership restored only for independent identity deletion proof",
+      "pass": true,
+      "httpStatus": 200
+    },
+    {
+      "label": "same unexpired token works immediately before identity deletion",
+      "pass": true,
+      "httpStatus": 200
+    },
+    {
+      "label": "unused bounded credential prepared for identity deletion proof",
+      "pass": true,
+      "httpStatus": 200
+    },
+    {
+      "label": "owned node Machine Identity deleted",
+      "pass": true,
+      "httpStatus": 200
+    },
+    {
+      "label": "deletion proof runs before token and unused credential expiry",
+      "pass": true
+    },
+    {
+      "label": "identity-deletion response arrives before token expiry",
+      "pass": true
+    },
+    {
+      "label": "old token denied after identity deletion",
+      "pass": true,
+      "httpStatus": 401
+    },
+    {
+      "label": "retired credential rejection arrives before its natural expiry",
+      "pass": true
+    },
+    {
+      "label": "retired identity's previously unused bootstrap credential cannot rejoin",
+      "pass": true,
+      "httpStatus": 401
+    }
+  ],
+  "resources": {
+    "projectId": "5729cdf5-61a4-4e7e-9021-f32ba16e0aa7",
+    "identityId": "6045f8ea-93a1-41cf-9e86-49d04ca6e8b2",
+    "identityDeleted": true
+  },
+  "status": "partial-failed-checks",
+  "tokenExpiresAt": "2026-10-24T13:59:20.278Z",
+  "cleanup": [
+    {
+      "resource": "identity",
+      "id": "6045f8ea-93a1-41cf-9e86-49d04ca6e8b2",
+      "removed": true,
+      "absentStatus": 404
+    },
+    {
+      "resource": "project",
+      "id": "5729cdf5-61a4-4e7e-9021-f32ba16e0aa7",
+      "removed": true,
+      "deleteStatus": 200,
+      "absentStatus": 404
+    }
+  ],
+  "finishedAt": "2026-10-24T13:57:32.409Z"
+}

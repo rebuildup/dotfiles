@@ -105,7 +105,7 @@ Windows側で再Start後、新stateのtrust/keyscanは別経路提示された�
 
 さらに再Start後、新stateの新client keyで`devnode.ts verify --name win-uuu-recreated`を一接続実行し、exit0 / ssh-verified、nonce完全一致を実測した。Herdr/MIはunverified。今回確認したのはWindowsの専用SSH資源だけの撤去・再生成であり、WSL/OS自体の再生成や共通node registryの再登録試験は未実施。
 
-Infisical版/契約の追加調査では、Python urllibのGETは未認証/既存user token使用時とも403だったが、curlによる同じ`/api/status`と認証付き`/api/v1/admin/config`のGETは200だった。したがって、先の403をinstance全体の停止や管理権限不足の証拠にはできない。status/configからversion/契約情報は確認できず、監査用storage無効化flagがfalseであることもEnterprise利用可能の証明にはならない。tokenはprocess内だけで扱い、ログ/ファイル/argvへ出さず、redirectもしない。指定projectのCLI metadata読取も成功したが、MI管理権限やsecret pathの拒否試験は未検証。
+Infisical版/契約の追加調査では、Python urllibのGETは未認証/既存user token使用時とも403だったが、curlによる同じ`/api/status`と認証付き`/api/v1/admin/config`のGETは200だった。したがって、先の403をinstance全体の停止や管理権限不足の証拠にはできない。status/configからversion/契約情報は確認できず、監査用storage無効化flagがfalseであることもEnterprise利用可能の証明にはならない。tokenはprocess内だけで扱い、ログ/ファイル/argvへ出さず、redirectもしない。続く[登録primitiveの実機PoC](infisical-node-enrollment-poc-2026-10-24.md)では、試験専用project/MIの作成・読取範囲・再使用拒否・Identity削除後の拒否を確認した。membership削除だけでは即時拒否されない失敗も記録している。
 
 org planのread-only GET `/api/v1/organizations/d808df2c-ec67-4046-b733-8c0db0bfa47d/plan`も200で、実機応答の`rbac=false`、`secretsFolderRbac=false`、`auditLogs=false`、`auditLogsRetentionDays=0`、`auditLogStreams=false`、`ipAllowlisting=false`、`gateway=false`、`pam=null`を確認した。`tier=-1`、`slug=null`から契約名は断定しない。次の登録設計ではpath/custom-role RBACやInfisical監査ログを利用可能と仮定せず、専用projectとbuilt-in roleによる分離を実際の拒否試験で確認する。監査要件は未達として残し、通常接続ログをsecret-access監査の代替とは扱わない。自動課金やlicense変更は行っていない。
 
@@ -119,10 +119,10 @@ org planのread-only GET `/api/v1/organizations/d808df2c-ec67-4046-b733-8c0db0bf
 | 4 | 模擬再生成 | 未検証。別ディレクトリ/新instanceで実施、既存WSLは破棄しない |
 | 5 | 異ネットワーク | 未検証。許可済研究室PCまたは別回線、direct/relay証拠 |
 | 6 | Herdr agent操作 | 未検証。明示profile上のtask/結果SHA |
-| 7 | node失効 | 専用SSH撤去/旧client key拒否は確認済み。VPN peer/MI失効は未検証 |
+| 7 | node失効 | SSH撤去/旧client key拒否、隔離MI削除後のtoken/未使用credential拒否は確認済み。実nodeへのMI統合とVPN peer撤回は未検証 |
 | 8 | Infisical停止 | 未検証。本番停止せず隔離processで到達先遮断、既存processも観測 |
-| 9 | token再使用拒否 | 未検証。実providerで1回目成功/2回目拒否 |
-| 10 | 権限外拒否 | SSHの誤鍵/別user/password-only拒否は確認済み。network/secret認可は未検証 |
+| 9 | token再使用拒否 | Infisicalの一回限りUA資格情報は初回200/再使用401を期限内に実測。VPN登録鍵は未検証 |
+| 10 | 権限外拒否 | SSH拒否と、隔離MIのproject外読取/書込403は確認済み。network認可と実nodeでの統合は未検証 |
 
 ## repository gate
 

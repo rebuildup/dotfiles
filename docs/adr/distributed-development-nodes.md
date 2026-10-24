@@ -89,6 +89,8 @@ leaveはMI/発行済token、SSH認可、Herdr接続と、対象が専有するne
 
 ## 障害と運用コスト
 
+2026-10-24、ユーザーはHeadscale実機PoCの配置先として既存Infisical用VPSへの同居を選択した。新規VMの追加課金は行わない。管理SSH接続・既存reverse proxy/使用port・容量・backupを確認してから配置し、Infisicalの既存構成を無断置換しない。
+
 共有gateway自体のleaveは、依存WSLが存在する場合は拒否する。各WSLの接続先移行または明示retireを確認してからgateway資源を撤回し、名前一致だけで依存先を付け替えない。
 
 Headscaleは公開HTTPSと状態DB、backup/更新の継続運用が必要。DERPを使う場合はその公開到達性も必要。ノード間直結とrelayの性能を分けて測る。Headscale停止中も既存peer通信が続き得るため即時失効の保証はできない。
@@ -100,5 +102,7 @@ Infisical停止中は新規join/token更新/新規secret取得を拒否する。
 ## 採用までの保留事項
 
 2026-10-24の実機org planでは`rbac=false`、`secretsFolderRbac=false`、`auditLogs=false`を観測した。このinstanceの登録PoCでは細粒度path/custom-role認可を前提にせず、専用projectとbuilt-in roleによる分離を検証する。既存dotfiles projectへノード用の包括的readerを付与しない。監査ログ要件は未達であり、ライセンス変更や接続ログによる代替を暗黙に決めない。
+
+[隔離project/MIでの実機検証](../research/infisical-node-enrollment-poc-2026-10-24.md)では、project境界・一回資格情報の再使用拒否・Identity削除後のtoken/未使用資格情報拒否が成立した。一方、membership削除後はmetadataから消えても発行済tokenの読取が直後に継続した。retireはmembership削除だけで完了させず、instance専有MIと資格情報の撤回・実際の拒否を確認する。viewerはproject全体の権限であり、許可されない環境のデータを同じprojectに混在させない。
 
 実際の接続PoC、Headscale配置先と版、Infisical server/licenseと権限拒否/監査、継続認証、gateway経由で必要なsource分離、実機の失効反映時間を確定する。これらを未確認のまま安全なjoin/leave実装が完成したとは扱わない。
