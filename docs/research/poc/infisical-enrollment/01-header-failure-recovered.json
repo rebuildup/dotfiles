@@ -1,0 +1,127 @@
+{
+  "runId": "c8398404-1807-4861-a6da-e3c8c526f940",
+  "name": "devnode-poc-c8398404-1807-4861-a6da-e3c8c526f940",
+  "site": "https://secrets.rebuildup.dev",
+  "organizationId": "d808df2c-ec67-4046-b733-8c0db0bfa47d",
+  "startedAt": "2026-10-24T13:47:23.125Z",
+  "schemaSha256": "62b0ba9edfe97e201a63ff3ef7ab373f1ee2ed4076f74f828724405e03a2cf82",
+  "observations": [
+    {
+      "label": "existing user can read this organization plan",
+      "pass": true,
+      "httpStatus": 200
+    },
+    {
+      "label": "created project has this run's owned name",
+      "pass": true
+    },
+    {
+      "label": "synthetic secret created only in disposable project/dev",
+      "pass": true,
+      "httpStatus": 200
+    },
+    {
+      "label": "instance-specific Machine Identity created",
+      "pass": true,
+      "httpStatus": 200
+    },
+    {
+      "label": "created Machine Identity ownership matches",
+      "pass": true
+    },
+    {
+      "label": "Universal Auth bounded to 120 seconds with no renewable period",
+      "pass": true,
+      "httpStatus": 200
+    },
+    {
+      "label": "built-in viewer granted only to disposable project",
+      "pass": true,
+      "httpStatus": 200
+    },
+    {
+      "label": "registration client secret is one-use and 120-second TTL",
+      "pass": true,
+      "httpStatus": 200
+    },
+    {
+      "label": "first bootstrap login succeeds with bounded token",
+      "pass": true,
+      "httpStatus": 200
+    },
+    {
+      "label": "replay response arrives before bootstrap credential expiry",
+      "pass": true
+    },
+    {
+      "label": "identical registration credential replay rejected",
+      "pass": true,
+      "httpStatus": 401
+    },
+    {
+      "label": "node can read its synthetic secret in explicit project/dev",
+      "pass": true,
+      "httpStatus": 200
+    },
+    {
+      "label": "write denial response arrives before token expiry",
+      "pass": true
+    },
+    {
+      "label": "viewer cannot mutate even its own project's secret",
+      "pass": true,
+      "httpStatus": 403
+    },
+    {
+      "label": "cross-project denial response arrives before token expiry",
+      "pass": true
+    },
+    {
+      "label": "node denied access to existing dotfiles project using nonexistent synthetic key",
+      "pass": true,
+      "httpStatus": 403
+    },
+    {
+      "label": "node's owned project membership revoked",
+      "pass": false,
+      "httpStatus": 500
+    }
+  ],
+  "resources": {
+    "projectId": "a8897fd3-7206-4be5-b326-bc86dc145234",
+    "identityId": "64450803-f4a2-4125-9ec3-6b2a5502bcda"
+  },
+  "status": "failed-cleaned",
+  "tokenExpiresAt": "2026-10-24T13:49:31.443Z",
+  "failure": "check failed: node's owned project membership revoked",
+  "cleanup": [
+    {
+      "resource": "identity",
+      "id": "64450803-f4a2-4125-9ec3-6b2a5502bcda",
+      "removed": true,
+      "absentStatus": 404
+    },
+    {
+      "resource": "project",
+      "id": "a8897fd3-7206-4be5-b326-bc86dc145234",
+      "removed": true,
+      "absentStatus": 404
+    }
+  ],
+  "finishedAt": "2026-10-24T13:47:38.723Z",
+  "initialCleanup": [
+    {
+      "resource": "identity",
+      "id": "64450803-f4a2-4125-9ec3-6b2a5502bcda",
+      "removed": false
+    },
+    {
+      "resource": "project",
+      "id": "a8897fd3-7206-4be5-b326-bc86dc145234",
+      "removed": false,
+      "deleteStatus": 500,
+      "absentStatus": 200
+    }
+  ],
+  "recoveryReason": "Empty JSON Content-Type on bodyless DELETE caused HTTP500; removing it produced200. Identity GET wraps organization membership and nested identity; ownership checked accordingly."
+}
