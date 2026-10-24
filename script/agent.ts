@@ -36,7 +36,7 @@
  * wrapped or overridden.
  */
 
-import { basename, delimiter, dirname, join } from "node:path";
+import { basename, delimiter, dirname, join, resolve } from "node:path";
 import {
   accessSync,
   constants as fsConstants,
@@ -45,11 +45,15 @@ import {
   mkdirSync,
   readFileSync,
   realpathSync,
+  renameSync,
   symlinkSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { constants as osConstants, homedir } from "node:os";
+import { normalizeCatalog, freeIneligibleReason, type CatalogModel } from "./agent-catalog";
+import { parseHarnessVersion } from "./agent-harness-version";
+import { assessQuality, loadQualityStore, rankQualified, type QualityAssessment, type QualityPolicy } from "./agent-quality";
 
 const PROGRAM = "agent";
 const EXIT_USAGE = 2;
@@ -76,6 +80,9 @@ usage:
   <harness>-<provider> [<harness args>...]      # shortcut (agent shortcuts create)
   agent list
   agent models <provider>
+  agent select <harness> <provider> [--model <id>] [--allow-unverified]
+  agent evaluate --help
+  agent evaluate calibrate <harness> --model <id> --reason <rationale>
   agent shortcuts [list|check|create|remove]
   agent check
   agent help
@@ -118,6 +125,7 @@ native mode (provider omitted):
   route never falls back to native mode.
 
 run options:
+  --allow-unverified         explicit experimental free model; requires --model
   --model <id>, -m <id>      model for this process only (never persisted)
   --                         everything after it goes to the harness verbatim
   --help, -h                 show this help (after a route: harness -- --help
@@ -162,6 +170,14 @@ interface Provider {
   models: string[];
   opencode_id: string;
   pi_id: string;
+  // "openrouter": models are selected from the live public catalog (see
+  // resolveCatalogModel); `models` then only orders preferences.
+  catalog: string | null;
+  min_context: number;
+  quality_file: string | null;
+  quality_policy: QualityPolicy;
+  // extra child env for the anthropic adapter (non-secret tuning only)
+  env_extra: Record<string, string>;
 }
 
 interface Harness {
@@ -289,6 +305,7 @@ function loadConfig(path?: string): Config {
     }
     const table = tableValue;
     const secret = optionalStr(table, "secret", where);
+    const base_url = optionalStr(table, "base_url", where);
     const env = optionalStr(table, "env", where) || secret;
     const models = stringList(table["models"] ?? [], where, "models");
     const default_model = optionalStr(table, "default_model", where);
@@ -306,10 +323,38 @@ function loadConfig(path?: string): Config {
         `${where}: default_model '${default_model}' is not in models [${models.join(", ")}]`
       );
     }
+    const catalog = optionalStr(table, "catalog", where);
+    if (catalog !== null && catalog !== "openrouter") {
+      throw new AgentError(`${where}: unknown catalog '${catalog}' (expected "openrouter")`);
+    }
+    if (catalog && (default_model || require_model)) {
+      throw new AgentError(`${where}: catalog providers select their model live; drop default_model/require_model`);
+    }
+    if (catalog && !base_url) {
+      throw new AgentError(`${where}: catalog = "openrouter" needs base_url`);
+    }
+    const rawExtra = table["env_extra"] ?? {};
+    if (!isPlainObject(rawExtra) || Object.values(rawExtra).some((v) => typeof v !== "string")) {
+      throw new AgentError(`${where}: env_extra must map string -> string`);
+    }
+    const env_extra = rawExtra as Record<string, string>;
+    const min_context = table["min_context"] ?? 128000;
+    if (typeof min_context !== "number" || !Number.isInteger(min_context) || min_context < 0) {
+      throw new AgentError(`${where}: 'min_context' must be a non-negative integer`);
+    }
+    const quality = table["quality"] ?? {};
+    if (!isPlainObject(quality)) throw new AgentError(`${where}: quality must be a table`);
+    const version = quality["evaluation_version"] ?? "agent-e2e-v8";
+    const minTrials = quality["min_trials"] ?? 3;
+    const maxAgeDays = quality["max_age_days"] ?? 14;
+    if (typeof version !== "string" || !version || typeof minTrials !== "number" || !Number.isSafeInteger(minTrials) || minTrials < 3 ||
+        typeof maxAgeDays !== "number" || !Number.isFinite(maxAgeDays) || maxAgeDays <= 0 || maxAgeDays > 14) {
+      throw new AgentError(`${where}: quality requires evaluation_version, min_trials >= 3 and 0 < max_age_days <= 14`);
+    }
     providers[key] = {
       key,
       label: requireStr(table, "label", where),
-      base_url: optionalStr(table, "base_url", where),
+      base_url,
       secret,
       env,
       default_model,
@@ -317,6 +362,11 @@ function loadConfig(path?: string): Config {
       models,
       opencode_id: optionalStr(table, "opencode_id", where) || key,
       pi_id: optionalStr(table, "pi_id", where) || key,
+      catalog,
+      min_context,
+      quality_file: optionalStr(table, "quality_file", where),
+      quality_policy: { evaluationVersion: version, minCapabilityTrials: minTrials, maxAgeDays },
+      env_extra,
     };
   }
   if (Object.keys(providers).length === 0) {
@@ -467,6 +517,12 @@ function routeDefaultModel(route: Route, provider: Provider): string | null {
 
 function validateRouteDefaults(route: Route, provider: Provider): void {
   const where = `routes.'${route.key}'`;
+  if (provider.catalog) {
+    if (route.default_model || route.require_model || route.models) {
+      throw new AgentError(`${where}: catalog provider '${provider.key}' selects models live; drop route model settings`);
+    }
+    return;
+  }
   const defaultModel = routeDefaultModel(route, provider);
   const models = effectiveModels(route, provider);
   if (routeRequiresModel(route, provider)) {
@@ -523,6 +579,183 @@ function resolveModel(route: Route, provider: Provider, cliModel: string | null)
 }
 
 // ---------------------------------------------------------------------------
+// Live free-model catalog (OpenRouter). Selection happens once, at launch:
+// the harnesses fix the model for the whole session and the launcher is not
+// a proxy. Mid-session failover is unsupported; restart rechecks both gates.
+// The random free router cannot identify a qualified model. Nothing can select a
+// priced model: eligibility requires every pricing field to be exactly 0.
+// ---------------------------------------------------------------------------
+
+const FREE_ROUTER_ID = "openrouter/free";
+const CATALOG_TTL_MS = 60 * 60 * 1000; // re-fetch at most hourly
+const CATALOG_STALE_MAX_MS = 7 * 24 * 60 * 60 * 1000; // usable when the fetch fails
+const EXPIRY_DEPRIORITIZE_MS = 14 * 24 * 60 * 60 * 1000; // ranked last, still selectable
+
+interface Catalog {
+  fetched_at: number;
+  models: CatalogModel[];
+  source: "live" | "cache" | "stale";
+}
+
+function cacheDir(): string {
+  const base =
+    process.env.AGENT_CACHE_DIR ||
+    (IS_WINDOWS
+      ? process.env.LOCALAPPDATA || join(homedir(), "AppData", "Local")
+      : process.env.XDG_CACHE_HOME || join(homedir(), ".cache"));
+  return process.env.AGENT_CACHE_DIR ? base : join(base, "dotfiles-agent");
+}
+
+function catalogUrl(provider: Provider): string {
+  return process.env.AGENT_CATALOG_URL || `${(provider.base_url ?? "").replace(/\/+$/, "")}/v1/models`;
+}
+
+function readCatalogCache(file: string): { fetched_at: number; models: CatalogModel[] } | null {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(file, "utf8"));
+    if (!isPlainObject(parsed) || typeof parsed["fetched_at"] !== "number" || !Number.isFinite(parsed["fetched_at"]) || parsed["fetched_at"] > Date.now() || parsed["fetched_at"] < 0) return null;
+    return { fetched_at: parsed["fetched_at"], models: normalizeCatalog(parsed["models"]) };
+  } catch {
+    return null;
+  }
+}
+
+async function loadCatalog(provider: Provider, forceRefresh: boolean): Promise<Catalog> {
+  const file = join(cacheDir(), `${provider.key}-models.json`);
+  const now = Date.now();
+  const cached = readCatalogCache(file);
+  if (cached && !forceRefresh && now - cached.fetched_at < CATALOG_TTL_MS) {
+    return { ...cached, source: "cache" };
+  }
+  let failure: string;
+  try {
+    // The catalog is public: no credential is sent.
+    const response = await fetch(catalogUrl(provider), { signal: AbortSignal.timeout(10_000) });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const body: unknown = await response.json();
+    const models = normalizeCatalog(isPlainObject(body) ? body["data"] : undefined);
+    try {
+      mkdirSync(dirname(file), { recursive: true });
+      const tmp = `${file}.${process.pid}.tmp`;
+      writeFileSync(tmp, JSON.stringify({ fetched_at: now, models }));
+      renameSync(tmp, file);
+    } catch (exc) {
+      console.error(`${PROGRAM}: warning: cannot write model cache ${file}: ${exc}`);
+    }
+    return { fetched_at: now, models, source: "live" };
+  } catch (exc) {
+    failure = exc instanceof Error ? exc.message : String(exc);
+  }
+  if (cached && now - cached.fetched_at < CATALOG_STALE_MAX_MS) {
+    const hours = Math.round((now - cached.fetched_at) / 3_600_000);
+    console.error(
+      `${PROGRAM}: warning: model catalog fetch failed (${failure}); using cache from ${hours}h ago`
+    );
+    return { ...cached, source: "stale" };
+  }
+  throw new AgentError(
+    `cannot determine available free models: catalog fetch failed (${failure}) and no usable cache ` +
+      `(${file}). No model is guessed and no paid fallback is used.`,
+    EXIT_RUNTIME
+  );
+}
+
+/** Availability discovery order. Quality evidence determines actual selection. */
+function rankFreeModels(catalog: Catalog, provider: Provider, now: number): CatalogModel[] {
+  const tier = (m: CatalogModel): number => {
+    const expires = m.expiration_date ? Date.parse(m.expiration_date) : NaN;
+    return Number.isFinite(expires) && expires - now < EXPIRY_DEPRIORITIZE_MS ? 1 : 0;
+  };
+  const preference = (m: CatalogModel): number => {
+    const index = provider.models.indexOf(m.id);
+    return index === -1 ? provider.models.length : index;
+  };
+  return catalog.models
+    .filter((m) => m.id !== FREE_ROUTER_ID && freeIneligibleReason(m, provider, now) === null)
+    .sort(
+      (a, b) =>
+        tier(a) - tier(b) ||
+        preference(a) - preference(b) ||
+        b.context_length - a.context_length ||
+        (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+    );
+}
+
+function qualityPath(provider: Provider): string {
+  return process.env.AGENT_QUALITY_FILE ||
+    (provider.quality_file ? resolve(dirname(configPath()), provider.quality_file) : join(cacheDir(), `${provider.key}-quality.json`));
+}
+
+function versionEnvironment(): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const name of ["PATH", "HOME", "USERPROFILE", "LOCALAPPDATA", "SystemRoot", "SYSTEMROOT", "COMSPEC", "PATHEXT", "TEMP", "TMP", "LANG"]) {
+    if (process.env[name] !== undefined) env[name] = process.env[name]!;
+  }
+  return env;
+}
+
+async function qualityAssessments(provider: Provider, harness: Harness, models: CatalogModel[], evidencePath = qualityPath(provider)): Promise<QualityAssessment[]> {
+  try {
+    const store = await loadQualityStore(evidencePath);
+    const { evaluationFixtureDigest } = await import("./agent-eval-fixture");
+    const command = which(harness.command);
+    if (!command) throw new Error(`harness not found: ${harness.command}`);
+    const versionEnv = versionEnvironment();
+    const version = Bun.spawnSync(launchArgv(command, ["--version"], versionEnv), {
+      env: versionEnv, stdout: "pipe", stderr: "pipe", timeout: 10_000,
+    });
+    const harnessVersion = parseHarnessVersion(version.stdout.toString(), version.stderr.toString());
+    if (version.exitCode !== 0 || !harnessVersion) throw new Error("cannot determine current harness version");
+    return models.map(m => assessQuality(store, m.id, harness.key, new Date(), {
+      ...provider.quality_policy, fixtureDigest: evaluationFixtureDigest(), harnessVersion,
+    }));
+  } catch (error) {
+    return models.map(m => ({ model_id: m.id, harness: harness.key, status: "unverified", metrics: null,
+      reasons: [error instanceof Error ? error.message : "Cannot read quality evidence"] }));
+  }
+}
+
+async function resolveCatalogModel(
+  route: Route,
+  provider: Provider,
+  cliModel: string | null,
+  allowUnverified = false,
+  forceRefresh = false,
+  harness?: Harness,
+): Promise<string> {
+  if (allowUnverified && !cliModel) throw new AgentError("--allow-unverified requires an explicit --model");
+  if (!cliModel && process.env.AGENT_MODEL) console.error("agent: warning: AGENT_MODEL is no longer read; use --model");
+  const catalog = await loadCatalog(provider, forceRefresh);
+  if (catalog.source === "stale") throw new AgentError("stale catalog is discovery-only; cannot authorize current free pricing. Retry after the official catalog recovers.", EXIT_RUNTIME);
+  const now = Date.now();
+  const available = rankFreeModels(catalog, provider, now);
+  const top = available.slice(0, 5).map(m => m.id).join("\n  ");
+  if (cliModel) {
+    const entry = catalog.models.find(m => m.id === cliModel);
+    const reason = entry ? freeIneligibleReason(entry, provider, now) : "not in the live OpenRouter catalog (retired or unknown)";
+    if (reason) throw new AgentError(`model '${cliModel}' cannot be used on route '${route.key}': ${reason}.\nCurrently available free models:\n  ${top || "(none)"}`);
+    if (allowUnverified) {
+      console.error(`${PROGRAM}: ${provider.key} -> ${cliModel} (explicit --allow-unverified; quality is not guaranteed)`);
+      return cliModel;
+    }
+  }
+  if (!available.length) throw new AgentError(`no eligible free model for route '${route.key}'; stopping without a paid fallback`, EXIT_RUNTIME);
+  if (!harness) throw new AgentError("quality selection requires a harness", EXIT_RUNTIME);
+  const assessments = await qualityAssessments(provider, harness, available);
+  const qualified = rankQualified(assessments);
+  if (cliModel) {
+    const assessment = assessments.find(a => a.model_id === cliModel)!;
+    if (assessment.status !== "qualified") throw new AgentError(`model '${cliModel}' is ${assessment.status} for ${route.harness}: ${assessment.reasons.join("; ")}. Explicit experimental use requires --allow-unverified with --model.`);
+    console.error(`${PROGRAM}: ${provider.key} -> ${cliModel} (${assessment.reasons.join("; ")})`);
+    return cliModel;
+  }
+  const chosen = qualified[0];
+  if (!chosen) throw new AgentError(`no qualified free model for route '${route.key}'. No unverified or paid fallback.\n` + assessments.map(a => `  ${a.model_id}: ${a.status}: ${a.reasons.join("; ")}`).join("\n") + `\nRun 'agent models ${provider.key}' or 'agent evaluate --help'.`, EXIT_RUNTIME);
+  console.error(`${PROGRAM}: ${provider.key} -> ${chosen.model_id} (${chosen.reasons.join("; ")}; completion reliability first, tool reliability then duration)`);
+  return chosen.model_id;
+}
+
+// ---------------------------------------------------------------------------
 // Shortcut form: `<harness>-<provider>` invoked directly (symlink to this
 // script on Unix, generated .cmd on Windows). The name is resolved by exact
 // match against the configured routes, never by splitting on hyphens.
@@ -554,14 +787,17 @@ function resolveShortcut(config: Config, name: string): [string, string] {
   return [harnessKey, providerKey];
 }
 
-function parseShortcutArgs(argv: string[]): { model: string | null; passthru: string[] } {
-  // Shortcut argv: only --agent-model is launcher-owned, the rest is the
+function parseShortcutArgs(argv: string[]): { model: string | null; passthru: string[]; allowUnverified: boolean } {
+  // Shortcut argv: --agent-model and --allow-unverified are launcher-owned, the rest is the
   // harness's own argument vector (passed verbatim, no '--' required).
   let model: string | null = null;
+  let allowUnverified = false;
   const passthru: string[] = [];
   let index = 0;
   while (index < argv.length) {
     const token = argv[index];
+    if (token === "--") { passthru.push(...argv.slice(index + 1)); break; }
+    if (token === "--allow-unverified") { allowUnverified = true; index++; continue; }
     if (token === SHORTCUT_MODEL_FLAG) {
       if (index + 1 >= argv.length) {
         throw new AgentError(`${token} requires a value`);
@@ -586,7 +822,7 @@ function parseShortcutArgs(argv: string[]): { model: string | null; passthru: st
     // tolerated so `opencode-zen -- run …` matches the agent-form habit
     passthru.shift();
   }
-  return { model, passthru };
+  return { model, passthru, allowUnverified };
 }
 
 /**
@@ -901,7 +1137,7 @@ type Action =
   | ["models", string]
   | ["shortcuts", string | null]
   | ["native", string, string[]]
-  | ["run", string, string, string | null, string[]];
+  | ["run", string, string, string | null, string[], boolean];
 
 function parseArgs(argv: string[]): Action {
   // Parse argv without touching the config.
@@ -971,11 +1207,13 @@ function parseArgs(argv: string[]): Action {
   const providerKey = argv[1];
 
   let model: string | null = null;
+  let allowUnverified = false;
   let passthru: string[] = [];
   const rest = argv.slice(2);
   let index = 0;
   while (index < rest.length) {
     const token = rest[index];
+    if (token === "--allow-unverified") { allowUnverified = true; index++; continue; }
     if (token === "--") {
       passthru = rest.slice(index + 1);
       break;
@@ -996,7 +1234,7 @@ function parseArgs(argv: string[]): Action {
         `(e.g. agent ${harnessKey} ${providerKey} -- <args>)`
     );
   }
-  return ["run", harnessKey, providerKey, model, passthru];
+  return ["run", harnessKey, providerKey, model, passthru, allowUnverified];
 }
 
 // ---------------------------------------------------------------------------
@@ -1094,7 +1332,8 @@ function planAnthropic(
     // CLAUDE_CODE_SUBAGENT_MODEL stays unset because it is not needed.
     [env["default_opus"], model],
     [env["default_sonnet"], model],
-    [env["default_haiku"], model]
+    [env["default_haiku"], model],
+    ...Object.entries(provider.env_extra)
   );
 }
 
@@ -1117,19 +1356,29 @@ function planOpencode(plan: Plan, harness: Harness, provider: Provider, model: s
   // "Model unavailable" for providers it never saw a key for). Force
   // process-scoped `--standalone` unless the caller chose a server mode.
   const passthru = plan.command.slice(1);
-  if (passthru.includes("--standalone") || passthru.includes("--server")) {
-    return;
-  }
+  if (passthru.includes("--server")) return;
   if (passthru.length > 0 && !passthru[0].startsWith("-")) {
     const subcommand = passthru[0];
     if (subcommand === "run" || subcommand === "mini") {
-      // subcommands that accept the flag
-      plan.command = [plan.command[0], subcommand, "--standalone", ...passthru.slice(1)];
+      // `--model` is subcommand-specific in OpenCode v2. Add it even when
+      // callers already requested standalone mode, so config selection and
+      // the model that actually answers cannot diverge.
+      const args = passthru.slice(1);
+      const forwardedArgs = args.filter((arg) => arg !== "--standalone");
+      plan.command = [
+        plan.command[0],
+        subcommand,
+        "--standalone",
+        "--model",
+        `${provider.opencode_id}/${model}`,
+        ...forwardedArgs,
+      ];
     }
     // other subcommands (models, auth, ...) do not launch a session and
     // are passed through untouched
     return;
   }
+  if (passthru.includes("--standalone")) return;
   plan.command = [plan.command[0], "--standalone", ...passthru];
 }
 
@@ -1433,9 +1682,17 @@ async function cmdRun(
   harnessKey: string,
   providerKey: string,
   cliModel: string | null,
-  passthru: string[]
+  passthru: string[],
+  allowUnverified = false,
+  selectOnly = false,
 ): Promise<number> {
   const [harness, provider, route] = selectRoute(config, harnessKey, providerKey);
+  if (allowUnverified && (!provider.catalog || !cliModel)) throw new AgentError("--allow-unverified requires an explicit model on a catalog route");
+  if (provider.catalog && harness.adapter === "opencode") {
+    const externalServer = passthru.some(token => ["--server", "--attach"].includes(token.split("=", 1)[0])) ||
+      ["attach", "serve", "service", "api", "acp", "pair"].includes(passthru[0] ?? "");
+    if (externalServer) throw new AgentError("free model selection requires a process-scoped OpenCode server; server/attach/service modes cannot preserve the selected model");
+  }
   let model: string | null;
   if (harness.adapter === "passthrough") {
     if (cliModel !== null) {
@@ -1445,9 +1702,12 @@ async function cmdRun(
       );
     }
     model = null;
+  } else if (provider.catalog) {
+    model = await resolveCatalogModel(route, provider, cliModel, allowUnverified, false, harness);
   } else {
     model = resolveModel(route, provider, cliModel);
   }
+  if (selectOnly) { console.log(model ?? "(harness-native)"); return 0; }
   const plan = buildPlan(config, harness, provider, route, model, passthru);
 
   if (which(harness.command) === null) {
@@ -1465,8 +1725,8 @@ async function cmdRun(
 
 function cmdRunShortcut(config: Config, name: string, argv: string[]): Promise<number> {
   const [harnessKey, providerKey] = resolveShortcut(config, name);
-  const { model, passthru } = parseShortcutArgs(argv);
-  return cmdRun(config, harnessKey, providerKey, model, passthru);
+  const { model, passthru, allowUnverified } = parseShortcutArgs(argv);
+  return cmdRun(config, harnessKey, providerKey, model, passthru, allowUnverified);
 }
 
 function cmdRunNative(config: Config, harnessKey: string, passthru: string[]): Promise<number> {
@@ -1503,9 +1763,9 @@ function cmdList(config: Config): number {
     const route = config.routes[key];
     const provider = config.providers[route.provider];
     const defaultModel = routeDefaultModel(route, provider);
-    const cell = defaultModel ?? "--model required";
+    const cell = provider.catalog ? "(availability + quality)" : (defaultModel ?? "--model required");
     let notes = route.note || "";
-    if (defaultModel === null) {
+    if (defaultModel === null && !provider.catalog) {
       notes = `(explicit --model) ${notes}`.trimEnd();
     }
     console.log(
@@ -1520,7 +1780,7 @@ function cmdList(config: Config): number {
   return 0;
 }
 
-function cmdModels(config: Config, providerKey: string): number {
+async function cmdModels(config: Config, providerKey: string): Promise<number> {
   const provider = config.providers[providerKey];
   if (!provider) {
     const known = Object.keys(config.providers).sort().join(", ");
@@ -1548,7 +1808,11 @@ function cmdModels(config: Config, providerKey: string): number {
   for (const route of routes) {
     const harness = config.harnesses[route.harness];
     const defaultModel = routeDefaultModel(route, provider);
-    const suffix = defaultModel ? ` (default ${defaultModel})` : " (--model required)";
+    const suffix = provider.catalog
+      ? " (model selected live)"
+      : defaultModel
+        ? ` (default ${defaultModel})`
+        : " (--model required)";
     console.log(`  ${route.key.padEnd(22)} [${harness.adapter}]${suffix}`);
     if (route.note) {
       console.log(`    note: ${route.note}`);
@@ -1559,6 +1823,33 @@ function cmdModels(config: Config, providerKey: string): number {
         console.log(`      ${model}`);
       }
     }
+  }
+  if (provider.catalog) {
+    // explicit, user-initiated command: always refreshes the cache
+    const catalog = await loadCatalog(provider, true);
+    const now = Date.now();
+    const candidates = catalog.models.filter(m => m.id.endsWith(":free") || provider.models.includes(m.id));
+    const available = rankFreeModels(catalog, provider, now);
+    console.log(`free model discovery (catalog ${catalog.source}, min context ${provider.min_context}):`);
+    console.log(
+      `quality evidence: ${qualityPath(provider)}; public benchmark context: config/openrouter-benchmarks.json`,
+    );
+    for (const route of routes) {
+      const assessments = await qualityAssessments(provider, config.harnesses[route.harness], available);
+      const chosen = rankQualified(assessments)[0];
+      console.log(`  ${route.harness}: selected ${catalog.source === "stale" ? "(none; stale catalog)" : chosen?.model_id ?? "(none qualified)"}`);
+      for (const m of candidates) {
+        const reason = freeIneligibleReason(m, provider, now);
+        const quality = assessments.find(a => a.model_id === m.id);
+        const metrics = quality?.metrics;
+        const measured = metrics
+          ? ` [completed ${metrics.successes}/${metrics.capability_trials}; tool failures ${metrics.tool_failures}/${metrics.tool_calls}; mean ${Math.round(metrics.duration_ms)}ms; infrastructure failures ${metrics.infrastructure_failures}]`
+          : "";
+        console.log(`    ${m.id}: ${reason ? "unavailable: " + reason : quality!.status + ": " + quality!.reasons.join("; ")}${measured}`);
+      }
+      for (const missing of provider.models.filter(id => !catalog.models.some(m => m.id === id))) console.log(`    ${missing}: unavailable: absent from catalog`);
+    }
+    return 0;
   }
   console.log("models:");
   for (const model of provider.models) {
@@ -1584,6 +1875,44 @@ function cmdModels(config: Config, providerKey: string): number {
     console.log("  (none declared; any id passes through unvalidated)");
   }
   return 0;
+}
+
+async function cmdCalibrate(config: Config, args: string[]): Promise<number> {
+  if (args.length !== 5 || args[1] !== "--model" || args[3] !== "--reason" || !args[4].trim()) {
+    throw new AgentError("usage: agent evaluate calibrate <harness> --model <id> --reason <measured selection rationale>");
+  }
+  const [harness, provider, route] = selectRoute(config, args[0], "openrouter-free");
+  await resolveCatalogModel(route, provider, args[2], true, false, harness);
+  const file = qualityPath(provider);
+  const lock = `${file}.lock`;
+  try { writeFileSync(lock, "calibration", { flag: "wx", mode: 0o600 }); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      throw new AgentError("quality evidence is locked by another evaluation/calibration", EXIT_RUNTIME);
+    }
+    throw new AgentError(`cannot create calibration lock: ${error instanceof Error ? error.message : String(error)}`, EXIT_RUNTIME);
+  }
+  try {
+    const store = await loadQualityStore(file);
+    const evaluation = store.evaluations.filter(e => e.model_id === args[2] && e.harness === harness.key)
+      .sort((a, b) => Date.parse(b.evaluated_at) - Date.parse(a.evaluated_at))[0];
+    if (!evaluation) throw new AgentError("no actual evaluation exists for this model and harness", EXIT_RUNTIME);
+    store.calibration = {
+      calibrated_at: new Date().toISOString(), rationale: args[4],
+      baselines: [...(store.calibration?.baselines ?? []).filter(ref => ref.harness !== harness.key),
+        { model_id: args[2], harness: harness.key, evaluated_at: evaluation.evaluated_at }],
+    };
+    // Use the same current-artifact policy as normal admission before persisting.
+    const temporary = `${file}.${process.pid}.calibrating`;
+    writeFileSync(temporary, JSON.stringify(store, null, 2) + "\n", { mode: 0o600 });
+    try {
+      const [assessment] = await qualityAssessments(provider, harness, [{ id: args[2] } as CatalogModel], temporary);
+      if (assessment.status !== "qualified") throw new AgentError(`baseline cannot calibrate quality: ${assessment.reasons.join("; ")}`, EXIT_RUNTIME);
+      renameSync(temporary, file);
+      console.log(`${harness.key}: baseline ${args[2]} — ${assessment.reasons.join("; ")}`);
+    } finally { if (existsSync(temporary)) unlinkSync(temporary); }
+    return 0;
+  } finally { unlinkSync(lock); }
 }
 
 function cmdCheck(config: Config): number {
@@ -1630,13 +1959,23 @@ async function main(argv: string[]): Promise<number> {
   const config = loadConfig();
   const first = argv[0];
   if (
-    !["help", "--help", "-h", "--version", "-V", "list", "check", "models", "shortcuts"].includes(first) &&
+    !["help", "--help", "-h", "--version", "-V", "list", "check", "models", "shortcuts", "select", "evaluate"].includes(first) &&
     !(first in config.harnesses) &&
     shortcutMap(config)[first]
   ) {
     return cmdRunShortcut(config, first, argv.slice(1));
   }
 
+  if (first === "evaluate") {
+    if (argv[1] === "calibrate") return cmdCalibrate(config, argv.slice(2));
+    const { evaluationMain } = await import("./agent-eval");
+    return evaluationMain(argv.slice(1));
+  }
+  if (first === "select") {
+    const selected = parseArgs(argv.slice(1));
+    if (selected[0] !== "run" || selected[4].length) throw new AgentError("usage: agent select <harness> <provider> [--model <id>] [--allow-unverified]");
+    return cmdRun(config, selected[1], selected[2], selected[3], [], selected[5], true);
+  }
   const action = parseArgs(argv);
   if (action[0] === "help") {
     console.log(usageText());
@@ -1653,7 +1992,7 @@ async function main(argv: string[]): Promise<number> {
     return cmdCheck(config);
   }
   if (action[0] === "models") {
-    return cmdModels(config, action[1]);
+    return await cmdModels(config, action[1]);
   }
   if (action[0] === "shortcuts") {
     return cmdShortcuts(config, action[1]);
@@ -1662,8 +2001,8 @@ async function main(argv: string[]): Promise<number> {
     const [, harnessKey, nativePassthru] = action;
     return cmdRunNative(config, harnessKey, nativePassthru);
   }
-  const [, harnessKey, providerKey, model, passthru] = action;
-  return cmdRun(config, harnessKey, providerKey, model, passthru);
+  const [, harnessKey, providerKey, model, passthru, allowUnverified] = action;
+  return cmdRun(config, harnessKey, providerKey, model, passthru, allowUnverified);
 }
 
 try {

@@ -1,0 +1,86 @@
+{
+  "schema_version": 1,
+  "updated_at": "2026-10-23T16:10:56.302Z",
+  "benchmarks": [
+    {
+      "model_id": "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "name": "Terminal-Bench",
+      "version": "2.1; NVIDIA technical report cover 2026-06-09, Table 10",
+      "conditions": "Vendor-reported Nemotron 3 Ultra 550B-A55B BF16. NeMo Evaluator SDK suite uses Gym, Skills and Harbor; exact score-specific harness revision, trial count and evaluation date not established. updated_at is research observation time. No local harness or free endpoint validation.",
+      "source_url": "https://research.nvidia.com/labs/nemotron/files/NVIDIA-Nemotron-3-Ultra-Technical-Report.pdf",
+      "updated_at": "2026-10-23T16:10:56.302Z",
+      "metric": "resolved_percent",
+      "value": 56.4
+    },
+    {
+      "model_id": "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "name": "SWE-bench Verified",
+      "version": "NVIDIA technical report cover 2026-06-09, Table 10",
+      "conditions": "Vendor-reported Nemotron 3 Ultra 550B-A55B BF16. Exact score-specific harness revision, trial count and evaluation date not established. Current PDF says 70.7; NIM/OpenRouter descriptions retain 71.9. Preserve source revisions separately. updated_at is research observation time. No local free endpoint validation.",
+      "source_url": "https://research.nvidia.com/labs/nemotron/files/NVIDIA-Nemotron-3-Ultra-Technical-Report.pdf",
+      "updated_at": "2026-10-23T16:10:56.302Z",
+      "metric": "resolved_percent",
+      "value": 70.7
+    },
+    {
+      "model_id": "poolside/laguna-s-2.1:free",
+      "name": "Terminal-Bench",
+      "version": "2.1; Poolside release 2026-07-21",
+      "conditions": "Vendor-reported Laguna S 2.1 118B-A8B, pool agent harness, thinking enabled, pass@1 averaged over four attempts per task. Cross-model vendor table mixes harnesses and maximal published scores. updated_at is research observation time. No local harness or OpenRouter free endpoint validation.",
+      "source_url": "https://poolside.ai/blog/introducing-laguna-s-2-1",
+      "updated_at": "2026-10-23T16:10:56.302Z",
+      "metric": "pass_at_1_percent",
+      "value": 70.2
+    },
+    {
+      "model_id": "poolside/laguna-s-2.1:free",
+      "name": "DeepSWE",
+      "version": "1.1; Poolside release 2026-07-21",
+      "conditions": "Vendor-reported Laguna S 2.1 118B-A8B, pool harness, thinking enabled, pass@1 averaged over three attempts per task. Official DeepSWE leaderboard uses mini-swe-agent; harness results are not directly interchangeable. updated_at is research observation time. No local harness or free endpoint validation.",
+      "source_url": "https://poolside.ai/blog/introducing-laguna-s-2-1",
+      "updated_at": "2026-10-23T16:10:56.302Z",
+      "metric": "pass_at_1_percent",
+      "value": 40.4
+    },
+    {
+      "model_id": "nvidia/nemotron-3-super-120b-a12b:free",
+      "name": "SWE-bench Verified",
+      "version": "NVIDIA Super official evaluation page observed 2026-10-24 JST",
+      "conditions": "Vendor-reported Nemotron 3 Super, OpenHands harness. Exact harness revision, trial count, serving precision and evaluation date not established here. Model release date 2026-03-11 does not establish evaluation date. updated_at is research observation time. No local free endpoint validation.",
+      "source_url": "https://docs.nvidia.com/nemotron/latest/nemotron/super3/evaluate.html",
+      "updated_at": "2026-10-23T16:10:56.302Z",
+      "metric": "resolved_percent",
+      "value": 60.47
+    },
+    {
+      "model_id": "nvidia/nemotron-3-super-120b-a12b:free",
+      "name": "SWE-bench Verified",
+      "version": "NVIDIA Super official evaluation page observed 2026-10-24 JST",
+      "conditions": "Vendor-reported Nemotron 3 Super, OpenCode harness. Exact harness revision, trial count, serving precision and evaluation date not established here. Keep separate from OpenHands and local OpenCode fixture outcomes. updated_at is research observation time. No local free endpoint validation.",
+      "source_url": "https://docs.nvidia.com/nemotron/latest/nemotron/super3/evaluate.html",
+      "updated_at": "2026-10-23T16:10:56.302Z",
+      "metric": "resolved_percent",
+      "value": 59.2
+    },
+    {
+      "model_id": "nvidia/nemotron-3-super-120b-a12b:free",
+      "name": "Terminal-Bench",
+      "version": "Core 2.0; NVIDIA Super official evaluation observed 2026-10-24 JST",
+      "conditions": "Vendor-reported Nemotron 3 Super, Harbor. Exact harness revision, trial count, serving precision and evaluation date not established here. Different benchmark from hard subset and Terminal-Bench 2.1. updated_at is research observation time. No local free endpoint validation.",
+      "source_url": "https://docs.nvidia.com/nemotron/latest/nemotron/super3/evaluate.html",
+      "updated_at": "2026-10-23T16:10:56.302Z",
+      "metric": "resolved_percent",
+      "value": 31
+    },
+    {
+      "model_id": "cohere/north-mini-code:free",
+      "name": "Artificial Analysis Coding Index",
+      "version": "June 2026 North Mini Code 1.0 launch statement; index revision unspecified",
+      "conditions": "Cohere-reported composite index score, not a task completion percentage. Index revision and evaluation date unspecified. Official model card separately documents SWE-agent v1.1.0, single-terminal ReAct for Terminal-Bench v2, Terminus-2 for Hard, three seeds, temperature 1.0 and top_p 0.95; these do not establish composite index methodology. Current OpenRouter catalog lists 36.5 with incomparable metadata. updated_at is research observation time. No local harness or free endpoint validation.",
+      "source_url": "https://cohere.com/blog/north-mini-code",
+      "updated_at": "2026-10-23T16:10:56.302Z",
+      "metric": "coding_index",
+      "value": 33.4
+    }
+  ]
+}

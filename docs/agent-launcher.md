@@ -239,39 +239,108 @@ shortcut names would collide.
 The launcher's mock tests assert both directions: the selected credential
 arrives, and every other provider's credential does not.
 
-## OpenRouter free default lifecycle
+## OpenRouter free models: availability and measured quality (issue #72)
 
-The former `minimax/minimax-m3.1-flash:free` launch promotion ends on
-2026-10-22 at 12:00 UTC (OpenRouter model page). The default is
-`nvidia/nemotron-3-ultra-550b-a55b:free`, a currently free model with tool calling in the public
-catalog. The original MiniMax free model passed live Claude/Pi/OpenCode E2E
-(response and file-edit tool invocation) on 2026-10-21, but the replacement
-model has **not yet** passed the same harness-specific E2E. Validate it on
-Mac, Windows, and WSL before relying on it for unattended development. A
-free-route failure must not switch to a paid model.
+`agent claude openrouter-free`, `agent pi openrouter-free` and
+`agent opencode openrouter-free` keep the same spelling. Selection now requires
+both gates, with no paid or unverified automatic fallback:
+
+1. **Availability:** official public `GET /api/v1/models`, all normalized pricing
+   fields exactly `"0"` (including prompt/completion), stable `:free` ID, tools,
+   text input/text-only output, configured context floor, valid expiry at least
+   24 hours away. Explicit model requests pass exactly the same checks.
+2. **Quality:** evidence for the exact model, provider, installed harness version,
+   evaluation version and fixture digest. Missing, invalid, future, stale or
+   insufficient evidence is `unverified`. Failed acceptance against a calibrated
+   baseline is `rejected`. Neither status can be auto-selected.
+
+The default evidence store is machine-local:
+`<agent cache>/openrouter-free-quality.json`. `AGENT_QUALITY_FILE` overrides it;
+optional provider `quality_file` is relative to the TOML directory (absolute
+paths also work). There are no fabricated initial qualifications. A clean clone
+therefore stops until actual measurements and calibration establish a baseline.
+The `models` list in TOML discovers candidates; its order and context cannot
+compensate for weaker measured completion. Qualified models rank by Wilson
+completion lower bound, tool reliability, then measured elapsed time. Public
+benchmarks retain their conditions and sources but are never combined into a
+cross-benchmark numerical score.
+
+```bash
+agent models openrouter-free                   # refresh, status/reasons for each harness
+agent select pi openrouter-free                 # print selection without credential injection
+agent evaluate --help
+agent evaluate quota                            # request counters, no inference
+agent evaluate pi --model cohere/north-mini-code:free --trials 1 --max-requests 24 --timeout 180
+# After repeated independent passes, explicitly choose a measured baseline:
+agent evaluate calibrate pi --model <id:free> --reason "measured baseline selection rationale"
+# Experimental use still enforces Availability Gate:
+agent pi openrouter-free --model <id:free> --allow-unverified
+pi-openrouter-free --agent-model <id:free> --allow-unverified
+```
+
+Calibration requires at least three independently graded capability attempts,
+all passing the small development fixture and with no tool failures. It derives
+completion/tool thresholds from the chosen measured baseline rather than
+assigning a model a hand-written score. This is a repeatability floor, not broad
+statistical proof of coding quality. The evidence freshness ceiling is 14 days;
+policy in TOML may tighten the trial count and freshness. Recalibrate each
+harness separately. Old versions remain audit history; current compatible
+failures cannot be hidden by selecting one successful batch.
+
+The evaluator copies a multi-file inventory library to a new temporary project.
+The task includes an existing regression plus atomic reservation, validation,
+rounding and immutability requirements. Public tests, a separate hidden grader,
+protected-file integrity, actual model observation and tool traces determine
+success. Self-report is not a grading input. A fresh HOME/config disables host
+extensions and MCP integrations. This prevents accidental project/config reuse;
+it is not an OS sandbox for hostile code.
+
+Evaluation is sequential and explicitly requested. A parent-only key and an
+in-process loopback request guard enforce the aggregate inference budget,
+exact model and no fallback/add-ons. Every forwarded attempt consumes the cap,
+including failed requests; 429/auth/API failures stop the run and remain separate
+from model capability failures. There is no evaluation transport or E2E on normal
+startup. Daily counters come from `free_model_daily_requests` on `/api/v1/key`,
+never dollar/credit usage. Unknown or exhausted quota refuses inference. Limits
+are account-wide: 20 RPM, normally 50 RPD, or 1000 RPD after $10 cumulative
+purchases; failed requests count. No retry can recover an exhausted daily quota.
+
+Catalog cache: `<agent cache>/openrouter-free-models.json`, fresh for one hour.
+The directory uses `$AGENT_CACHE_DIR`, otherwise `$XDG_CACHE_HOME/dotfiles-agent`
+(or `~/.cache/dotfiles-agent`; `%LOCALAPPDATA%/dotfiles-agent` on Windows).
+On failed refresh, data up to seven days old is available for discovery only;
+it cannot authorize execution. Cached price is known only as of its fetch time.
+`openrouter/free` is excluded because it cannot represent a stable evaluated
+model. Free OpenCode routes reject external server/attach/service modes, which
+would otherwise ignore the process-scoped selected model and credentials.
+
+See [ADR-0012](adr/ADR-0012.md), [official-source research](research/openrouter-free-quality-2026-10-24.md)
+and [benchmark records](../config/openrouter-benchmarks.json). Current actual
+measurements and any blockers are recorded with PR #73; older one-file smoke
+results do not qualify this stronger gate.
 
 ## Route matrix and verification status
 
 | harness \ provider | zen | openrouter | openrouter-free | deepseek | minimax |
 | --- | --- | --- | --- | --- | --- |
-| claude | — (no Anthropic-compatible endpoint verified; zen free tier is client-bound: pi got `403 … only … within OpenCode`) | yes, default `z-ai/glm-5.3-flash` | free models only, default `nvidia/nemotron-3-ultra-550b-a55b:free` (same endpoint + `OPENROUTER_API_KEY` as the paid provider; allowlist = live-verified pricing 0/0 ids only — paid ids exit 2) | yes, default `deepseek-flash` (route list: `deepseek-flash` only, because the endpoint silently remaps unknown names) | yes, default `MiniMax-M3.1-Flash` (official model ID; live M Plan verification pending; reasoning always on; effort defaults to `max`) |
-| opencode | yes, default `mimo-v2.6-flash-free` (free models; `opencode_id = "opencode"`) | yes | free models only, default `nvidia/nemotron-3-ultra-550b-a55b:free` (`opencode_id = "openrouter"` — OpenCode's native OpenRouter provider id; live route verification pending) | yes | yes, route default `MiniMax-M3` (route model list `["MiniMax-M3"]` only; OpenCode v2 previously silently fell back to Zen for the Preview ID; formal ID not yet verified — keep M3 as the known route default; `--model MiniMax-M3.1-Flash` exits 2 here) |
-| pi | — (free tier refused outside OpenCode) | yes | free models only, default `nvidia/nemotron-3-ultra-550b-a55b:free` (`pi_id = "openrouter"` — pi's native OpenRouter provider id; the route key is launcher-side routing only; live route verification pending) | yes | yes, default `MiniMax-M3.1-Flash` (official ID; verify real M Plan response and catalog behavior) |
+| claude | — (no Anthropic-compatible endpoint verified; zen free tier is client-bound: pi got `403 … only … within OpenCode`) | yes, default `z-ai/glm-5.3-flash` | free models only, availability + measured quality required (see above) (same endpoint + `OPENROUTER_API_KEY` as the paid provider; live catalog eligibility: pricing all 0 — paid ids exit 2) | yes, default `deepseek-flash` (route list: `deepseek-flash` only, because the endpoint silently remaps unknown names) | yes, default `MiniMax-M3.1-Flash` (official model ID; live M Plan verification pending; reasoning always on; effort defaults to `max`) |
+| opencode | yes, default `mimo-v2.6-flash-free` (free models; `opencode_id = "opencode"`) | yes | free models only, availability + measured quality required (see above) (`opencode_id = "openrouter"` — OpenCode's native OpenRouter provider id; live route verification pending) | yes | yes, route default `MiniMax-M3` (route model list `["MiniMax-M3"]` only; OpenCode v2 previously silently fell back to Zen for the Preview ID; formal ID not yet verified — keep M3 as the known route default; `--model MiniMax-M3.1-Flash` exits 2 here) |
+| pi | — (free tier refused outside OpenCode) | yes | free models only, availability + measured quality required (see above) (`pi_id = "openrouter"` — pi's native OpenRouter provider id; the route key is launcher-side routing only; live route verification pending) | yes | yes, default `MiniMax-M3.1-Flash` (official ID; verify real M Plan response and catalog behavior) |
 | dsh | — | — | — | passthrough (native dsh auth; install + `--version` verified, live session pending DeepSeek balance) | — |
 
 Not covered on purpose: `opencode`/`pi` on other providers, paid zen
 models (add them to the TOML deliberately), any automatic fallback
 between models or providers, and any paid OpenRouter id on an
-`openrouter-free` route (the free allowlist is closed — an unlisted or
-later-monetized id fails closed instead of silently billing).
+`openrouter-free` route (fresh availability and harness-specific quality evidence
+are required; no eligible qualified candidate means an error).
 
 Verification is reported in two tiers, matching issue #45's acceptance
 criteria:
 
-- **Mock/syntax**: `bun test script/agent.test.ts` (34 cases:
+- **Mock/syntax**: `bun test script/agent.test.ts script/agent-quality.test.ts script/agent-eval.test.ts` (offline cases:
   help/list/models, unknown harness/provider/model, `--model` precedence,
-  MiniMax default vs. `require_model` fail-closed, openrouter-free allowlist
-  (paid ids exit 2, same credential as the paid provider), secret filtering
+  MiniMax default vs. `require_model` fail-closed, openrouter-free live selection
+  (paid/retired/unfit ids exit 2, no candidate / stale cache / 429 / 503, same credential as the paid provider), secret filtering
   both ways, missing secret, forbidden passthrough flags, shortcut
   equivalence/args/`--agent-model`/unknown names/link management, native
   commands staying unwrapped, config validation failures) plus

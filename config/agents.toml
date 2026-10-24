@@ -73,56 +73,48 @@ models = [
   "deepseek/deepseek-v4-pro",
 ]
 
-# Free-only slice of OpenRouter: every id here was verified live against the
-# public /api/v1/models catalog on 2026-10-21 as pricing.prompt = 0 AND
-# pricing.completion = 0. The list is a curated allowlist — ids are added only
-# after a live check, so a model that OpenRouter later moves to paid pricing
-# fails closed here instead of silently billing. Excluded on purpose:
-#   - `openrouter/free` (meta auto-router: which model answers is
-#     non-deterministic, so "the specified free model responded" cannot be
-#     verified),
-#   - `nvidia/nemotron-3.5-content-safety:free` (tools = false, safety
-#     classifier, not a coding model),
-#   - `google/lyria-3-*-preview` (audio-output generative models, tools = false).
-# Same endpoint and credential as the paid `openrouter` provider, so no new
-# Infisical secret is needed. Free-tier rate limits are account-based
-# (1000 req/day with >= $10 purchase history, 20 req/min) — the paid
-# `openrouter` route remains the path for anything beyond that.
+# Free route: Availability Gate (official live catalog) then Quality Gate
+# (fresh measured model x harness evidence). `models` discovers candidates; its
+# order and context length cannot substitute for successful development trials.
+# No qualified pair means an explicit error, never a paid/unverified fallback.
+# Evidence lives machine-locally in the agent cache; AGENT_QUALITY_FILE overrides
+# the path. `agent models openrouter-free` explains all exclusions;
+# `agent evaluate --help` runs controlled evaluations. No E2E at normal startup.
+# Explicit --model <id> --allow-unverified permits experiments but still requires
+# current free pricing, tools, text, context and valid expiry. Stale cache is
+# discovery-only. The random openrouter/free router has no stable model identity.
+# Account-wide quota: 20 RPM, 50 RPD or 1000 RPD after >= $10 cumulative purchase;
+# failed requests consume quota. No automatic quota/model/provider failover.
 [providers.openrouter-free]
-# Default chosen from the live free catalog because the MiniMax M3.1 Flash
-# launch promotion ends 2026-10-22 12:00 UTC. Exact harness E2E for the
-# replacement default must still be verified; no paid fallback is allowed.
 label = "OpenRouter (free models)"
 base_url = "https://openrouter.ai/api"
 secret = "OPENROUTER_API_KEY"
 env = "OPENROUTER_API_KEY"
-default_model = "nvidia/nemotron-3-ultra-550b-a55b:free"
+catalog = "openrouter"
+min_context = 128000
+quality = { evaluation_version = "agent-e2e-v8", min_trials = 3, max_age_days = 14 }
+# Failed requests (429/400) also count against the free daily quota, and a
+# daily-limit 429 cannot recover by retrying. Claude Code defaults to ~10
+# retries per request; keep it low so a limit/retirement error surfaces fast.
+env_extra = { CLAUDE_CODE_MAX_RETRIES = "0" }
 # OpenCode addresses OpenRouter as its native provider id `openrouter` (the
 # paid provider above relies on the key == opencode_id default); the free
 # provider must map to the same id or OpenCode would see an unknown provider.
-# Actual model-specific OpenCode E2E for the new default is pending.
 opencode_id = "openrouter"
 # pi likewise knows OpenRouter natively as provider id `openrouter`; the
 # launcher route key `openrouter-free` is launcher-side routing only.
-# Actual model-specific Pi E2E for the new default is pending.
 pi_id = "openrouter"
 models = [
-  # MiniMax M3.1 Flash :free retires 2026-10-22 12:00 UTC; omitted to avoid dead routes.
+  "cohere/north-mini-code:free",
+  "poolside/laguna-s-2.1:free",
+  "nvidia/nemotron-3-ultra-550b-a55b:free",
+  "nvidia/nemotron-3-super-120b-a12b:free",
+  "thinkingmachines/inkling:free",
   "nvidia/nemotron-3.5-super-vl:free",
   "nvidia/nemotron-3.5-lightning:free",
-  "nvidia/nemotron-3-ultra-550b-a55b:free",
-  "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
-  "nvidia/nemotron-3-super-120b-a12b:free",
-  "poolside/laguna-s-2.1:free",
   "poolside/laguna-xs-2.1:free",
-  "cohere/north-mini-code:free",
-  "xingchen-agi/xing4.0-29b-a4b:free",
-  "dots-studio/dots-3-note-preview:free",
-  "thinkingmachines/inkling:free",
-  "thinkingmachines/inkling-small:free",
-  "google/gemma-4-26b-a4b-it:free",
   "google/gemma-4-31b-it:free",
-  "liquid/lfm-2.5-2.6b:free",
+  "google/gemma-4-26b-a4b-it:free",
 ]
 
 [providers.deepseek]
@@ -237,7 +229,7 @@ config_content = "OPENCODE_CONFIG_CONTENT"
 note = "Anthropic-compatible endpoint; every model role maps to the route model."
 
 [routes."claude.openrouter-free"]
-note = "Free models only (pricing 0/0, verified 2026-10-21); the paid openrouter route stays separate and is never a fallback here."
+note = "Free models only, selected by availability and measured harness-specific quality; the paid openrouter route is never a fallback."
 
 [routes."claude.deepseek"]
 # The DeepSeek Anthropic endpoint maps claude-* names internally and silently
@@ -254,7 +246,7 @@ note = "Free zen models through the OpenCode client (free tier is client-bound).
 [routes."opencode.openrouter"]
 
 [routes."opencode.openrouter-free"]
-note = "Free models only (pricing 0/0, verified 2026-10-21); model ids are OpenRouter-native (`nvidia/nemotron-3-ultra-550b-a55b:free`)."
+note = "Free models only, availability and harness-specific quality required; model ids are OpenRouter-native (`vendor/model:free`)."
 
 [routes."opencode.deepseek"]
 
@@ -270,7 +262,7 @@ note = "Keep MiniMax-M3 as the known working route default; the formal MiniMax-M
 [routes."pi.openrouter"]
 
 [routes."pi.openrouter-free"]
-note = "Free models only (pricing 0/0, verified 2026-10-21); pi may warn for ids outside its catalog and passes them through."
+note = "Free models only, availability and harness-specific quality required; pi may warn for ids outside its catalog and passes them through."
 
 [routes."pi.deepseek"]
 note = "pi warns for ids outside its built-in catalog and passes them through."
