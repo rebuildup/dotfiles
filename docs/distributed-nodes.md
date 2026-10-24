@@ -1,6 +1,6 @@
 # 分散開発ノード: 実装・検証計画
 
-状態: 設計承認済み。接続PoCのprepare/trust/verifyを実装、Windows実機SSH往復待ち。join/leave等は未実装。
+状態: 設計承認済み。prepare/trust/verifyを実装し、Mac→Windowsの専用SSH往復、誤鍵/別user/password-onlyの拒否、撤去後非到達、再Bootstrap後の旧host pin/旧client key拒否と新鍵nonceが実機で成功。join/leave等は未実装。
 
 [Issue #74](https://github.com/rebuildup/dotfiles/issues/74) / [提案ADR](adr/distributed-development-nodes.md) / [調査と証拠](research/distributed-nodes-2026-10-24.md)
 

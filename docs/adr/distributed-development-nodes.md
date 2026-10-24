@@ -1,6 +1,6 @@
 # 分散開発ノードの認証・接続境界
 
-- 状態: 設計承認済み（2026-10-24）。SSH接続PoCと本登録は未成立、Headscale採用は実機検証待ち
+- 状態: 設計承認済み（2026-10-24）。Mac→Windowsの専用SSH接続PoC成立、本登録とHeadscale採用は実機検証待ち
 - 日付: 2026-10-24
 - 実装追跡: https://github.com/rebuildup/dotfiles/issues/74
 - 関連: [調査と実機証拠](../research/distributed-nodes-2026-10-24.md)、[段階的実装計画](../distributed-nodes.md)
@@ -98,5 +98,7 @@ Infisicalとの同一VM配置は追加VM費用を抑えられるが、登録・s
 Infisical停止中は新規join/token更新/新規secret取得を拒否する。ただし実行中processの注入済secret、既発行SSH資格情報、VPN通信が即座に消えるわけではない。復旧後の失効再調停をverifyする。
 
 ## 採用までの保留事項
+
+2026-10-24の実機org planでは`rbac=false`、`secretsFolderRbac=false`、`auditLogs=false`を観測した。このinstanceの登録PoCでは細粒度path/custom-role認可を前提にせず、専用projectとbuilt-in roleによる分離を検証する。既存dotfiles projectへノード用の包括的readerを付与しない。監査ログ要件は未達であり、ライセンス変更や接続ログによる代替を暗黙に決めない。
 
 実際の接続PoC、Headscale配置先と版、Infisical server/licenseと権限拒否/監査、継続認証、gateway経由で必要なsource分離、実機の失効反映時間を確定する。これらを未確認のまま安全なjoin/leave実装が完成したとは扱わない。
