@@ -92,7 +92,7 @@ secret = "OPENROUTER_API_KEY"
 env = "OPENROUTER_API_KEY"
 catalog = "openrouter"
 min_context = 128000
-quality = { evaluation_version = "agent-e2e-v1", min_trials = 3, max_age_days = 14 }
+quality = { evaluation_version = "agent-e2e-v8", min_trials = 3, max_age_days = 14 }
 # Failed requests (429/400) also count against the free daily quota, and a
 # daily-limit 429 cannot recover by retrying. Claude Code defaults to ~10
 # retries per request; keep it low so a limit/retirement error surfaces fast.

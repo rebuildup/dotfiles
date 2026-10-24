@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 
-export const QUALITY_EVALUATION_VERSION = "agent-e2e-v1";
+export const QUALITY_EVALUATION_VERSION = "agent-e2e-v8";
 export type FailureKind = "capability" | "api" | "quota" | "auth" | "launcher";
 export interface Trial {
   id: string;
@@ -394,13 +394,14 @@ export function assessQuality(
   if (new Set(baselineTrials.map((t) => t.id)).size !== baselineTrials.length)
     return stop("Duplicate baseline trial identities");
   const baselineMetrics = metricsFor(baselineTrials);
-  // This is a small acceptance fixture: every acceptance check must pass on each
-  // capability attempt. A weak baseline cannot lower that required floor.
+  // Every capability attempt must pass grading. Tool reliability is measured
+  // and compared with the candidate; require at least one successful call so
+  // a baseline made entirely of tool failures cannot set a zero floor.
   if (
     baselineMetrics.capability_trials < minimum ||
     baselineMetrics.successes !== baselineMetrics.capability_trials ||
     !baselineMetrics.tool_calls ||
-    baselineMetrics.tool_failures !== 0
+    baselineMetrics.tool_reliability <= 0
   )
     return stop(
       "Baseline must repeatedly pass every development acceptance check with reliable tools",

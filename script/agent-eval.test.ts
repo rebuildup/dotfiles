@@ -6,6 +6,7 @@ import {
   rmSync,
   mkdirSync,
   chmodSync,
+  symlinkSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,12 +21,22 @@ import {
   isolatedEnvironment,
   evaluationMain,
   collectProcessOutput,
+  harnessArguments,
 } from "./agent-eval";
 
 const createRequestGuard = (options: Parameters<typeof rawRequestGuard>[0]) =>
   rawRequestGuard({ minIntervalMs: 0, ...options });
 
 describe("evaluation safety", () => {
+  test("OpenCode evaluator leaves standalone and model pinning to the launcher", () => {
+    expect(harnessArguments("opencode", "complete the fixture")).toEqual([
+      "run",
+      "--format",
+      "json",
+      "--auto",
+      "complete the fixture",
+    ]);
+  });
   test("quota requires explicit daily request counters and never infers credits", () => {
     expect(
       quotaRemaining({ data: { limit_remaining: 100, is_free_tier: false } }),
@@ -366,6 +377,211 @@ test("requires observed initial failing public test and a later passing test", (
     observeTranscript("pi", JSON.stringify(messages[0]), "x/y:free")
       .finalTestPassed,
   ).toBe(false);
+});
+
+test("recognizes Pi test commands that redirect combined output", () => {
+  const output = [
+    {
+      type: "message_end",
+      message: {
+        role: "assistant",
+        model: "x/y:free",
+        content: [
+          {
+            type: "toolCall",
+            id: "initial-test",
+            name: "bash",
+            arguments: { command: "bun test public.test.ts 2>&1" },
+          },
+        ],
+      },
+    },
+    { type: "tool_execution_end", toolCallId: "initial-test", isError: true },
+    {
+      type: "message_end",
+      message: {
+        role: "assistant",
+        model: "x/y:free",
+        content: [
+          {
+            type: "toolCall",
+            id: "final-test",
+            name: "bash",
+            arguments: { command: "bun test public.test.ts 2>&1" },
+          },
+        ],
+      },
+    },
+    { type: "tool_execution_end", toolCallId: "final-test", isError: false },
+  ]
+    .map(JSON.stringify)
+    .join("\n");
+
+  const observed = observeTranscript("pi", output, "x/y:free");
+  expect(observed.debuggedPublicRegression).toBe(true);
+  expect(observed.finalTestPassed).toBe(true);
+});
+
+test("recognizes Pi test commands run from the exact fixture directory", () => {
+  const temp = mkdtempSync(join(tmpdir(), "agent-eval-workspace-"));
+  const workspace = join(temp, "trial-0", "workspace");
+  mkdirSync(workspace, { recursive: true });
+  const command = (dir: string, id: string) => ({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      model: "x/y:free",
+      content: [
+        {
+          type: "toolCall",
+          id,
+          name: "bash",
+          arguments: { command: `cd ${dir} && bun test public.test.ts 2>&1` },
+        },
+      ],
+    },
+  });
+  const output = [
+    command("/tmp/eval/trial-0/workspace", "initial"),
+    { type: "tool_execution_end", toolCallId: "initial", isError: true },
+    command("/tmp/eval/trial-0/workspace", "final"),
+    { type: "tool_execution_end", toolCallId: "final", isError: false },
+  ]
+    .map(JSON.stringify)
+    .join("\n");
+  const validOutput = output.replaceAll(
+    "/tmp/eval/trial-0/workspace",
+    workspace,
+  );
+  try {
+    const observed = observeTranscript("pi", validOutput, "x/y:free", workspace);
+    expect(observed.debuggedPublicRegression).toBe(true);
+    expect(observed.finalTestPassed).toBe(true);
+    const elsewhere = observeTranscript(
+      "pi",
+      validOutput,
+      "x/y:free",
+      join(temp, "trial-1", "workspace"),
+    );
+    expect(elsewhere.debuggedPublicRegression).toBe(false);
+  } finally {
+    rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+test("recognizes fixture paths through macOS temporary-directory aliases", () => {
+  if (process.platform === "win32") return;
+  const temp = mkdtempSync(join(tmpdir(), "agent-eval-path-alias-"));
+  const workspace = join(temp, "workspace");
+  const alias = join(temp, "private-alias");
+  mkdirSync(workspace);
+  symlinkSync(workspace, alias, "dir");
+  try {
+    const output = [
+      {
+        type: "message_end",
+        message: {
+          role: "assistant",
+          model: "x/y:free",
+          content: [
+            {
+              type: "toolCall",
+              id: "initial",
+              name: "bash",
+              arguments: { command: `cd ${alias} && bun test public.test.ts` },
+            },
+          ],
+        },
+      },
+      { type: "tool_execution_end", toolCallId: "initial", isError: true },
+      {
+        type: "message_end",
+        message: {
+          role: "assistant",
+          model: "x/y:free",
+          content: [
+            {
+              type: "toolCall",
+              id: "final",
+              name: "bash",
+              arguments: { command: `cd ${alias} && bun test public.test.ts` },
+            },
+          ],
+        },
+      },
+      { type: "tool_execution_end", toolCallId: "final", isError: false },
+    ]
+      .map(JSON.stringify)
+      .join("\n");
+    const observed = observeTranscript("pi", output, "x/y:free", workspace);
+    expect(observed.debuggedPublicRegression).toBe(true);
+    expect(observed.finalTestPassed).toBe(true);
+  } finally {
+    rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+test("recognizes OpenCode shell events with workdir and native tool ids", () => {
+  const temp = mkdtempSync(join(tmpdir(), "agent-eval-opencode-workdir-"));
+  const workspace = join(temp, "workspace");
+  mkdirSync(workspace);
+  const event = (id: string, exit: number) => ({
+    type: "tool_use",
+    part: {
+      id,
+      tool: "shell",
+      state: {
+        status: "completed",
+        input: { command: "bun test public.test.ts 2>&1", workdir: workspace },
+        metadata: { metadata: { exit } },
+      },
+    },
+  });
+  try {
+    const output = [event("initial", 1), event("final", 0)]
+      .map(JSON.stringify)
+      .join("\n");
+    const observed = observeTranscript("opencode", output, "x/y:free", workspace);
+    expect(observed.debuggedPublicRegression).toBe(true);
+    expect(observed.finalTestPassed).toBe(true);
+    expect(observed.toolFailures).toBe(0);
+    expect(observed.toolCalls).toBe(2);
+  } finally {
+    rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+test("recognizes Claude's bounded test output pipeline and failure summary", () => {
+  const assistant = (id: string, command: string) => ({
+    type: "assistant",
+    message: {
+      role: "assistant",
+      model: "x/y:free",
+      content: [
+        { type: "tool_use", id, name: "Bash", input: { command } },
+      ],
+    },
+  });
+  const result = (id: string, output: string) => ({
+    type: "user",
+    message: {
+      role: "user",
+      content: [{ type: "tool_result", tool_use_id: id, is_error: false, content: output }],
+    },
+  });
+  const output = [
+    assistant("initial", "bun test public.test.ts 2>&1 | head -40"),
+    result("initial", `2 pass${String.fromCharCode(10)}2 fail${String.fromCharCode(10)}`),
+    assistant("final", "bun test public.test.ts 2>&1"),
+    result("final", `3 pass${String.fromCharCode(10)}0 fail${String.fromCharCode(10)}`),
+    { type: "result", subtype: "success" },
+  ]
+    .map(JSON.stringify)
+    .join("\n");
+  const observed = observeTranscript("claude", output, "x/y:free");
+  expect(observed.debuggedPublicRegression).toBe(true);
+  expect(observed.finalTestPassed).toBe(true);
+  expect(observed.observedModel).toBe("x/y:free");
 });
 
 test("mocked full launcher evaluation isolates credentials, forwards once and persists independently graded evidence", async () => {

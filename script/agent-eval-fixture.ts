@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-export const EVALUATION_VERSION = "agent-e2e-v1";
+export const EVALUATION_VERSION = "agent-e2e-v8";
 export const EVALUATION_FIXTURE = join(
   import.meta.dir,
   "fixtures",

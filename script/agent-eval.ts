@@ -8,6 +8,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   renameSync,
   rmSync,
   writeFileSync,
@@ -315,10 +316,50 @@ export async function gradeFixture(
     success: publicPassed && hiddenPassed,
   };
 }
+function isPublicTestCommand(
+  command: unknown,
+  workspaceRoot?: string,
+  workingDirectory?: unknown,
+): boolean {
+  if (typeof command !== "string") return false;
+  const testCommand = String.raw`bun\s+test(?:\s+public\.test\.ts)?(?:\s+2>&1)?(?:\s*\|\s*head\s+-\d+)?`;
+  if (new RegExp(`^${testCommand}$`).test(command.trim())) {
+    if (typeof workingDirectory !== "string" || !workspaceRoot) return true;
+    try {
+      return realpathSync(workingDirectory) === realpathSync(workspaceRoot);
+    } catch {
+      return false;
+    }
+  }
+  const cdCommand = new RegExp(
+    String.raw`^cd\s+(?:"([^"]+)"|'([^']+)'|(\S+))\s+&&\s+${testCommand}$`,
+  ).exec(command.trim());
+  if (!cdCommand || !workspaceRoot) return false;
+  const directory = cdCommand[1] ?? cdCommand[2] ?? cdCommand[3];
+  try {
+    return (
+      realpathSync(resolve(workspaceRoot, directory)) ===
+      realpathSync(workspaceRoot)
+    );
+  } catch {
+    return false;
+  }
+}
+function publicTestOutputFailed(output: unknown): boolean {
+  const text =
+    typeof output === "string"
+      ? output
+      : Array.isArray(output)
+        ? output.map((part) => part?.text ?? "").join("\n")
+        : "";
+  return /\b[1-9]\d*\s+fail(?:ed|ure|ures)?\b/i.test(text);
+}
+
 export function observeTranscript(
   harness: string,
   output: string,
   expected: string,
+  workspaceRoot?: string,
 ) {
   const models = new Set<string>();
   const calls = new Set<string>();
@@ -353,8 +394,7 @@ export function observeTranscript(
           const command = (content.input ?? content.arguments)?.command;
           if (
             ["Bash", "bash"].includes(content.name) &&
-            typeof command === "string" &&
-            /^bun\s+test(?:\s+public\.test\.ts)?$/.test(command.trim())
+            isPublicTestCommand(command, workspaceRoot)
           )
             tests.add(id);
         }
@@ -362,13 +402,24 @@ export function observeTranscript(
     if (event.type === "tool_execution_start")
       calls.add(event.toolCallId ?? JSON.stringify(event));
     if (event.type === "tool_use") {
-      const id = event.part?.callID ?? JSON.stringify(event);
+      const id = event.part?.callID ?? event.part?.id ?? JSON.stringify(event);
       calls.add(id);
       const state = event.part?.state;
       if (
         event.part?.tool === "bash" &&
-        /^bun\s+test(?:\s+public\.test\.ts)?$/.test(
-          (state?.input?.command ?? "").trim(),
+        isPublicTestCommand(
+          state?.input?.command,
+          workspaceRoot,
+          state?.input?.workdir,
+        )
+      )
+        tests.add(id);
+      if (
+        event.part?.tool === "shell" &&
+        isPublicTestCommand(
+          state?.input?.command,
+          workspaceRoot,
+          state?.input?.workdir,
         )
       )
         tests.add(id);
@@ -376,7 +427,8 @@ export function observeTranscript(
       if (["error", "completed"].includes(state?.status))
         testResult(
           id,
-          state.status === "error" || (state.metadata?.exit ?? 0) !== 0,
+          state.status === "error" ||
+            (state.metadata?.metadata?.exit ?? state.metadata?.exit ?? 0) !== 0,
         );
     }
     if (event.type === "tool_execution_end") {
@@ -388,7 +440,10 @@ export function observeTranscript(
       for (const part of message?.content ?? [])
         if (part.type === "tool_result") {
           if (part.is_error) toolFailures++;
-          testResult(part.tool_use_id, part.is_error === true);
+          testResult(
+            part.tool_use_id,
+            part.is_error === true || publicTestOutputFailed(part.content),
+          );
         }
     if (
       (harness === "claude" &&
@@ -843,7 +898,7 @@ function writeHarnessConfig(
       autoupdate: false,
     });
 }
-function harnessArguments(harness: string, prompt: string): string[] {
+export function harnessArguments(harness: string, prompt: string): string[] {
   if (harness === "claude")
     return [
       "--bare",
@@ -882,7 +937,7 @@ function harnessArguments(harness: string, prompt: string): string[] {
       "--print",
       prompt,
     ];
-  return ["run", "--standalone", "--format", "json", "--auto", prompt];
+  return ["run", "--format", "json", "--auto", prompt];
 }
 function publicBenchmarks(
   model: string,
@@ -1097,6 +1152,7 @@ export async function evaluationMain(args: string[]): Promise<number> {
             options.harness,
             result.stdout,
             options.model,
+            cwd,
           );
           const responseModels = guard.modelsSince(requestsBefore);
           const observed =

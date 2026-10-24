@@ -344,7 +344,7 @@ function loadConfig(path?: string): Config {
     }
     const quality = table["quality"] ?? {};
     if (!isPlainObject(quality)) throw new AgentError(`${where}: quality must be a table`);
-    const version = quality["evaluation_version"] ?? "agent-e2e-v1";
+    const version = quality["evaluation_version"] ?? "agent-e2e-v8";
     const minTrials = quality["min_trials"] ?? 3;
     const maxAgeDays = quality["max_age_days"] ?? 14;
     if (typeof version !== "string" || !version || typeof minTrials !== "number" || !Number.isSafeInteger(minTrials) || minTrials < 3 ||
@@ -1356,19 +1356,29 @@ function planOpencode(plan: Plan, harness: Harness, provider: Provider, model: s
   // "Model unavailable" for providers it never saw a key for). Force
   // process-scoped `--standalone` unless the caller chose a server mode.
   const passthru = plan.command.slice(1);
-  if (passthru.includes("--standalone") || passthru.includes("--server")) {
-    return;
-  }
+  if (passthru.includes("--server")) return;
   if (passthru.length > 0 && !passthru[0].startsWith("-")) {
     const subcommand = passthru[0];
     if (subcommand === "run" || subcommand === "mini") {
-      // subcommands that accept the flag
-      plan.command = [plan.command[0], subcommand, "--standalone", ...passthru.slice(1)];
+      // `--model` is subcommand-specific in OpenCode v2. Add it even when
+      // callers already requested standalone mode, so config selection and
+      // the model that actually answers cannot diverge.
+      const args = passthru.slice(1);
+      const forwardedArgs = args.filter((arg) => arg !== "--standalone");
+      plan.command = [
+        plan.command[0],
+        subcommand,
+        "--standalone",
+        "--model",
+        `${provider.opencode_id}/${model}`,
+        ...forwardedArgs,
+      ];
     }
     // other subcommands (models, auth, ...) do not launch a session and
     // are passed through untouched
     return;
   }
+  if (passthru.includes("--standalone")) return;
   plan.command = [plan.command[0], "--standalone", ...passthru];
 }
 

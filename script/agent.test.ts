@@ -579,14 +579,14 @@ function seedQuality(file: string, models: unknown[], counts: Record<string, num
   const ids = ["test/reference:free", ...models.map(m => (m as {id:string}).id)];
   const evaluations = ["claude", "opencode", "pi"].flatMap(harness => ids.map(model_id => ({
     model_id, provider:"openrouter", harness, harness_version:"test-harness-1", evaluated_at:at,
-    evaluation_version:"agent-e2e-v1", fixture_digest:digest, benchmarks:[],
+    evaluation_version:"agent-e2e-v8", fixture_digest:digest, benchmarks:[],
     conditions:{max_requests_per_trial:24,timeout_seconds:240,generation_profile:"isolated-default-v1"},
     trials:Array.from({length:counts[model_id] ?? 3}, (_, i) => ({
       id:`${model_id}-${harness}-${i}`, evaluated_at:at, success:true, integrity_passed:true,
       observed_model:model_id, tool_calls:4,tool_failures:0,duration_ms:1000,failure_kind:null,failure_reason:null,
     })),
   })));
-  writeFileSync(file, JSON.stringify({schema_version:1,evaluation_version:"agent-e2e-v1",fixture_digest:digest,
+  writeFileSync(file, JSON.stringify({schema_version:1,evaluation_version:"agent-e2e-v8",fixture_digest:digest,
     calibration:{calibrated_at:at,rationale:"Synthetic test baseline, not production evidence",
       baselines:["claude","opencode","pi"].map(harness => ({model_id:"test/reference:free",harness,evaluated_at:at}))},evaluations}));
 }
@@ -1289,12 +1289,38 @@ test(
     });
     check(result2.exitCode === 0, result2.stderr.toString());
     const [argv2, env2] = fixture.child();
-    expect(argv2, JSON.stringify(argv2)).toEqual(["run", "--standalone", "hello world"]);
+    expect(argv2, JSON.stringify(argv2)).toEqual([
+      "run",
+      "--standalone",
+      "--model",
+      "opencode/mimo-v2.6-flash-free",
+      "hello world",
+    ]);
     check(
       (JSON.parse(env2["OPENCODE_CONFIG_CONTENT"]) as Record<string, unknown>)["model"] ===
         "opencode/mimo-v2.6-flash-free",
       JSON.stringify(env2),
     );
+
+    const resultExplicitStandalone = fixture.run(
+      ["opencode", "zen", "--", "run", "--standalone", "hello world"],
+      { config: REAL_CONFIG },
+    );
+    check(
+      resultExplicitStandalone.exitCode === 0,
+      resultExplicitStandalone.stderr.toString(),
+    );
+    const [argvExplicitStandalone] = fixture.child();
+    expect(
+      argvExplicitStandalone,
+      JSON.stringify(argvExplicitStandalone),
+    ).toEqual([
+      "run",
+      "--standalone",
+      "--model",
+      "opencode/mimo-v2.6-flash-free",
+      "hello world",
+    ]);
 
     // TUI flags keep the root position, session subcommands are untouched,
     // and an explicit --standalone/--server is never duplicated.

@@ -35,7 +35,7 @@ function evaluation(model: string): Evaluation {
     harness: "pi",
     harness_version: "1.0.0",
     evaluated_at: recent,
-    evaluation_version: "agent-e2e-v1",
+    evaluation_version: "agent-e2e-v8",
     fixture_digest: "sha256:fixture-v1",
     conditions: {
       max_requests_per_trial: 24,
@@ -49,7 +49,7 @@ function evaluation(model: string): Evaluation {
 function store(): EvidenceStore {
   return {
     schema_version: 1,
-    evaluation_version: "agent-e2e-v1",
+    evaluation_version: "agent-e2e-v8",
     fixture_digest: "sha256:fixture-v1",
     calibration: {
       calibrated_at: recent,
@@ -232,9 +232,18 @@ describe("quality evidence admission", () => {
     }
     expect(assess(data).status).toBe("unverified");
   });
-  test("baseline tool failures cannot normalize unreliable tool use", () => {
+  test("all successful graded trials can calibrate despite recovered tool failures", () => {
     const data = store();
-    data.evaluations[0].trials[0].tool_failures = 1;
+    data.evaluations[0].trials[0].tool_calls = 40;
+    data.evaluations[0].trials[0].tool_failures = 32;
+    expect(assess(data).status).toBe("qualified");
+  });
+  test("a baseline with no successful tool calls cannot calibrate", () => {
+    const data = store();
+    for (const trial of data.evaluations[0].trials) {
+      trial.tool_calls = 10;
+      trial.tool_failures = 10;
+    }
     expect(assess(data).status).toBe("unverified");
   });
   test("a baseline with unverified fixture integrity cannot calibrate admission", () => {

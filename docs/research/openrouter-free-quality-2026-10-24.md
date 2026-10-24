@@ -198,3 +198,44 @@ successful completion in any harness. No model was calibrated or qualified.
 The runs do not establish the best model across all candidates/harnesses, and
 failed attempts remain part of their fresh condition profile rather than being
 replaced by cherry-picked batches.
+
+## Updated live evaluation (v8, 2026-10-24 JST)
+
+The harness evidence parser was corrected to recognize Pi `message_end`
+tool-call events, OpenCode shell events (`workdir` and nested exit metadata),
+Claude's bounded `bun test | head` output and failure summaries, and macOS
+temporary-directory aliases. OpenCode `run` now receives an explicit
+`--model openrouter/<id>` as well as process-scoped standalone mode. The
+evaluation version is `agent-e2e-v8`; prior v1-v7 evidence is audit history,
+not admission evidence. The local evaluator runs used 32 inference requests
+per trial and a 600-second timeout, serially. This is a narrow development
+fixture, not a general coding benchmark.
+
+The live catalog still listed `poolside/laguna-s-2.1:free`, but installed
+OpenCode 2.1.2 did not include it in `opencode models`; the launcher selected
+the exact ID, then OpenCode returned `Model unavailable` before sending an
+inference request. The catalog alone therefore cannot prove an adapter can
+execute a model.
+
+| Model / harness | v8 capability trials | Passing grader | Observed model | Tool failures | Result |
+| --- | ---: | ---: | --- | ---: | --- |
+| `nvidia/nemotron-3.5-super-vl:free` / OpenCode 2.1.2 | 3 | 2/3 | Exact ID on each response | 0/42 | Not qualified; one hidden-grader failure |
+| Same / Pi 0.73.1 | 2 | 1/2 | Exact ID on each response | 1/23 | Not qualified; one trial skipped initial regression test |
+| Same / Claude Code 2.1.306 | 3 | 3/3 | Exact ID on each response | 13/53 | Qualified and selected for Claude Code |
+
+OpenRouter also returned separate HTTP 502/504 errors. They are stored as
+infrastructure failures and excluded from capability denominators; they are
+not silently retried against another model. The guard counted a further HTTP
+502 on the first normal Claude launcher smoke test. A second run of the same
+selected model returned `READY`.
+
+The calibration records the Claude Code baseline only after all three v8
+trials independently passed public and hidden grading. Tool failures remain
+visible and are compared against this measured baseline; qualification does
+not require a perfect tool trace when the task and integrity graders pass.
+`agent models openrouter-free` now reports Nemotron 3.5 Super VL selected for
+Claude Code, and no qualified model for OpenCode or Pi. The ordinary Claude
+launcher independently printed that same model ID and completed the smoke
+prompt. This confirms selection/execution agreement for Claude Code only; it
+does not claim a universal best model or qualification for the other two
+harnesses.
