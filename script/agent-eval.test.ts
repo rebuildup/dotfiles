@@ -442,24 +442,27 @@ test("recognizes Pi test commands run from the exact fixture directory", () => {
     },
   });
   const output = [
-    command("/tmp/eval/trial-0/workspace", "initial"),
+    command(".", "initial"),
     { type: "tool_execution_end", toolCallId: "initial", isError: true },
-    command("/tmp/eval/trial-0/workspace", "final"),
+    command(".", "final"),
     { type: "tool_execution_end", toolCallId: "final", isError: false },
   ]
     .map(JSON.stringify)
     .join("\n");
-  const validOutput = output.replaceAll(
-    "/tmp/eval/trial-0/workspace",
-    workspace,
-  );
   try {
-    const observed = observeTranscript("pi", validOutput, "x/y:free", workspace);
+    const observed = observeTranscript("pi", output, "x/y:free", workspace);
     expect(observed.debuggedPublicRegression).toBe(true);
     expect(observed.finalTestPassed).toBe(true);
     const elsewhere = observeTranscript(
       "pi",
-      validOutput,
+      [
+        command("../trial-1/workspace", "initial"),
+        { type: "tool_execution_end", toolCallId: "initial", isError: true },
+        command("../trial-1/workspace", "final"),
+        { type: "tool_execution_end", toolCallId: "final", isError: false },
+      ]
+        .map(JSON.stringify)
+        .join("\n"),
       "x/y:free",
       join(temp, "trial-1", "workspace"),
     );
