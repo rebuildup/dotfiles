@@ -325,25 +325,29 @@ function isPublicTestCommand(
   const testCommand = String.raw`bun\s+test(?:\s+public\.test\.ts)?(?:\s+2>&1)?(?:\s*\|\s*head\s+-\d+)?`;
   if (new RegExp(`^${testCommand}$`).test(command.trim())) {
     if (typeof workingDirectory !== "string" || !workspaceRoot) return true;
-    try {
-      return realpathSync(workingDirectory) === realpathSync(workspaceRoot);
-    } catch {
-      return false;
-    }
+    return sameWorkspaceDirectory(workingDirectory, workspaceRoot);
   }
   const cdCommand = new RegExp(
     String.raw`^cd\s+(?:"([^"]+)"|'([^']+)'|(\S+))\s+&&\s+${testCommand}$`,
   ).exec(command.trim());
   if (!cdCommand || !workspaceRoot) return false;
   const directory = cdCommand[1] ?? cdCommand[2] ?? cdCommand[3];
+  return sameWorkspaceDirectory(directory, workspaceRoot);
+}
+function sameWorkspaceDirectory(directory: string, workspaceRoot: string): boolean {
+  const candidate = resolve(workspaceRoot, directory);
+  const workspace = resolve(workspaceRoot);
   try {
-    return (
-      realpathSync(resolve(workspaceRoot, directory)) ===
-      realpathSync(workspaceRoot)
-    );
+    if (realpathSync(candidate) === realpathSync(workspace)) return true;
   } catch {
     return false;
   }
+  // Windows can spell the same existing directory with different drive/path
+  // casing. Keep a normalized lexical comparison as a Windows-only fallback.
+  return (
+    process.platform === "win32" &&
+    candidate.toLowerCase() === workspace.toLowerCase()
+  );
 }
 function publicTestOutputFailed(output: unknown): boolean {
   const text =
