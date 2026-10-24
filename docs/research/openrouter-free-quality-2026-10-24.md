@@ -178,7 +178,23 @@ requests remaining; the counter decrease did not match guarded attempts
 one-for-one.
 
 No run was calibrated as a baseline. No model qualified. Claude Code and
-OpenCode were not evaluated; the results above apply only to Pi and the
-recorded fixture/conditions. These results do not establish the best model
-across harnesses, and the failed runs cannot be replaced with later cherry-
-picked batches under the same fresh evaluation profile.
+OpenCode were not part of the four-model screen; the results above apply only
+to Pi and the recorded fixture/conditions.
+
+The previously configured top-priority candidate, North Mini Code, was then
+screened once in the other installed harnesses using the same 12-request,
+180-second Pi profile and fixture digest:
+
+| Model / harness | Result | Requests | Duration | Interpretation |
+| --- | --- | ---: | ---: | --- |
+| `cohere/north-mini-code:free` / Claude Code `2.1.306` | 12 tool calls, 4 tool failures; no passing final grade | 12 | 46.519 s | Actual model observed; per-trial budget exhausted, capability failure. |
+| `cohere/north-mini-code:free` / OpenCode `2.1.2` | 14 tool calls, no tool failures; no passing final grade | 12 | 44.524 s | Actual model observed; per-trial budget exhausted, capability failure. |
+
+The current-key counter reset at the UTC-day boundary and reported 1000 before
+these two runs, 991 after Claude Code and 981 after OpenCode. The guarded
+attempt count was 24 while the counter fell by 19. No further inference was
+attempted. This gives North a Pi/Claude Code/OpenCode screening result, but no
+successful completion in any harness. No model was calibrated or qualified.
+The runs do not establish the best model across all candidates/harnesses, and
+failed attempts remain part of their fresh condition profile rather than being
+replaced by cherry-picked batches.
