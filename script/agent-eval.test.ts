@@ -436,7 +436,7 @@ test("recognizes Pi test commands run from the exact fixture directory", () => {
           type: "toolCall",
           id,
           name: "bash",
-          arguments: { command: `cd ${dir} && bun test public.test.ts 2>&1` },
+          arguments: { command: `cd "${dir}" && bun test public.test.ts 2>&1` },
         },
       ],
     },
