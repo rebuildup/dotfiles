@@ -24,6 +24,16 @@ configtestは一時tmpfs stateで実行し、本番DBや登録鍵を作成して
 
 Infisical backend/db/redisのcontainer ID・開始時刻・再起動回数・running状態は起動前後で一致し、公開`/api/status`も前後ともHTTP 200。既存Infisicalの再起動は発生していない。Headscale専用service/volumeは保持する。
 
+### 公開ポートの遮断原因とTLS成立
+
+Hetzner Consoleで、project `16131894`、server `167058991`（`tastile-infisical`、157.180.90.160）にfirewall `11666190`（`tastile-infisical-ssh-only`）が適用されていることを確認した。適用先はこの一台だけ。受信TCP22とICMPのみ許可され、80/443の許可がなかった。
+
+ユーザーの保存直前の承認後、受信IPv4 TCP80（`Headscale ACME HTTP-01`）とTCP443（`Headscale HTTPS control plane`）を全IPv4送信元から許可する二ルールだけ追加した。既存22/ICMPとoutboundを維持し、新規ルールへIPv6許可は追加していない。reload後に4 rules / Fully applied / 1 resourceと各port/sourceの永続化を確認。
+
+変更後、Macから通常のhostnameで`https://headscale.rebuildup.dev/health`がHTTP200、body `{"status":"pass"}`。curlのTLS verification結果は0、peerは157.180.90.160。検証無効化や`--insecure`は使っていない。VPS側の`manage.sh verify`もexit0でhealth・policy valid・公開TLS healthを確認した。Infisical三containerのID/StartedAt/RestartCount/runningは開始前の記録とdiffなし、公開`/api/status`もHTTP200だった。
+
+これにより公開制御サーバーのTLS到達性は成立した。まだVPN node/user/登録用資格情報は作っていない。multi-node通信、通信認可の拒否、登録鍵再使用拒否、MTU、制御面停止、WSL/MI/Herdr E2Eは別の検証段階であり、公開health成功から推定しない。
+
 ## WSLの既存状態と新規workerの境界
 
 Windows担当の読取調査では、既存Ubuntu一台のみがWSL2で稼働していた。WSL 3.0.4.0、Ubuntu 26.04.1 LTS、systemd有効。Linux sshdは未導入、Linux Tailscaleも未稼働。Windows側Tailscaleは稼働していた。Linux PATHにはWindows側shimが混在し、CLI名の存在だけではLinux runtimeの動作証拠にならない。
