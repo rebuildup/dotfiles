@@ -16,9 +16,13 @@ Infisicalのbackendはlocalhost:8080、公開経路は既存cloudflared。postgr
 
 公式Headscale v0.29.6 imageをindex digest `sha256:cabe84f0699913dbca9320f0883dca7565dd08df3c5be29edfabbebeff763966`へ固定した。VPSで実行したversion出力は`v0.29.6+dirty`、commit `a2b1d7863926834e94479dcdd91ab344a9356bd0`だった。公開imageの出力をそのまま記録し、独自buildとは推定しない。
 
-configtestはnetworkなし・一時tmpfs stateで実行し、本番DBや登録鍵を作成していない。設定はnative TLS/HTTP-01、独立IPv4範囲100.96.0.0/16、外部DERP、embedded DERP無効、`grants: []`のdeny-all。サービスはまだ起動していない。VPN peer、user、登録用keyも未作成。公開80/443のprovider側到達性は未検証。
+configtestは一時tmpfs stateで実行し、本番DBや登録鍵を作成していない。実際のmanage.sh validateはbridge networkを使う。version表示をnetworkなしで実行した検査とは区別する。設定はnative TLS/HTTP-01、独立IPv4範囲100.96.0.0/16、外部DERP、embedded DERP無効、`grants: []`のdeny-all。後続のDNS登録後にサービスを起動した結果を以下に記録する。VPN peer、user、登録用keyは未作成。
 
-`headscale.rebuildup.dev`の権威DNSを確認したがAレコードは未登録。必要な設定はA=157.180.90.160、Cloudflare DNS only、AAAAなし。DNS一致を確認するまで公開TLS起動へ進まない。起動前後に既存Infisical containerのID・開始時刻・再起動回数とendpoint応答を比較する。configtest成功は公開TLS・通信・失効の成功を意味しない。
+2026-10-25、ユーザー指定のVivaldiのChatGPT拡張経由でCloudflareを操作し、`headscale.rebuildup.dev`のA=157.180.90.160、DNS only、TTL自動を保存した。既存3レコードは維持。gabriel/mia両権威DNSのA応答が同IP、AAAA応答なしを確認した。
+
+その後、所有確認付きmanage.sh applyがexit 0、containerはhealthy。Headscale healthと実行中serverのpolicy checkがexit 0、deny-all policyはvalid。VPSの127.0.0.1:80へのHost付きHTTP要求は302だった。ただしMacから公開80/443へのTCP接続はいずれも8秒でtimeout。HTTPは`--resolve`でVPSのIPを明示したため、resolverの古いnegative cacheだけでは説明できない。公開TLS・ACME成功は未検証であり、サービス起動成功を公開利用可能と扱わない。provider firewall等の上流経路は次の調査対象で、原因はまだ断定しない。
+
+Infisical backend/db/redisのcontainer ID・開始時刻・再起動回数・running状態は起動前後で一致し、公開`/api/status`も前後ともHTTP 200。既存Infisicalの再起動は発生していない。Headscale専用service/volumeは保持する。
 
 ## WSLの既存状態と新規workerの境界
 
