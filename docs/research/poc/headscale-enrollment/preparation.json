@@ -1,0 +1,10 @@
+{
+  "instanceId": "9f8f6a26-3686-455f-be33-0e6ddb845105",
+  "root": "/Users/rebui/.local/state/dotfiles/headscale-poc/mac-9f8f6a26-3686-455f-be33-0e6ddb845105",
+  "stage": "verified-archive-not-extracted",
+  "version": "1.104.2",
+  "bottleTag": "arm64_golden_gate",
+  "expectedSha256": "d1c69a256cc4848d70fdde762347b3ae9f90a8612b285aec5d8df976a8a098cd",
+  "archive": "/Users/rebui/.local/state/dotfiles/headscale-poc/mac-9f8f6a26-3686-455f-be33-0e6ddb845105/tailscale-1.104.2-bottle.tar.gz",
+  "actualSha256": "d1c69a256cc4848d70fdde762347b3ae9f90a8612b285aec5d8df976a8a098cd"
+}

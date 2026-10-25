@@ -1,6 +1,6 @@
 # 標準Windowsユーザーによるworker登録準備
 
-関連: [pc-setup PR135](https://github.com/rebuildup/pc-setup/pull/135)、[設計](../adr/distributed-development-nodes.md)。2026-10-25 JST。実アカウント間の分離、WSL import、MI登録、Herdr E2Eはこの記録時点では未検証。
+関連: [pc-setup PR135](https://github.com/rebuildup/pc-setup/pull/135)、[設計](../adr/distributed-development-nodes.md)。2026-10-25作成、2026-10-26更新（JST）。標準account/profileの作成まで実測。実アカウント間の分離、WSL import、workerのMI登録・Herdr E2Eは未検証。
 
 ## ソースの検証範囲
 
@@ -35,4 +35,17 @@ Windows側では自分のhuman loginで指定secret一つだけをprocess内capt
 3. 別workerを準備して管理鍵と相互dataの拒否を確認する。一台だけの現在token試験をクロスuser分離の証拠にしない。
 4. 新規WSLのimportとネットワーク、MI、Herdrへ段階的に進む。WSL unregister/破棄は行わない。
 
-現状はpasswordの中央保管と取得手順の準備まで。Infisical secret-access監査が無効という未達要件は残る。退役時はOS accountの停止と、このinstance専用credentialの撤回を独立して記録する。
+以下の実機進捗はWindows担当の対象stage記録に基づく。Infisical secret-access監査が無効という未達要件は残る。退役時はOS accountの停止と、このinstance専用credentialの撤回を独立して記録する。
+
+
+## 2026-10-26までの実機進捗
+
+最終sourceはpc-setup `31e56f91e278a67b1b604f7c7e164a33cfc0053e`。全4 CIがsuccess。実機で見つかったLocalAccounts module解決、Windows account descriptionの48文字上限、passwordの127文字上限を修正した。descriptionは`pcw/v1/<instance UUID>`の43文字、完全な所有情報はmanifestへ保持する。
+
+stage `OS-FIRST-2a1084ec-v1`はprovisionに失敗し、account/profile/対象directoryが作成されていないことを確認した。この失敗を成功結果へ置換していない。
+
+stage `OS-FIRST-2a1084ec-v2`は指定した一台のaccountとprofileの作成に成功した。SIDは`S-1-5-21-3608086955-217808620-105719149-1013`。description一致、metadata/manifest/data/profileの存在、SID・Users-only group・ACL・probe hash検査を確認した。stage記録はWindowsの`C:/Users/rebui/setup-audit/worker-134-credential-plan-20261025/stage-OS-FIRST-2a1084ec-v2.json`。v2の重複実行はしていない。既存Ubuntu、既存SSH、他userのpasswordを変更していない。
+
+Ubuntu fresh image `ubuntu-24.04.5-wsl-amd64.wsl`（388975696 bytes）は、Canonicalの署名済みSHA256SUMSと照合した。SHA256は`bb415d824822c4b878125729af451a5d18fb13d1cf5cbed9a7393ad64ac6039e`、署名鍵fingerprintは`843938DF228D22F7B3742BC0D94AA3F0EFE21092`。archive内容のlistingは成功したが、WSL import済みという証拠ではない。
+
+未検証は、別userからの管理鍵・peer dataアクセス拒否、alternate credentialによるcanary probe、provision再実行、WSL import、worker MI、worker Herdr。管理者controllerのMac↔Windows Herdr PoCは別境界として記録し、この標準workerの到達・分離証明へ流用しない。

@@ -1,0 +1,186 @@
+{
+  "SchemaVersion": 1,
+  "Stage": "HERDR-BIDIR-20261026",
+  "Scope": "Controller PoC: Windows basic/admin to Mac rebui. Does not prove standard-worker or WSL isolation.",
+  "Direction": "Windows-to-Mac",
+  "Result": "pass",
+  "Herdr": {
+    "Version": "0.9.5",
+    "Installation": "private side-by-side complete official Windows x64 ZIP",
+    "ArchiveSHA256": "d2c6c9c971c43a0bfdde8c692a9a1a7a45c3e4807cd01ae45662b4734fac1cbf",
+    "ConptyManifestFilesVerified": 3,
+    "ExistingInstallationReplaced": false
+  },
+  "Ssh": {
+    "Direction": "Windows-to-Mac",
+    "Status": "nonce-pass",
+    "HostFingerprint": "SHA256:JxZZce4cTdp9nNOSeqb/xBP955yC/bjIO6h9AfwY5ig",
+    "Endpoint": "rebui@100.83.203.34:22223",
+    "Kex": "curve25519-sha256",
+    "Client": "Windows OpenSSH9.5",
+    "HostKeyAcquisition": "Git bundled ssh-keyscan",
+    "Nonce": "winmac-fe0567ca0c50498a8d393584a10bac48"
+  },
+  "SavedProfile": {
+    "ID": "c0f6ac3950c614ced3b168c9e5952183",
+    "Label": "devnode-poc-mac-20261026",
+    "Target": "devnode-poc-mac-20261026",
+    "RemoteSession": "devnode-poc-mac-14f29b3f-cda",
+    "Status": "reachable",
+    "MachineAddExitCode": 0,
+    "ExistingCatalogEntriesPreserved": 2
+  },
+  "PaneProbe": {
+    "WorkspaceID": "w2",
+    "TabID": "w2:t1",
+    "PaneID": "w2:p1",
+    "OS": "Darwin",
+    "User": "rebui",
+    "HerdrEnv": "1",
+    "HerdrEnvManuallyInjected": false,
+    "RuntimeAssembledNonce": "000170e904be6b96e881c132f60e3142",
+    "ExactOutputLine": "HERDR_PROBE os=Darwin user=rebui env=1 nonce=000170e904be6b96e881c132f60e3142",
+    "IndependentExpectedHashMatched": true
+  },
+  "Agent": {
+    "Name": "poc_winmac",
+    "Kind": "codex",
+    "Version": "0.164.0",
+    "WorkspaceID": "w3",
+    "TabID": "w3:t1",
+    "PaneID": "w3:p1",
+    "Cwd": "/Users/rebui/.local/state/dotfiles/herdr-poc/mac-14f29b3f-cda1-4acf-9f18-26d35f8d6074/workspace",
+    "InteractiveReady": true,
+    "PromptWaitState": "done",
+    "CompletionSeq": 4,
+    "Reply": "agent-winmac-c0b0f6a90117471193bd994d2216271f",
+    "ExactRenderedAssistantLine": "• agent-winmac-c0b0f6a90117471193bd994d2216271f",
+    "ExactLineVerified": true,
+    "PromptScope": "Return only nonce; no tools, files, or network requests",
+    "TrustOrApprovalDialogObserved": false,
+    "PromptRetried": false
+  },
+  "Reconnect": {
+    "FreshCliProcesses": true,
+    "SameProfileID": "c0f6ac3950c614ced3b168c9e5952183",
+    "SamePaneID": "w2:p1",
+    "ServerStopped": false,
+    "ExactOutputLine": "HERDR_RECONNECT nonce=fd0726567d880a7c8c8c05aa655de987",
+    "RuntimeAssembledNonce": "fd0726567d880a7c8c8c05aa655de987",
+    "IndependentExpectedHashMatched": true,
+    "PriorPaneHistoryRetained": true
+  },
+  "ElevatedServerBoundary": {
+    "Test": "same-account unelevated client to dedicated elevated server",
+    "Session": "devnode-poc-win-20261026",
+    "ClientElevated": false,
+    "Result": "PermissionDenied",
+    "OsError": 5,
+    "ExitCode": 1,
+    "Pass": true,
+    "SharingEnabled": false
+  },
+  "DedicatedWindowsDaemon": {
+    "Status": "official-daemon-running",
+    "Session": "devnode-poc-win-20261026",
+    "PID": 46076,
+    "ParentPID": 37744,
+    "DetachedCapability": true,
+    "DefaultSessionRunning": false,
+    "Config": "C:/Users/rebui/setup-audit/herdr-readonly-20261026/devnode-poc-win-20261026.toml"
+  },
+  "ExistingResources": {
+    "FreshCliSavedMacProfile": "reachable",
+    "HerdrExistingFiles": [
+      {
+        "Path": "C:\\Users\\rebui\\AppData\\Roaming\\herdr\\config.toml",
+        "Unchanged": true
+      },
+      {
+        "Path": "C:\\Users\\rebui\\AppData\\Roaming\\herdr\\session.json",
+        "Unchanged": true
+      }
+    ],
+    "ExistingCatalogEntriesPreserved": 2,
+    "CurrentCatalogEntries": 3,
+    "OriginalSshConfigBytesPreserved": true,
+    "OnlySshConfigAddition": "Dedicated Include prefix",
+    "StandardSshdState": "Stopped",
+    "StandardSshdStartMode": "Manual",
+    "DefaultSessionRunning": false,
+    "OriginalHerdrVersion": "herdr 0.9.3",
+    "WindowsPaneInputPerformed": false
+  },
+  "Limitations": [
+    "terminal.shell_mode=non_login does not suppress PowerShell user profiles; not a NoProfile/clean-worker guarantee.",
+    "Reverse-direction pane and agent results are observed by the Mac agent and recorded separately.",
+    "Dedicated agents and servers retained; no automatic Undo or cleanup."
+  ],
+  "Evidence": [
+    {
+      "File": "windows-to-mac-nonce-result.json",
+      "SHA256": "9cd6535b1ccd437681f777b26765841d227b1ec67583b1975d972cf2fe22e93c"
+    },
+    {
+      "File": "catalog-before-mac-add.json",
+      "SHA256": "d7ccc23ea5eccd6626d2c3bff581623643c51d24fe09793f7d1e91b71303c4a3"
+    },
+    {
+      "File": "catalog-after-mac-add.json",
+      "SHA256": "7c8a10b30fbe6f46866473b3c1b51d6226eab94d5281e5a9ee738b8b5474c60e"
+    },
+    {
+      "File": "mac-profile-status.json",
+      "SHA256": "3e1f0b9b442899975b2fa9e99c16c551f1370aed26186ef9f8a0007c1859bab0"
+    },
+    {
+      "File": "mac-workspace-probe.json",
+      "SHA256": "bf8f39f36c16bf77bbd9b16a232ffa6f3995145d9672f3e6b7d74ebc91ea23d4"
+    },
+    {
+      "File": "mac-agent-state.json",
+      "SHA256": "1efe0075a812f8a094398e883cbee99d4bc675c6402bca62dd85be26619838d5"
+    },
+    {
+      "File": "mac-agent-result.txt",
+      "SHA256": "df00739743bf2b6cb7575fdaea0e1a5366265d14463cd7e0b15c2a74a769f5cd"
+    },
+    {
+      "File": "mac-agent-expected-nonce.txt",
+      "SHA256": "c6c8548e3d0997975bab2f4d609ad320d589e8b4842f3306e9df8aa6d2fcfa21"
+    },
+    {
+      "File": "mac-reconnect-proof.txt",
+      "SHA256": "c1f605df59479b26554591c03f4eb82aa98b31286493cc63c5a2c1e8381f59c7"
+    },
+    {
+      "File": "final-existing-resources-check.json",
+      "SHA256": "8acf6149d815a7f9bffbf3069c0ebe85144d833e7f8e7ca3ad49f4c50a1928b7"
+    },
+    {
+      "File": "permission-denial-proof.json",
+      "SHA256": "6628f860fffb284962214fb16d0fb544a353c39582f89c04032817df6dce599d"
+    },
+    {
+      "File": "herdr-daemon-result.json",
+      "SHA256": "c0fd73a9ed62f894c76bf195ef503d9395ee3e0f1af0e88dee94ae002f8f10a2"
+    },
+    {
+      "File": "herdr-status-after-daemon.json",
+      "SHA256": "a97974cbd5e371cd0fce232eee26542e9a572cd756cf9f8efd704e97c41a4d36"
+    },
+    {
+      "File": "devnode-poc-win-20261026.toml",
+      "SHA256": "5a63d5ee8a9f848aaa9365329bdda7fe52085d054f80d61f206354a3d9a49ef8"
+    },
+    {
+      "File": "mac-poc-ssh.conf",
+      "SHA256": "ffd1b4542dc8914132619fde9df800ae4a2eca689480eb96400265602960e757"
+    },
+    {
+      "File": "herdr-0.9.5-private/release-asset.json",
+      "SHA256": "f784775142ec28cb049df8727e76414efee7e9c27143c98ff0e4ad45175f565c"
+    }
+  ],
+  "EvidencePrivacy": "Only filenames and hashes of source evidence are included; raw terminal history and credentials are not embedded."
+}

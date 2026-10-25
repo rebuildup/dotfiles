@@ -1,6 +1,6 @@
 # 分散開発ノードの認証・接続境界
 
-- 状態: 設計承認済み（2026-10-24）。Mac→Windowsの専用SSH接続PoC成立、本登録とHeadscale採用は実機検証待ち
+- 状態: 設計承認済み（2026-10-24）。Mac↔Windowsの専用SSH・Herdr/agent操作PoC成立。Headscale単一Mac登録を検証。本登録・WSL・Headscale間通信は継続検証
 - 日付: 2026-10-24
 - 実装追跡: https://github.com/rebuildup/dotfiles/issues/74
 - 関連: [調査と実機証拠](../research/distributed-nodes-2026-10-24.md)、[段階的実装計画](../distributed-nodes.md)
@@ -73,6 +73,10 @@ WindowsとWSLのVPN二重実行は既定にしない。まずWindows gateway方�
 
 ## 認可と秘密情報
 
+2026-10-26のHerdr相互接続PoCは、ユーザーが明示依頼した新規の名前付きsessionと、そのためのmachine profileだけを外部controllerから操作する。Herdr同梱Skillの`HERDR_ENV=1`前提と、外部からfocused sessionを操作しない規則に対し、この専用bootstrap/検証scopeをユーザー指示に基づく限定的overrideとして扱う。`HERDR_ENV`を偽装せず、既存default/focused session・既存workspace・無関係なcatalog entryは操作しない。pane内ではHerdrが実際に注入したcontextを観測してから次の検査へ進む。通常運用へ一般化する場合は、Herdr内の実agentか同等の明示scopeを持つwrapperで制約を維持する。
+
+Herdr0.9.5のremote APIはSSH stdio bridgeを使うため、SSH TCP/agent forwardingの禁止を維持できる。新規named serverの起動前にglobal plugin/hookがないことを確認し、専用の非秘密configをprocess-scopedで指定する。既存catalogを共有する場合は今回所有するprofileだけを公式CLIで追加し、他entryを変更しない。Windows0.9.3では管理者serverと通常権限clientの分離を保証できないため、このPoCは対応する公式0.9.5完全packageをside-by-sideで使用し、`allow_unelevated_clients`を緩和しない。
+
 - ネットワークは初期deny-allから、controller role→対象instanceのSSH port等だけを許可する。WSL gatewayではport別認可とWSL sshd別認可を併用する。
 - gateway配下WSLの通信はVPN上で同一source identityになり得る。WSL同士の完全なnetwork identity分離を主張しない。source分離が必須のroleは専用VPNまたは別実行境界の追加検証まで参加させない。
 - SSHは汎用OpenSSHを共通基盤にする。ノード固有のhost keyと操作者/用途別のuser keyを分け、agent forwardingを既定無効にする。
@@ -110,3 +114,12 @@ Infisical停止中は新規join/token更新/新規secret取得を拒否する。
 [隔離project/MIでの実機検証](../research/infisical-node-enrollment-poc-2026-10-24.md)では、project境界・一回資格情報の再使用拒否・Identity削除後のtoken/未使用資格情報拒否が成立した。一方、membership削除後はmetadataから消えても発行済tokenの読取が直後に継続した。retireはmembership削除だけで完了させず、instance専有MIと資格情報の撤回・実際の拒否を確認する。viewerはproject全体の権限であり、許可されない環境のデータを同じprojectに混在させない。
 
 実際の接続PoC、Headscale配置先と版、Infisical server/licenseと権限拒否/監査、継続認証、gateway経由で必要なsource分離、実機の失効反映時間を確定する。これらを未確認のまま安全なjoin/leave実装が完成したとは扱わない。
+
+
+## 2026-10-26時点の到達点
+
+[Herdr相互接続PoC](../research/herdr-bidirectional-poc-2026-10-26.md)で、Mac↔Windowsの公式machine登録、remote API、専用workspace/pane、Codex起動・prompt・応答回収を実測した。Windowsは公式daemon起動で`detached_server_daemon=true`を満たす必要がある。controller account同士の検証であり、低権限workerの隔離証拠ではない。
+
+[Headscale登録PoC](../research/headscale-enrollment-poc-2026-10-25.md)では既存GUIと独立したMac userspace clientの登録と、一回用資格情報の期限前再利用拒否・撤去を確認した。peer間通信とrole policy・MTU・障害時挙動は未検証。登録資格情報を撤去しても既存nodeは残るため、node retirementとは区別する。
+
+[Windows worker準備](../research/windows-worker-enrollment-2026-10-25.md)は標準account/profile作成まで進んだ。複数user間の拒否、WSL import/再登録、worker MI/Herdrは未検証。これらを完了させるまで共通join/leaveと再生成の完成を主張しない。

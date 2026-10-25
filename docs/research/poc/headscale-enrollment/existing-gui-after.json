@@ -1,0 +1,10 @@
+{
+  "observedAt": "2026-10-25T10:26:31.580Z",
+  "backendState": "Running",
+  "selfId": "nBNeMZfHTy11CNTRL",
+  "addresses": [
+    "100.83.203.34",
+    "fd7a:115c:a1e0::3433:cb23"
+  ],
+  "sameIdentityAndAddresses": true
+}

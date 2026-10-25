@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "windowsOriginalSHA256": "a7a19767d06c870ab0bbb895c0eb10eac8af4be9ad2b4089141864ac57206000",
+  "windowsArchiveTransformation": "CRLF to LF only; JSON values unchanged",
+  "files": [
+    {
+      "file": "windows-to-mac.json",
+      "sha256": "115a51a1a4081b6b0082a7d77e54e9b20404601f64dd4ea90bbe7d8f85e4b87f"
+    },
+    {
+      "file": "mac-to-windows.json",
+      "sha256": "6e2c3304d915c65a261c086cfcd8d1d1a766bb4d4607ed68fd448a7de830816f"
+    }
+  ]
+}
