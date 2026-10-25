@@ -13,7 +13,7 @@ Universal Authのaccess tokenはTTL/Max TTL各120秒、Period=0。client secret�
 ## 仕様の根拠
 
 - 実instanceの公開[OpenAPI](https://secrets.rebuildup.dev/api/docs/json)を取得し、実際に存在するrequest/response schemaを参照した。schema SHA256は各journalに保存している。
-- OpenAPIの`info.version=0.0.1`はAPI schemaの識別値で、Infisical server releaseではない。server releaseは引き続き未確認。
+- OpenAPIの`info.version=0.0.1`はAPI schemaの識別値で、Infisical server releaseではない。後続のVPS調査では、実稼働backendはOCI label `v0.165.15`を持つlocal devtest imageだった。公式releaseそのものと同一とは扱わない。[image識別と調査範囲](distributed-nodes-preparation-2026-10-25.md)を参照。
 - [Universal Auth公式仕様](https://infisical.com/docs/documentation/platform/identities/universal-auth)のclient secret使用回数/TTLとaccess token寿命の区別に従った。
 
 ## 結果
