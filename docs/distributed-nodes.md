@@ -4,6 +4,8 @@
 
 [Issue #74](https://github.com/rebuildup/dotfiles/issues/74) / [提案ADR](adr/distributed-development-nodes.md) / [調査と証拠](research/distributed-nodes-2026-10-24.md)
 
+[2026-10-27の再開検査](research/devnode-resume-2026-10-27.md): Mac VPN復帰後の専用SSH再成功、常設Mac sessionとHeadscaleの現状態を確認。WSLは設定・再起動後の検査で停止しており、SSH / Herdrの成功には数えない。
+
 ## 現在使える接続PoC
 
 `script/devnode.ts`はnode登録やMI発行をしない。machine-localな専用鍵とinstance IDの準備、別経路で確認したhost fingerprintのpin、SSH nonce往復だけを行う。Windows bootstrapは[pc-setup #130](https://github.com/rebuildup/pc-setup/issues/130)が所有する。
