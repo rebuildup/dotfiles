@@ -1,4 +1,6 @@
-import { expect, test } from "bun:test";
+import { expect, test, setDefaultTimeout } from "bun:test";
+// Multiple native PowerShell startups exceed 5s on hosted Windows runners.
+if (process.platform === "win32") setDefaultTimeout(30_000);
 // Removing binding identity checks must make these tests fail; Herdr itself is not under test.
 const module = await import("./devnode-machines.ts").catch(() => ({})) as any;
 const desired = { version: 1, machines: [{ name: "win-uuu", label: "UUU · Windows" }, { name: "mac", label: "Mac · macOS" }] };

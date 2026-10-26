@@ -1,4 +1,6 @@
-import {expect, test} from 'bun:test';
+import {expect, test, setDefaultTimeout} from 'bun:test';
+// Local Git/submodule fixtures start many native processes; keep a bounded Windows budget.
+if(process.platform==='win32') setDefaultTimeout(30_000);
 import {mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, existsSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
