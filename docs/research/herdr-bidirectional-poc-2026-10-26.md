@@ -66,9 +66,9 @@ Macでは通常のglobal SSH設定を変更していないため、専用launche
 
 ```sh
 poc_herdr="$HOME/.local/state/dotfiles/herdr-poc/mac-14f29b3f-cda1-4acf-9f18-26d35f8d6074/herdr-poc"
-"$poc_herdr" machine status devnode-poc-win-20261026 --json
-"$poc_herdr" --machine devnode-poc-win-20261026 agent list
-"$poc_herdr" --machine devnode-poc-win-20261026 agent read poc_macwin --source recent-unwrapped --lines 40
+"$poc_herdr" machine status e310d40031e946d9896f29d9f600d317 --json
+"$poc_herdr" --machine e310d40031e946d9896f29d9f600d317 agent list
+"$poc_herdr" --machine e310d40031e946d9896f29d9f600d317 agent read poc_macwin --source recent-unwrapped --lines 40
 ```
 
 Windowsは専用0.9.5 binaryと今回のTOMLをprocess-scopedで指定し、label `devnode-poc-mac-20261026`を選ぶ。操作元にかかわらず、profile ID・pane IDは対象server側の返却値を使い、`--machine`と`--session`を併記しない。
@@ -79,3 +79,6 @@ Windowsは専用0.9.5 binaryと今回のTOMLをprocess-scopedで指定し、labe
 ## 保存した証拠
 
 非秘密の選択出力と元journalのhashを[Mac→Windows](poc/herdr-bidirectional/mac-to-windows.json)、[Windows→Mac](poc/herdr-bidirectional/windows-to-mac.json)へ保存した。raw terminal履歴やcredential・利用率は含めていない。Windows集約原本のSHA256 `a7a19767d06c870ab0bbb895c0eb10eac8af4be9ad2b4089141864ac57206000`をSSH転送後も照合した。Git archiveはCRLFだけをLFへ正規化し、[manifest](poc/herdr-bidirectional/manifest.json)に原本とarchiveのhashを区別して記録した。machine-localの元journal全体は公開archiveではなく、それぞれの端末に保持する。
+
+
+2026-10-26追記: 表示名をMac側`UUU · Windows`、Windows側`Mac · macOS`へ変更する運用へ進めた。historical journalの元labelは変更しない。profile IDとSSH target/sessionは維持し、再確認commandは安定したprofile IDで指定する。foreground PoCのprocessはturn終了後に消滅したため、接続の常用化はpc-setup #138（Windows）/#139（Mac）のOS管理起動で別途検証する。この記録の成功を現在の常時稼働証明には使わない。

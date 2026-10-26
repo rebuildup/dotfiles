@@ -123,3 +123,14 @@ Infisical停止中は新規join/token更新/新規secret取得を拒否する。
 [Headscale登録PoC](../research/headscale-enrollment-poc-2026-10-25.md)では既存GUIと独立したMac userspace clientの登録と、一回用資格情報の期限前再利用拒否・撤去を確認した。peer間通信とrole policy・MTU・障害時挙動は未検証。登録資格情報を撤去しても既存nodeは残るため、node retirementとは区別する。
 
 [Windows worker準備](../research/windows-worker-enrollment-2026-10-25.md)は標準account/profile作成まで進んだ。複数user間の拒否、WSL import/再登録、worker MI/Herdrは未検証。これらを完了させるまで共通join/leaveと再生成の完成を主張しない。
+
+
+## Git同期と表示名の具現化（2026-10-26）
+
+承認済みinventory/公式Herdr CLI同期の最小実装として、非秘密の表示名desired stateをGit管理し、各端末の接続bindingはmachine-localに保持する。これは接続設定の参照であり、論理node UUID・instance UUID・認可registryの代替ではない。Herdr profile ID/SSH alias/sessionはclient固有のbindingへ置く。Gitから他端末のprivate key/known_hosts/資格情報/session/cacheをコピーしない。
+
+`devnode update check|apply --repo <checkout> --branch <branch>`はcanonical dotfiles originと明示branchを確認し、fetch後の差分とcommitを表示する。applyはclean checkoutかつ同じbranchのfast-forwardだけを許可する。reset/clean/stash/強制checkout、無人push配信、tool installationはしない。未merge PoCではbranch74を明示、将来release済みbranchへ切替える。新しいcheckoutの初回取得とOS prerequisite/service化はpc-setupが所有する。
+
+`devnode machines plan|apply|status`は非秘密desired nameとmachine-local bindingを使う。planは変更予定だけを表示し、applyは期待profile ID・SSH target・remote session・現在labelが一致する登録だけをofficial `machine rename`で更新する。未知profileを採用せず、重複名・binding driftを拒否する。新規接続登録は別途SSH pin/nonceとofficial machine addを確認後、明示bindingする。既存Ubuntu/Ubuntu2の実体を確認せずrename/removeしない。
+
+初期表示は`UUU · Windows`と`Mac · macOS`。新規WSLは物理hostと独立したworker名を併記する。表示変更でinstanceや権限を引き継がない。runtime configやOS常駐化は、それぞれのownerであるuser-level config/pc-setup側で扱い、単なるGit update成功を再起動後の稼働証拠にはしない。

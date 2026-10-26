@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "machines": [
+    { "name": "win-uuu", "label": "UUU · Windows" },
+    { "name": "mac", "label": "Mac · macOS" }
+  ]
+}

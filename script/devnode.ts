@@ -127,11 +127,19 @@ export function verify(root: string, name: string) {
   return { name, instanceId: value.instanceId, status: "ssh-verified", herdr: "unverified", infisicalMachineIdentity: "unverified" };
 }
 
-function main() {
+async function main() {
   const args = process.argv.slice(2);
   const command = args.shift();
+  if (command === "machines") {
+    const { main: machines } = await import("./devnode-machines.ts");
+    console.log(JSON.stringify(machines(args))); return;
+  }
+  if (command === "update") {
+    const { main: update } = await import("./devnode-update.ts");
+    console.log(JSON.stringify(update(args))); return;
+  }
   if (!command || command === "--help") {
-    console.log("Connection PoC only: prepare --name LABEL [--no-passphrase]; trust --name LABEL --host ADDRESS --port PORT --user ACCOUNT --fingerprint SHA256:...; verify --name LABEL. Optional --state-dir PATH. No node enrollment or global SSH modification.");
+    console.log("Connection PoC only: prepare --name LABEL [--no-passphrase]; trust --name LABEL --host ADDRESS --port PORT --user ACCOUNT --fingerprint SHA256:...; verify --name LABEL. Optional --state-dir PATH. No node enrollment or global SSH modification. Also: update check|apply --repo PATH --branch BRANCH; machines plan|apply|status --bindings PRIVATE_JSON --herdr ABSOLUTE_BINARY.");
     return;
   }
   const options = new Map<string, string>();
@@ -156,5 +164,5 @@ function main() {
   console.log(JSON.stringify(result));
 }
 if (import.meta.main) {
-  try { main(); } catch (error) { console.error(error instanceof Error ? error.message : "devnode failed"); process.exitCode = 1; }
+  try { await main(); } catch (error) { console.error(error instanceof Error ? error.message : "devnode failed"); process.exitCode = 1; }
 }

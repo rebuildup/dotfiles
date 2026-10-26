@@ -1,0 +1,66 @@
+{
+  "checkedAt": "2026-10-26T05:43:06Z",
+  "scope": "Selected read-only configuration audit and provider firewall restriction; not an exploitation test",
+  "mac": {
+    "tailscaleVersion": "1.104.2-tc3430f0d2-g598b63867",
+    "goVersion": "go1.27.3",
+    "runSSH": false,
+    "runWebClient": false,
+    "advertiseRoutes": null,
+    "advertiseServices": null,
+    "appConnectorAdvertise": false,
+    "serveConfigured": false
+  },
+  "headscale": {
+    "version": "0.29.6",
+    "image": "ghcr.io/juanfont/headscale:0.29.6",
+    "memoryBytes": 536870912,
+    "memorySwapLimitBytes": 1073741824,
+    "hostSwapTotalMiB": 0,
+    "pidsLimit": 128,
+    "restartPolicy": "unless-stopped",
+    "embeddedDerpEnabled": false,
+    "policy": "explicit deny-all",
+    "tailwormFixedClaim": false
+  },
+  "providerFirewall": {
+    "provider": "Hetzner",
+    "projectId": 16131894,
+    "firewallId": 11666190,
+    "resourceCount": 1,
+    "ruleCount": 4,
+    "status": "Fully applied",
+    "changedRule": {
+      "protocol": "tcp",
+      "port": 443,
+      "beforeIPv4": [
+        "0.0.0.0/0"
+      ],
+      "afterIPv4": [
+        "27.83.76.30/32"
+      ],
+      "afterIPv6": []
+    },
+    "unchanged": [
+      "TCP22 IPv4+IPv6",
+      "ICMP IPv4+IPv6",
+      "TCP80 IPv4 ACME",
+      "outbound allow"
+    ],
+    "purpose": "Temporary source allowlist pending validated upstream mitigation; add approved new source before enrollment from another network"
+  },
+  "allowedSourceChecks": {
+    "headscaleHealthHTTP": 200,
+    "headscaleHealthStatus": "pass",
+    "headscaleTLSVerify": 0,
+    "infisicalStatusHTTP": 200,
+    "infisicalTLSVerify": 0
+  },
+  "unverified": [
+    "Packet rejection from a different public source network",
+    "Tailworm exploit reproduction (not run)",
+    "Complete fix for all Tailworm findings",
+    "Independent Headscale Mac userspace daemon is no longer running; previous enrollment evidence is historical"
+  ],
+  "screenshot": "/Users/rebui/.codex/visualizations/2026/10/26/headscale-restricted-https.jpg"
+}

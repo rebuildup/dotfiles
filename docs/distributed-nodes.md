@@ -1,6 +1,6 @@
 # 分散開発ノード: 実装・検証計画
 
-状態: 設計承認済み。prepare/trust/verifyを実装し、Mac→Windowsの専用SSH往復、誤鍵/別user/password-onlyの拒否、撤去後非到達、再Bootstrap後の旧host pin/旧client key拒否と新鍵nonceが実機で成功。join/leave等は未実装。
+状態: 設計承認済み。[Git設定更新・表示名同期](devnode-config-sync.md)を追加実装中。Mac↔Windows Herdr/agent PoC成功、常用化とWSLは継続。prepare/trust/verifyを実装し、Mac→Windowsの専用SSH往復、誤鍵/別user/password-onlyの拒否、撤去後非到達、再Bootstrap後の旧host pin/旧client key拒否と新鍵nonceが実機で成功。join/leave等は未実装。
 
 [Issue #74](https://github.com/rebuildup/dotfiles/issues/74) / [提案ADR](adr/distributed-development-nodes.md) / [調査と証拠](research/distributed-nodes-2026-10-24.md)
 
@@ -78,3 +78,5 @@ leave/repairは段階別外部結果を照合する。retiredをactiveに戻すr
 実装はOS provisioningをpc-setup、user wrapperをdotfilesへ分け、各repoにIssue/PRとSHA付き検証結果を残す。dotfilesは既存0.3 operating baselineから次のminor defaultとして`release-0-4-0`、pc-setupは0.6 integration後の`release-0-7-0`をmainの既存SHAから作成し、ticket PRのbaseにする。このversion選択は実装者の運用判断であり、完成・リリース・mergeの許可ではない。PoC必須条件が残るためPRはDraftに維持する。
 
 dotfilesは`script/test`、`script/test-workflow`、`script/check-secrets`、適用する`script/check`/`script/secrets-doctor`を実行する。pc-setupの実装時は同repoの`scripts/ci.sh`とOS別検証を行う。未達/未検証の必須PoCが残る限り完成とはしない。
+
+[設定更新と表示名の運用](devnode-config-sync.md) / [Herdr実測](research/herdr-bidirectional-poc-2026-10-26.md)。
