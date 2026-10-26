@@ -1,5 +1,5 @@
 import {spawnSync} from 'node:child_process';
-import {lstatSync, mkdtempSync, readdirSync, realpathSync, rmSync} from 'node:fs';
+import {lstatSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {dirname, join, resolve} from 'node:path';
 import {randomUUID} from 'node:crypto';
@@ -42,7 +42,11 @@ export function runUpdate(options:UpdateOptions, allowedOrigins:readonly string[
   let fetchedRef:string|undefined;
   try {
     git(['check-ref-format',`refs/heads/${branch}`]);
-    if(realpathSync(git(['rev-parse','--show-toplevel']))!==repo) throw new Error('Repo must name the checkout root.');
+    // Windows realpath may retain an 8.3 alias while Git emits its long name.
+    // Compare actual directory identities, never case-fold potentially sensitive paths.
+    const top=statSync(realpathSync(git(['rev-parse','--show-toplevel'])),{bigint:true});
+    const selected=statSync(repo,{bigint:true});
+    if(!top.isDirectory() || !selected.isDirectory() || top.ino===0n || selected.ino===0n || top.dev!==selected.dev || top.ino!==selected.ino) throw new Error('Repo must name the checkout root.');
     const configured=git(['config','--get-all','remote.origin.url']).split('\n');
     const effective=git(['remote','get-url','--all','origin']).split('\n');
     if(configured.length!==1 || effective.length!==1 || !allowedOrigins.includes(configured[0]) || !allowedOrigins.includes(effective[0])) throw new Error('Unexpected origin.');

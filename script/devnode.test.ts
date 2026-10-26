@@ -63,7 +63,7 @@ test("trust refuses a changed fingerprint and pins a matching host into dedicate
   pinHost(state, request, `127.0.0.1 ${observed}`);
   pinHost(state, request, `127.0.0.1 ${observed}`);
   const config = join(state, "win-uuu", "ssh_config");
-  const effective = execFileSync("ssh", ["-G", "-F", config, "devnode-win-uuu"], { encoding: "utf8" });
+  const effective = execFileSync("ssh", ["-G", "-F", config, "devnode-win-uuu"], { encoding: "utf8" }).replace(/\r\n/g, "\n");
   expect(effective).toContain("hostname 127.0.0.1\n");
   expect(effective).toContain("port 22222\n");
   expect(effective).toContain("stricthostkeychecking true\n");

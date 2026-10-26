@@ -8,9 +8,9 @@ const git=(repo:string,...args:string[])=>execFileSync('git',['-C',repo,...args]
 function fixture(){
  const root=mkdtempSync(join(tmpdir(),'devnode update ')),remote=join(root,'remote.git'),seed=join(root,'seed'),repo=join(root,'checkout');
  git(root,'init','--bare',remote);git(root,'init','--initial-branch=main',seed);
- for(const p of [seed]){git(p,'config','user.name','Fixture');git(p,'config','user.email','fixture@example.invalid');}
+ for(const p of [seed]){git(p,'config','user.name','Fixture');git(p,'config','user.email','fixture@example.invalid');git(p,'config','core.autocrlf','false');}
  writeFileSync(join(seed,'config'),'original\n');git(seed,'add','.');git(seed,'commit','-m','initial');git(seed,'remote','add','origin',remote);git(seed,'push','origin','main');
- git(root,'clone','--branch','main',remote,repo);git(repo,'config','user.name','Fixture');git(repo,'config','user.email','fixture@example.invalid');
+ git(root,'clone','--branch','main',remote,repo);git(repo,'config','user.name','Fixture');git(repo,'config','user.email','fixture@example.invalid');git(repo,'config','core.autocrlf','false');
  const current=git(repo,'rev-parse','HEAD');
  writeFileSync(join(seed,'config'),'updated\n');git(seed,'commit','-am','update');git(seed,'push','origin','main');
  const target=git(seed,'rev-parse','HEAD');
@@ -23,6 +23,13 @@ test('check fetches target without changing checkout; apply fast-forwards then n
   expect(git(f.repo,'rev-parse','HEAD')).toBe(f.current);expect(readFileSync(join(f.repo,'config'),'utf8')).toBe('original\n');
   const applied=runUpdate({repo:f.repo,branch:'main',mode:'apply'},[f.remote]);expect(applied.changed).toBe(true);expect(git(f.repo,'rev-parse','HEAD')).toBe(f.target);
   expect(readFileSync(join(f.repo,'config'),'utf8')).toBe('updated\n');expect(runUpdate({repo:f.repo,branch:'main',mode:'apply'},[f.remote]).noop).toBe(true);
+ }finally{f.cleanup();}
+});
+test('a nested directory cannot masquerade as the checkout root',()=>{
+ const f=fixture();try{
+  const nested=join(f.repo,'nested');mkdirSync(nested);
+  expect(()=>runUpdate({repo:nested,branch:'main',mode:'apply'},[f.remote])).toThrow('Repo must name the checkout root.');
+  expect(git(f.repo,'rev-parse','HEAD')).toBe(f.current);
  }finally{f.cleanup();}
 });
 for(const dirty of ['tracked','untracked','staged'])test('refuses '+dirty+' files without loss',()=>{
