@@ -51,4 +51,8 @@ planは変更予定だけを表示する。applyは期待したprofile ID/SSH ta
 
 ## 検証範囲
 
-Git updateはlocal Git remotesによるfast-forward/dirty/diverged/ignored file/filter/hook拒否を検証した。表示planner/adapterとMacの所有profileに対するplan/apply/noopを検証。Windows ACLとWindows/Linuxの実機適用、WSLへの接続設定配布は継続検証中。テストやGit更新の成功をnode参加成功とは扱わない。
+Git updateはlocal Git remotesによるfast-forward/dirty/diverged/ignored file/filter/hook拒否を検証した。Macのcanonical originの専用cloneで実際のfast-forwardと次回noopを確認。Mac/Windowsの所有profileに対するplan/apply/noopを検証したが、既にdesired labelだったため、このadapterによる実機renameは発生していない。Windows ACL guardもCI/実機で確認した。
+
+WindowsではBunのrealpathが8.3短縮名を保持しGitが長い名前を返す差を実測し、非ゼロdirectory dev/inoの一致でrootを照合するよう修正した。Git fixtureはlocal core.autocrlf=falseに固定し、SSHの選択出力はCRLFを正規化する。Windowsのnative process起動試験には30秒の上限を設ける。global Git設定は変更しない。[選択結果と対象SHA](research/poc/config-sync-2026-10-26/results.json)を参照。
+
+LinuxはCIを確認し、Linux/WSL実機への適用と新WSLの接続bindingは未検証。テストやGit更新の成功をnode参加成功とは扱わない。
