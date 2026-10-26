@@ -1,0 +1,19 @@
+{
+  "checkedAt": "2026-10-26T23:23:11.880353+00:00",
+  "scope": "Mac managed pane to existing dedicated Windows Herdr session; not WSL",
+  "profileId": "e310d40031e946d9896f29d9f600d317",
+  "herdrVersion": "0.9.5",
+  "agentName": "service_macwin",
+  "paneId": "w4:p1",
+  "nonce": "WIN_RESUME_20261027_fc303c839192c",
+  "exactAssistantLineMatched": true,
+  "promptEchoAccepted": false,
+  "newAgentStarted": false,
+  "modelChanged": false,
+  "postReplyRateLimitDialogObserved": true,
+  "limitations": [
+    "Windows to Mac not repeated in this record",
+    "WSL SSH/Herdr not verified",
+    "Agent reply does not prove unattended availability"
+  ]
+}

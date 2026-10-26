@@ -8,6 +8,8 @@ Macの公式Tailscaleアプリを起動すると、既存登録のままConnecte
 
 pc-setupの所有確認付き`control.sh status`では、Mac専用SSHとHerdrのLaunchAgentがrunning（PID5251 / 837）。Herdrは明示した`devnode-poc-mac-14f29b3f-cda` sessionで0.9.5 / protocol22 / compatible=trueを確認した。default sessionの停止状態を専用sessionの障害とは扱わない。これらは今回のHerdr remote API・agent応答の再検証を代替しない。
 
+その後、専用Mac sessionへTUIでattachし、shellが待機中のpaneで実際の`HERDR_ENV=1`を確認してWindows profileへ公式remote APIを呼び出した。0.9.5のsnapshotと既存`service_macwin`の応答可能状態を確認後、新nonceへのassistant応答が完全一致した。prompt echoは受け入れていない。[選択結果](poc/resume-2026-10-27/herdr-mac-to-windows.json)には会話IDやraw terminal履歴を含めない。応答後はCodexの利用量に関するモデル変更選択画面が出たが、モデルを変更していない。これはMac→Windowsの現在の実測で、前日の逆方向検証や未完了のWSLへ拡張しない。
+
 ## WSL設定のレビュー境界
 
 WSL worker instanceは`2a1084ec-5389-4b0b-a0f0-9a38fcfaece5`。Windows担当の設定controller v4をSSH回収し、SHA256 `0e93b0573744df81024ed43b02590cc84a2570cb5410e90f96c0acfeed1e6bca`を照合した。既レビューv3との差分は、信頼するmachine module path、NetTCPIP / NetSecurityの絶対manifest importとcmdlet Source検査、v4専用marker / checkpoint / result名だった。
