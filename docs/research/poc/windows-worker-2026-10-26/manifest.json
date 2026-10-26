@@ -1,0 +1,25 @@
+{
+  "date": "2026-10-26",
+  "scope": "Non-secret selected reports only; each report preserves its original observation, including later superseded false/untested values. No raw terminal, credentials, private keys, provider tokens or cache.",
+  "transport": "Dedicated pinned SSH. Original SHA256 supplied by Windows owner and matched after transfer.",
+  "files": [
+    {
+      "path": "inventory-import-and-config-sync.json",
+      "originalSHA256": "3bcd11ef0c6ff0ea253a881da544545999c76ee36ab57abbba2ddd1d294d4203",
+      "archiveSHA256": "8cb3c907b9dba7b4e65a7a2cd302a0f414a198c9890f7817b1bc56724ea9ca10",
+      "normalization": "UTF-8 no BOM, JSON indentation 2, LF"
+    },
+    {
+      "path": "windows-ssh-task.json",
+      "originalSHA256": "8e7b5c007065ef3db3b423d9b3803a4ab0aaa228f9aa00a62f24eaf5f6171fd8",
+      "archiveSHA256": "920539446deb2af447113dad4bc3d730f312481f211a36b640b1488fd687b541",
+      "normalization": "UTF-8 no BOM, JSON indentation 2, LF"
+    },
+    {
+      "path": "wsl-initial-boot.json",
+      "originalSHA256": "5bfef7b80c9da2f6feac6d160781f5ed334e9698240039ca0f9453bd34286045",
+      "archiveSHA256": "62320331d317b16f3c5aeab51f0ff8d6c363ece430b79f543a1f83ce4ece4834",
+      "normalization": "UTF-8 no BOM, JSON indentation 2, LF"
+    }
+  ]
+}

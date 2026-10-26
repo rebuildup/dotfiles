@@ -31,6 +31,8 @@ Headscale + Tailscaleを第一候補とし、採用確定は対応版・実機Po
 
 WindowsとWSLのVPN二重実行は既定にしない。まずWindows gateway方式を検証する。gatewayは入れ替え可能な接続属性であり、WSLの認証主体・親ノードではない。ただし実行中WSLがその物理Windowsの停止に依存することは避けられない。
 
+新規WSLのcoding agentは、ユーザーの選択により、そのWSL内で個別にCodexへログインする。controllerのlogin cacheをworkerへコピーしない。将来API資格情報を使う場合は、対象workerに承認したInfisical境界を別途定義する。現在のcontroller認証やOS登録成功からworkerへのsecretアクセス権を導出しない。
+
 2026-10-25、ユーザーは新規workerをOS権限でも分離することを選択した。新規WSL workerごとに専用の標準Windowsアカウントを用意し、既存管理ユーザーのUbuntuを低権限workerへ転用しない。同一Windowsユーザー配下の別ディストリビューションだけでは管理鍵や他workerからの分離を保証しない。Windows SIDは資源所有者の属性であり、論理IDではない。pc-setupがアカウント・profile・WSL・ACLを所有し、秘密情報の承認と配送はInfisical統合側が扱う。管理者の環境変数や認証cacheを子プロセスへ継承しない。
 
 既存Ubuntuを変更せず、新しい標準ユーザーから管理鍵・別worker領域の読取拒否と環境分離を実測する。実装は[pc-setup #134](https://github.com/rebuildup/pc-setup/issues/134)、観測は[VPS・WSL準備記録](../research/distributed-nodes-preparation-2026-10-25.md)で追跡する。管理ホストの管理者は信頼境界の外側に残る。ホスト管理者からの隔離まで必要なら別ホスト等の追加境界が必要となる。
