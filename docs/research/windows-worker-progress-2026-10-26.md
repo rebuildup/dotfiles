@@ -39,3 +39,5 @@ WSL用にはMacで新しいdevice-local client keyを生成した。秘密鍵は
 WSL非root化・SSH / Herdr接続、複数worker間拒否、再生成・旧資格情報拒否、worker MI、Headscale peer / MTU / 異ネットワーク、OS再起動は未検証。Task / agent processの存在だけを認証や安全なjoin完成の証拠にしない。
 
 追記時のdotfiles `script/test`（隔離HOMEのcheckを含む）、`script/test-workflow`、`script/check-secrets`、diff検査は成功。一方、Macの`script/secrets-doctor`はCLI0.44.9 / site / project / env照合まで成功し、human login sessionがmissing or rejectedで失敗した。以前の成功を現在の認証証拠には数えず、再認証とprovider確認を継続課題とする。
+
+同日、その後self-hosted URLを明示した正規CLI browser loginで再認証し、`script/secrets-doctor`のlogin / project access / runtime injectionを含む全検査が再成功した。既存Vivaldiの認証完了画面も確認した。資格情報・profile cacheは端末内に保持し、他nodeやGitへコピーしていない。

@@ -83,4 +83,21 @@ Windowsは専用0.9.5 binaryと今回のTOMLをprocess-scopedで指定し、prof
 
 2026-10-26追記: 表示名をMac側`UUU · Windows`、Windows側`Mac · macOS`へ変更した。historical journalの元labelは変更しない。profile IDとSSH target/sessionは維持し、再確認commandは安定したprofile IDで指定する。foreground PoCのprocessはturn終了後に消滅した。
 
-Macは[pc-setup PR141](https://github.com/rebuildup/pc-setup/pull/141)の専用ユーザーLaunchAgentへ移し、両process running・parent PID1・専用VPN待受・apply再実行noopを確認した。Windows担当は移行後のWindows→Mac専用SSH nonce往復成功を報告した。Herdr workspaceは復元したが旧agent processは自動再開していない。移行後Herdr E2E・OS再起動・ログアウト復帰は未検証。Windowsの起動タスク[PR140](https://github.com/rebuildup/pc-setup/pull/140)はUAC取り消しにより実機未適用。この記録の過去の成功を現在の常時稼働証明には使わない。
+Macは[pc-setup PR141](https://github.com/rebuildup/pc-setup/pull/141)の専用ユーザーLaunchAgentへ移し、両process running・parent PID1・専用VPN待受・apply再実行noopを確認した。Windowsの起動タスク[PR140](https://github.com/rebuildup/pc-setup/pull/140)もUAC承認後に適用し、実機のTask XML / ACL正規化差と待受開始の遅延を区別して復旧した。標準sshdはStopped / Manualを維持する。Herdr workspaceは復元したが旧agent processは自動再開しない。OS再起動・ログアウト復帰は未検証であり、過去の成功だけを現在の常時稼働証明には使わない。
+
+## OS管理の待受へ移した後の再確認
+
+[非秘密結果](poc/herdr-after-os-service/results.json)と[hash manifest](poc/herdr-after-os-service/manifest.json)を別の観測として保存した。MacはLaunchAgent、WindowsのSSHはSYSTEM task、Windows Herdrは同basic SIDの公式detached daemon復帰後の検証。Windows Herdrのlogon自動起動はこの時点では未構築。
+
+| 操作 | 実測 |
+|---|---|
+| Mac→Windows | 公式remote snapshot / 専用workspace / Codex0.164.0起動 / prompt / assistant nonce完全一致 |
+| Macのclient切断と再接続 | 新しいTUI clientから同じagent session / paneへ別nonceを送信し、assistant応答完全一致 |
+| Windows→Mac | 実際のWindows Herdr paneからfresh NoProfile PowerShell / CLIでMacのremote snapshot / 既存専用agentへのprompt / nonce完全一致 |
+| Windowsの別CLI process | 同じMac agent / paneへの別nonceとassistant応答完全一致 |
+
+すべて実際のHerdr paneでHERDR_ENV=1を確認し、外側でこのflagを設定していない。Windows→Macの一回用検証payloadもsourcesとして保存した。raw terminal履歴、Codex conversation ID、credential / cacheはGitへ保存しない。
+
+最初のworkspace作成はSSH banner交換のtimeoutで失敗し、後続の認証確認と別attemptで成功した。またWindows Codexは既存context-mode pluginの変更確認画面に入り、初回promptがstalledとなった。Escで戻る / 閉じる操作だけを行い、新しいhook trustやglobal設定の変更は行わなかった。残った入力を消して、別nonceのツール不使用promptで応答を確認した。これらの失敗を消して単一成功扱いにはしない。
+
+この再確認も既存Tailscale経由のcontroller account同士であり、WSL worker・Headscale peer・低権限境界の証拠ではない。[WSL段階検証](windows-worker-progress-2026-10-26.md)へ分けて記録する。

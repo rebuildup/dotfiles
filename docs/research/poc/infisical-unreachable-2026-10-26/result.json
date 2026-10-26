@@ -1,0 +1,23 @@
+{
+  "checkedAt": "2026-10-26T11:54:28.274483+00:00",
+  "scope": "Child-only Infisical API reachability fault, not production server outage",
+  "wrapperCommit": "ac07808",
+  "cliVersion": "0.44.9",
+  "status": "timeout-unresolved",
+  "observationDeadlineSeconds": 30,
+  "parentHarnessKilledCliAfterDeadline": true,
+  "injectedCommandMarkerPresentAfterTimeout": false,
+  "existingMacSshPidAliveAfterTimeout": true,
+  "existingMacHerdrPidAliveAfterTimeout": true,
+  "rawErrorsOrSecretsSaved": false,
+  "providerStopped": false,
+  "conclusions": [
+    "No injected touch marker observed after deadline",
+    "Immediate failure return was not confirmed; outage requirement is not marked PASS"
+  ],
+  "notVerified": [
+    "Exact CLI retry behavior",
+    "Provider-wide outage",
+    "Worker Machine Identity expiry and outage behavior"
+  ]
+}

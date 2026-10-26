@@ -1,0 +1,68 @@
+{
+  "checkedAt": "2026-10-26T11:48:48.421204+00:00",
+  "scope": "Existing Tailscale transport, dedicated controller SSH accounts after OS service migration; not WSL worker or Headscale peer proof",
+  "versions": {
+    "herdr": "0.9.5",
+    "codex": "0.164.0"
+  },
+  "macToWindows": {
+    "profileId": "e310d40031e946d9896f29d9f600d317",
+    "workspace": "service-reconnect-mac-to-win-20261026",
+    "pane": "w4:p1",
+    "agent": "service_macwin",
+    "interactiveReady": true,
+    "firstAssistantNonce": "WIN_POC_cb3ef86206fc4a8c96615663b5242215",
+    "freshMacTuiClientAfterDetach": true,
+    "sameAgentSessionAndPane": true,
+    "secondAssistantNonce": "WIN_BACK_7d217a8ee9d5444598f5f44898a807a2",
+    "assistantLinesExact": true,
+    "realCallerHerdrEnvChecked": true,
+    "environmentFlagForged": false,
+    "initialFailures": [
+      "One SSH banner exchange timeout before workspace creation; next authenticated connection passed",
+      "Initial prompt stalled at modified existing plugin hook review; Esc back/close preserved no new trust, residual input cleared before distinct prompt"
+    ],
+    "globalPluginOrPermissionConfigModified": false
+  },
+  "windowsToMac": {
+    "first": {
+      "Status": "pass",
+      "CallerHerdrEnv": "1",
+      "CallerOS": "Windows",
+      "TargetProfile": "c0f6ac3950c614ced3b168c9e5952183",
+      "TargetVersion": "0.9.5",
+      "TargetAgent": "launchagent_check",
+      "TargetPane": "w4:p1",
+      "PromptState": "done",
+      "AssistantNonce": "MAC_W2M_62cb282430a448e7ab62eb95e5e211d1",
+      "AssistantExact": true,
+      "ToolUseRequested": false,
+      "KeysOrCachesCopied": false
+    },
+    "freshWindowsProcess": {
+      "Status": "pass",
+      "CallerHerdrEnv": "1",
+      "CallerOS": "Windows",
+      "TargetProfile": "c0f6ac3950c614ced3b168c9e5952183",
+      "TargetVersion": "0.9.5",
+      "TargetAgent": "launchagent_check",
+      "TargetPane": "w4:p1",
+      "PromptState": "done",
+      "AssistantNonce": "MAC_W2R_916f47e0bb644fb3a2ecb426139d2b37",
+      "AssistantExact": true,
+      "ToolUseRequested": false,
+      "KeysOrCachesCopied": false
+    },
+    "sameTargetAgentAndPane": true,
+    "callerPane": "w5:p1",
+    "callerWorkspace": "reverse-api-after-service-20261026"
+  },
+  "notVerified": [
+    "OS reboot or logout recovery",
+    "Windows Herdr OS logon task (not implemented at observation)",
+    "WSL worker SSH/Herdr/individual Codex login",
+    "Headscale peer transport or MTU",
+    "Low-privilege worker access boundaries and retirement"
+  ],
+  "rawReadsArchived": false
+}
