@@ -1,0 +1,12 @@
+{
+  "originalSHA256": "c24803790e74d17a5a4d5e6d8558f3819fdac89ad8bc2667235753bbb92b04a2",
+  "originalHashConfirmedByWindowsOwner": true,
+  "retrievedUsingPinnedSSH": true,
+  "sshExitCode": 0,
+  "controllerSHA256": "78008203521fb04f2ee1237ef74d5ea0ef511e63cbf6a0d0d1f7363c60507484",
+  "childSHA256": "68fe1d40e6ed40a29eaaa1eddfd6f97096aceb5b39e04ecd74845e61753eea9a",
+  "guestDiagnosticSHA256": "7be66442dba2be355389c2cf8d1dbcf92dc99a132d0eddedd4fa30f1ca5860e0",
+  "gitFile": "wsl-read-only-diagnostic-v3.json",
+  "gitSHA256": "24a473ad8616488d0c00d7786f0c96309638026178d4c860183a40d4b1648e9d",
+  "scope": "Read-only diagnostic of failed guest Verify; not effective Windows interoperability rejection proof"
+}

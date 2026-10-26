@@ -20,6 +20,14 @@ Codexはユーザーの指定どおりWSL内で個別ログインする。既存
 
 Windows担当の後続報告ではConfigureと対象distroだけのRestartが成功し、`guest-boundary-verify`で失敗した。Hold / gatewayへ進んでおらず、Windows TCP22224は未公開。元のcontrollerを再実行せず、各predicateの読取診断へ進んだ。この報告だけでWSL SSH接続や隔離成立とは扱わない。
 
+後続で[失敗結果](poc/resume-2026-10-27/wsl-configure-v4.json)をpin付きSSH / exit0で回収し、原本SHA256 `27388856d3ed84e69dd1b5750a2d2dc14afa927e25f9fc3962e23ac311a0cb6f`がWindows担当の照合結果とも一致した。[manifest](poc/resume-2026-10-27/wsl-configure-manifest.json)は原本とGit用JSONのhashを区別する。
+
+追加診断のUACは取り消され未起動だったため、worker本人の標準Windows権限で診断した。大きなEncodedCommandはCreateProcessWithLogonWの[1024文字制限](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-createprocesswithlogonw)に合わないことを実行前に検出し、短い固定commandとpublic codeのstdin入力へ変更。資格情報は引き続きSecureString経由で、codeのargv / stdinと分離した。
+
+[読み取り診断](poc/resume-2026-10-27/wsl-read-only-diagnostic-v3.json)はNativeExit0 / diagnosticなし、SID1013 / native profile / registry照合成功。鍵・設定の所有権とhashは一致し、Linux UID1000 / worker groupだけ、home0700。port22の待受なし、専用sshdはguest eth0 `172.22.157.236:22224`でactive、host keyもConfigure時と一致した。設定を変更せず、`WSLInterop`登録のenabledが元Verifyの不成立点と特定できた。[診断manifest](poc/resume-2026-10-27/wsl-diagnostic-manifest.json)に原本と保存形式のhashを残す。
+
+[Microsoft upstream実装](https://github.com/microsoft/WSL/blob/72ffe523ed428bad8252a04b6ab7d18f93d16101/src/linux/init/init.cpp)では、共有binfmtの保護と各processのinterop server生成が別に制御される。登録の存在だけで対象workerの実行可否を断定せず、非rootでの実PE起動検査を次段階とする。upstreamの確認をinstalled versionの動作証拠として流用しない。
+
 [MicrosoftのWSL security model](https://github.com/microsoft/WSL/blob/master/doc/docs/technical-documentation/security.md)は、WSLを関連Windowsユーザーと同じ信頼水準で扱い、interop / automount設定だけをcontainment boundaryにしないよう説明している。今回も専用の標準Windows SID / ACLと非sudo Linuxユーザーを使う。[Ubuntuのbinfmt解説](https://ubuntu.com/wsl/docs/stable/explanation/binfmt/)を参照し、登録の有無・実効状態・設定を区別して診断する。他distroが共有する状態を無断変更しない。
 
 ## 脆弱性情報の再確認
