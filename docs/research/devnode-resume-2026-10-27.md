@@ -6,6 +6,8 @@
 
 Macの公式Tailscaleアプリを起動すると、既存登録のままConnectedとなった。CLIでBackendState=Running、Self.Online=true、IPv4 `100.83.203.34`、Health空配列を確認。登録・control server・認可設定を変更していない。その後`bun script/devnode.ts verify --name win-uuu-recreated`は既存host pin・専用鍵・nonce一致で終了コード0。初回の失敗と復旧後の成功を分けて記録する。
 
+GUI調査ではTailscaleのLaunch at loginが無効だった。アプリ内からの有効化はOS設定を案内するerrorで適用されなかったため、System Settingsの「一般 → ログイン項目と機能拡張 → ログイン時に開く」へ既存の`/Applications/Tailscale.app`だけを追加し、一覧への反映を確認した。新しい独自LaunchAgentは作らず、VPN接続と既存登録を維持した。アプリ内checkboxは変更されなかったため、OSのログイン項目登録と同一の表示状態とは主張しない。実際の再ログイン / rebootでの自動接続は未検証。
+
 pc-setupの所有確認付き`control.sh status`では、Mac専用SSHとHerdrのLaunchAgentがrunning（PID5251 / 837）。Herdrは明示した`devnode-poc-mac-14f29b3f-cda` sessionで0.9.5 / protocol22 / compatible=trueを確認した。default sessionの停止状態を専用sessionの障害とは扱わない。これらは今回のHerdr remote API・agent応答の再検証を代替しない。
 
 その後、専用Mac sessionへTUIでattachし、shellが待機中のpaneで実際の`HERDR_ENV=1`を確認してWindows profileへ公式remote APIを呼び出した。0.9.5のsnapshotと既存`service_macwin`の応答可能状態を確認後、新nonceへのassistant応答が完全一致した。prompt echoは受け入れていない。[選択結果](poc/resume-2026-10-27/herdr-mac-to-windows.json)には会話IDやraw terminal履歴を含めない。応答後はCodexの利用量に関するモデル変更選択画面が出たが、モデルを変更していない。これはMac→Windowsの現在の実測で、前日の逆方向検証や未完了のWSLへ拡張しない。
