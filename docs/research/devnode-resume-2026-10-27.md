@@ -32,6 +32,8 @@ Windows担当の後続報告ではConfigureと対象distroだけのRestartが成
 
 [PE起動検査](poc/resume-2026-10-27/wsl-pe-probe-v1.json)では、Windows公式署名とhashを確認した`whoami.exe`をworkerの新規private領域へ置いた。Windows上の元binaryは専用SIDで正常動作し、Linux側のcopy hashは一致した。WSLの非rootユーザーからの通常環境とclean環境はいずれもexit1で、エラーの分類は`other`。これだけではinterop拒否も完全な隔離も証明しない。原本と保存版のhashは[manifest](poc/resume-2026-10-27/wsl-pe-probe-manifest.json)を参照する。
 
+[追加の読み取り検査](poc/resume-2026-10-27/wsl-pe-followup-v2.json)では、Windowsの同じ標準SIDからLinux内の同じcopyをUNC経由で実行し、exit0 / SID一致を確認した。最初の追加診断v1はUNC区切り文字の誤りを含み失敗したため、その記録を保持したうえでv2を実行した。Windows担当による元stderrの直接確認では、Linux側の両実行はいずれもWSLのvsock accept timeoutだった。今回の起動が失敗した観測であり、全てのinterop経路が拒否される証拠にはしない。[manifest](poc/resume-2026-10-27/wsl-pe-followup-manifest.json)に原本と保存版のhashを記録する。
+
 [MicrosoftのWSL security model](https://github.com/microsoft/WSL/blob/master/doc/docs/technical-documentation/security.md)は、WSLを関連Windowsユーザーと同じ信頼水準で扱い、interop / automount設定だけをcontainment boundaryにしないよう説明している。今回も専用の標準Windows SID / ACLと非sudo Linuxユーザーを使う。[Ubuntuのbinfmt解説](https://ubuntu.com/wsl/docs/stable/explanation/binfmt/)を参照し、登録の有無・実効状態・設定を区別して診断する。他distroが共有する状態を無断変更しない。
 
 ## 脆弱性情報の再確認

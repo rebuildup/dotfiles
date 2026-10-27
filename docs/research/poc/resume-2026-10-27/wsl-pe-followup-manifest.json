@@ -1,0 +1,8 @@
+{
+  "originalSHA256": "84899e9736dcf840cbb2cb77875feea10d33334d1678807aca1a945184c7c80f",
+  "originalHashConfirmedByWindowsOwner": true,
+  "sshExitCode": 0,
+  "gitFile": "wsl-pe-followup-v2.json",
+  "gitSHA256": "94009d862a21a94b7e436271aea9dde207add6ab04075411b37a091cb5d0a628",
+  "scope": "Windows execution of same Linux copy succeeds; Linux failure classification remains separate"
+}
