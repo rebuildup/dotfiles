@@ -30,6 +30,8 @@ Windows担当の後続報告ではConfigureと対象distroだけのRestartが成
 
 [Microsoft upstream実装](https://github.com/microsoft/WSL/blob/72ffe523ed428bad8252a04b6ab7d18f93d16101/src/linux/init/init.cpp)では、共有binfmtの保護と各processのinterop server生成が別に制御される。登録の存在だけで対象workerの実行可否を断定せず、非rootでの実PE起動検査を次段階とする。upstreamの確認をinstalled versionの動作証拠として流用しない。
 
+[PE起動検査](poc/resume-2026-10-27/wsl-pe-probe-v1.json)では、Windows公式署名とhashを確認した`whoami.exe`をworkerの新規private領域へ置いた。Windows上の元binaryは専用SIDで正常動作し、Linux側のcopy hashは一致した。WSLの非rootユーザーからの通常環境とclean環境はいずれもexit1で、エラーの分類は`other`。これだけではinterop拒否も完全な隔離も証明しない。原本と保存版のhashは[manifest](poc/resume-2026-10-27/wsl-pe-probe-manifest.json)を参照する。
+
 [MicrosoftのWSL security model](https://github.com/microsoft/WSL/blob/master/doc/docs/technical-documentation/security.md)は、WSLを関連Windowsユーザーと同じ信頼水準で扱い、interop / automount設定だけをcontainment boundaryにしないよう説明している。今回も専用の標準Windows SID / ACLと非sudo Linuxユーザーを使う。[Ubuntuのbinfmt解説](https://ubuntu.com/wsl/docs/stable/explanation/binfmt/)を参照し、登録の有無・実効状態・設定を区別して診断する。他distroが共有する状態を無断変更しない。
 
 ## 脆弱性情報の再確認

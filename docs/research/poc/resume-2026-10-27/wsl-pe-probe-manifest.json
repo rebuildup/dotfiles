@@ -1,0 +1,8 @@
+{
+  "originalSHA256": "ad2a730c494f5800a92f6d67dbaba117c40807b38440d17e47dfe9a54221f1ee",
+  "sourceHashVerifiedByWindowsSsh": true,
+  "sshExitCode": 0,
+  "gitFile": "wsl-pe-probe-v1.json",
+  "gitSHA256": "5b09d0f682ef8f9e0e0f877f5293a534e7ce7b05ffd158f376d6efb59883b1c1",
+  "scope": "Windows native positive control and WSL worker PE execution attempt; failure reason unclassified"
+}
