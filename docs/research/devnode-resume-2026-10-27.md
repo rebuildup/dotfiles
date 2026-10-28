@@ -49,7 +49,11 @@ VPSへのpin付き管理SSHから、`devnode-headscale-headscale-1`が公式0.29
 現在の`script/secrets-doctor`もsite / project / environment、human login、project access / runtime injectionを含め成功した。
 # 2026-10-28 追加確認
 
+その後、検査子processの`ProgramData`不足を修正し、別stageで対象専用unitを再起動、前後の設定・host鍵・listenerを照合した。gatewayの最初の試行はPowerShellのJSON日時型変換によるhold開始時刻の誤拒否で失敗。UTC ticksの厳密比較に修正した後、Mac限定のVPN TCP 22224 gatewayを作成した。
+
+MacからWSL workerのhost fingerprintを照合し、専用鍵のnonce、UID 1000 / group worker、誤鍵・root・password拒否を実測した。誤鍵検査の初回はSSH設定中の正規鍵も読み込んだため成功となったが、設定継承を切った別試行では拒否された。公式Herdr 0.9.5をworkerへ配置し、Macの公式machine addは成功、profile `4729223c1554f417f43e826826adb9e3`はreachable。Codex 0.165.0は公式配布物hashを照合し配置したが、worker個別ログインとagent応答は未検証。gatewayとholdはPoC用で再起動・復帰の耐性は未検証である。
+
 MacからWindowsへの専用SSHのnonce検証は再度成功した。pc-setup PR #143ではWSLのruntime設定、host鍵pair、親環境canary、標準ドライブmount検査の範囲を修正し、GitHubのshell、PowerShell、Windows worker、Nix checksが通過した。
 
-対象WSLの専用unit再起動前に、専用管理SSHからのInfisical資格情報取得が2回失敗した。Windows対話ユーザーのUAC経由では取得と検査stage初期化まで進んだが、再起動前の検査がRuntimeExceptionで失敗した。3回のattempt/resultを保持し、専用unit再起動、gateway公開、Holdは実施していない。原因は未確定であり、WSLへのSSH・Herdr接続も未検証である。既存の他WSLには変更を加えていない。
+対象WSLの専用unit再起動前に、専用管理SSHからのInfisical資格情報取得が2回失敗した。Windows対話ユーザーのUAC経由では取得と検査stage初期化まで進んだが、再起動前の検査がRuntimeExceptionで失敗した。この時点では再起動・gateway公開・Holdを実施していなかった。3回のattempt/resultを保持し、その後の修正と実測は上記のとおり。既存の他WSLには変更を加えていない。
 
