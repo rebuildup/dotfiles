@@ -1,4 +1,4 @@
-# Tailscale / Headscale Tailworm 対応状況（2026-10-28 JST）
+# Tailscale / Headscale Tailworm 対応状況（2026-10-28〜29 JST）
 
 ## 確認した情報
 
@@ -17,7 +17,8 @@
 - 同日のHetzner firewall証拠ではTCP443は `27.83.76.30/32` のみ、TCP80はACME用にIPv4全許可だった。今回MacからDNS A `157.180.90.160`、HTTP `/health` がHTTPSへ302 redirect、HTTPS `/health` がHTTP200/TLS verify 0を確認した。WindowsからのHTTPS healthもHTTP200だったが、Windowsのegress IPを比較していないため別public sourceからの443拒否試験とは数えない。過去のfirewall source範囲が現在も維持されているかも再確認待ち。80番からHeadscale APIへ直接到達しないことをnginx/caddy設定やpacket traceで確認していないため、302観測だけで断定しない。
 - Memory limit / restart policy はプロセスのメモリ影響と復旧を限定するが、OOM再起動による可用性喪失を防がず、DoS修正の代替ではない。Rate limitingの有無は未確認。
 - Tailscale appの公式Sparkle自動更新設定は有効。CLIの `update --dry-run` はこのstandalone macOS buildで「not supported on this platform」を返したため、miseが報告したself-update boundaryを迂回していない。Tailworm修正版の実適用と、既存node identity・接続保持は未確認。
-- Windowsの現在値は1.104.2。Computer Useのアクセス許可要求APIがこの接続で利用できず、Windows desktop/UAC更新は未実施。Windows担当は既存管理SSHキーからHeadscale VPSの過去SSH aliasを解決できず、DNS failureを確認して認証前に停止。現在のHeadscale版、container digest、ingress/memory設定は再確認できていない。
+- Mac側の最新再確認でもTailscaleは1.104.2のまま。ユーザー方針に従いMacの導入・更新経路はmiseに統一し、別配布pkgは適用しない。mise cask管理は実行中Appの自己更新境界でupgradeをskipし、AppのSparkle自動更新は有効だが、修正版への更新時期は保証されていない。
+- Windowsの現在値は1.104.2。Computer Useのアクセス許可要求APIがこの接続で利用できず、Windows desktop/UAC更新は未実施。VPSのknown_hosts pinとWindows管理鍵候補 `bps-ssh.pem` を使ったread-only SSHを試したが、root公開鍵認証は拒否された。秘密鍵内容は閲覧しておらず、別鍵は試していない。Headscaleの現行版、container digest、ingress/memory設定は再確認できていない。VPS変更なし。
 
 ## 次の対応
 
