@@ -1,0 +1,65 @@
+{
+  "schema": "rebuildup.herdr-multinode-poc/v1",
+  "observed_at": "2026-10-29",
+  "source_note": "Structured from command outputs observed in this execution. Raw terminal transcripts, credentials, private keys, Codex conversation IDs, and caches are intentionally not stored.",
+  "client": {
+    "os": "macOS",
+    "herdr_version": "0.9.5",
+    "protocol": 22,
+    "launcher": "machine-local dedicated Herdr launcher"
+  },
+  "tests": [
+    {
+      "direction": "macOS->Windows",
+      "machine_profile_id": "e310d40031e946d9896f29d9f600d317",
+      "machine_status": "reachable",
+      "remote_api": ["workspace list", "agent list", "workspace create", "pane run", "pane read"],
+      "workspace": "w6",
+      "pane": "w6:p1",
+      "label": "mac-herdr-e2e-20261029",
+      "nonce": "HERDR_E2E_WINDOWS_54ad0be8d8e3be3468e99d744d60f6a6",
+      "observed_pane_output_exact_match": true,
+      "agent_started": false,
+      "limitation": "Pane was elevated Administrator PowerShell; no coding agent was launched."
+    },
+    {
+      "direction": "macOS->WSL",
+      "machine_profile_id": "4729223c1554f417f43e826826adb9e3",
+      "machine_status": "reachable",
+      "remote_api": ["workspace list", "agent list", "workspace create", "pane split", "pane run", "pane read", "agent start", "agent prompt", "agent wait", "agent read"],
+      "workspace": "w4",
+      "pane": "w4:p2",
+      "label": "mac-herdr-e2e-20261029",
+      "runtime_user": "worker",
+      "codex_version": "0.165.0",
+      "codex_args": ["--no-daemon"],
+      "agent_state": "done",
+      "nonce": "HERDR_MAC_TO_WSL_AGENT_df1c91f89debe48eb8105a0efd248d33",
+      "assistant_response_exact_match": true,
+      "failed_attempts": [
+        "Initial pane lacked ~/.local/bin in PATH; codex command not found.",
+        "A retry without --no-daemon failed because the CLI package had no complete local daemon package."
+      ]
+    },
+    {
+      "direction": "WSL->macOS",
+      "origin_runtime_user": "worker",
+      "herdr_env_observed_in_actual_pane": "1",
+      "source_machine_profile_id": "6cf9da3f6f501e1c7952de8feb2e4825",
+      "source_machine_label": "Mac controller",
+      "source_machine_status": "reachable",
+      "remote_api": ["workspace list", "workspace create", "pane run", "pane read"],
+      "workspace": "w3",
+      "pane": "w3:p1",
+      "label": "wsl-to-mac-herdr-20261029",
+      "nonce": "HERDR_E2E_WSL_TO_MAC_06757283b8e52cfd9e1651b710b605b3",
+      "observed_pane_output_exact_match": true,
+      "agent_started": false
+    }
+  ],
+  "scope_limits": [
+    "Existing default/focused workspaces were not operated; test workspaces were created with no-focus.",
+    "All observations used the existing Tailscale tailnet, not Headscale.",
+    "This is not evidence for Windows agent execution, Windows->WSL access, worker isolation, Infisical MI, revocation, or Tailworm remediation."
+  ]
+}

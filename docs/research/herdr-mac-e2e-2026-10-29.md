@@ -2,6 +2,8 @@
 
 ## 経緯と証拠の扱い
 
+非秘密の構造化観測は[poc JSON](poc/herdr-mac-e2e-2026-10-29.json)に保存した。会話ID、raw terminal transcript、credential、private key、cacheは含めない。
+
 ユーザーから「Macから他の端末のherdrに繋がったことは一度もありません」と指摘を受けた。2026-10-26/27記録のMac発Herdr成功主張を撤回し、当時のJSON・hashは履歴保全だけに残す。以下は独立した新規named workspace/paneを使って当日再実行した結果であり、旧ログに依存しない。
 
 Macの専用clientは`~/.local/state/dotfiles/herdr-poc/mac-14f29b3f-cda1-4acf-9f18-26d35f8d6074/herdr-poc`。Herdr 0.9.5、protocol 22。既存default/focused workspaceは操作せず、全workspaceは`--no-focus`で作成した。確認は公式machine API / pane API経由。Windows paneは管理者PowerShellであり、安全上Codex agentを起動していない。
