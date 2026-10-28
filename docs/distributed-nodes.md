@@ -1,10 +1,10 @@
 # 分散開発ノード: 実装・検証計画
 
-状態: 設計承認済み。[Git設定更新・表示名同期](devnode-config-sync.md)を追加実装中。旧Mac発Herdr成功報告はユーザー指摘により撤回。2026-10-29にMac↔WSLのnonce往復、Mac→WSL Codex応答、Mac→Windows pane実行を新規検証した。Windows agent応答、常用化、Headscale経由、join/leaveは未完了。prepare/trust/verifyの専用SSH試験結果は別記録を参照。
+状態: 設計承認済み。[Git設定更新・表示名同期](devnode-config-sync.md)を追加実装中。2026-10-29のMac↔WSL/Windows nonce・pane操作は一回のAPI応答の記録に限定し、Herdr UIの安定接続証明から除外する。後続の実画面確認ではMac側Windows/WSLが`Reconnecting`、Windows側WSLが未接続、WSL側はlocalのみ。Herdr常用の相互接続は未達。[後続状態記録](research/herdr-mac-e2e-2026-10-29.md)参照。Windows agent応答、Headscale経由、join/leaveも未完了。prepare/trust/verifyの専用SSH試験結果は別記録を参照。
 
 [Issue #74](https://github.com/rebuildup/dotfiles/issues/74) / [提案ADR](adr/distributed-development-nodes.md) / [調査と証拠](research/distributed-nodes-2026-10-24.md)
 
-[2026-10-27の再開検査](research/devnode-resume-2026-10-27.md)のHerdr成功主張は2026-10-29に撤回。[Herdr再検証](research/herdr-mac-e2e-2026-10-29.md)に新しい接続証跡を記録。
+[2026-10-27の再開検査](research/devnode-resume-2026-10-27.md)のHerdr成功主張は2026-10-29に撤回。[Herdr一回API操作と後続実画面の差分](research/herdr-mac-e2e-2026-10-29.md)に記録。
 
 ## 現在使える接続PoC
 
