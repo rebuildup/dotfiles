@@ -1,10 +1,10 @@
 # 分散開発ノード: 実装・検証計画
 
-状態: 設計承認済み。[Git設定更新・表示名同期](devnode-config-sync.md)を追加実装中。Mac↔Windows Herdr/agent PoC成功、常用化とWSLは継続。prepare/trust/verifyを実装し、Mac→Windowsの専用SSH往復、誤鍵/別user/password-onlyの拒否、撤去後非到達、再Bootstrap後の旧host pin/旧client key拒否と新鍵nonceが実機で成功。join/leave等は未実装。
+状態: 設計承認済み。[Git設定更新・表示名同期](devnode-config-sync.md)を追加実装中。旧Mac発Herdr成功報告はユーザー指摘により撤回。2026-10-29にMac↔WSLのnonce往復、Mac→WSL Codex応答、Mac→Windows pane実行を新規検証した。Windows agent応答、常用化、Headscale経由、join/leaveは未完了。prepare/trust/verifyの専用SSH試験結果は別記録を参照。
 
 [Issue #74](https://github.com/rebuildup/dotfiles/issues/74) / [提案ADR](adr/distributed-development-nodes.md) / [調査と証拠](research/distributed-nodes-2026-10-24.md)
 
-[2026-10-27の再開検査](research/devnode-resume-2026-10-27.md): Mac VPN復帰後の専用SSH再成功、常設Mac sessionとHeadscaleの現状態を確認。WSLは設定・再起動後の検査で停止しており、SSH / Herdrの成功には数えない。
+[2026-10-27の再開検査](research/devnode-resume-2026-10-27.md)のHerdr成功主張は2026-10-29に撤回。[Herdr再検証](research/herdr-mac-e2e-2026-10-29.md)に新しい接続証跡を記録。
 
 ## 現在使える接続PoC
 
@@ -81,4 +81,4 @@ leave/repairは段階別外部結果を照合する。retiredをactiveに戻すr
 
 dotfilesは`script/test`、`script/test-workflow`、`script/check-secrets`、適用する`script/check`/`script/secrets-doctor`を実行する。pc-setupの実装時は同repoの`scripts/ci.sh`とOS別検証を行う。未達/未検証の必須PoCが残る限り完成とはしない。
 
-[設定更新と表示名の運用](devnode-config-sync.md) / [Herdr実測](research/herdr-bidirectional-poc-2026-10-26.md)。
+[設定更新と表示名の運用](devnode-config-sync.md) / [旧Herdr報告（成功主張撤回）](research/herdr-bidirectional-poc-2026-10-26.md) / [2026-10-29再検証](research/herdr-mac-e2e-2026-10-29.md)。

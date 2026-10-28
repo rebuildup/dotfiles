@@ -1,4 +1,6 @@
-# 分散ノードの再開検査（2026-10-27 JST）
+# 分散ノードの再開検査（2026-10-27 JST・Herdr成功主張は撤回）
+
+> **訂正（2026-10-29）:** ユーザーの指摘により、以下のMac→Windows / Mac→WSL Herdr成功記録は接続成功の根拠として撤回した。保存された操作ログでは対象Herdr paneへ到達したことを独立に確認できない。新しい別workspace/paneでの検証結果は[2026-10-29記録](herdr-mac-e2e-2026-10-29.md)。SSH結果とHerdr結果は別扱いとする。
 
 ## 接続復旧
 
@@ -10,7 +12,7 @@ GUI調査ではTailscaleのLaunch at loginが無効だった。アプリ内か�
 
 pc-setupの所有確認付き`control.sh status`では、Mac専用SSHとHerdrのLaunchAgentがrunning（PID5251 / 837）。Herdrは明示した`devnode-poc-mac-14f29b3f-cda` sessionで0.9.5 / protocol22 / compatible=trueを確認した。default sessionの停止状態を専用sessionの障害とは扱わない。これらは今回のHerdr remote API・agent応答の再検証を代替しない。
 
-その後、専用Mac sessionへTUIでattachし、shellが待機中のpaneで実際の`HERDR_ENV=1`を確認してWindows profileへ公式remote APIを呼び出した。0.9.5のsnapshotと既存`service_macwin`の応答可能状態を確認後、新nonceへのassistant応答が完全一致した。prompt echoは受け入れていない。[選択結果](poc/resume-2026-10-27/herdr-mac-to-windows.json)には会話IDやraw terminal履歴を含めない。応答後はCodexの利用量に関するモデル変更選択画面が出たが、モデルを変更していない。これはMac→Windowsの現在の実測で、前日の逆方向検証や未完了のWSLへ拡張しない。
+当時の記録は専用Mac sessionからWindows profileへ接続し、agent応答が一致したと報告していた。このMac→Windows成功主張は2026-10-29にユーザーから否定され、証拠として撤回した。当時保存した選択結果は履歴のため保持するが、接続成立を示すものとは扱わない。新しい独立検証は[2026-10-29記録](herdr-mac-e2e-2026-10-29.md)を参照。
 
 ## WSL設定のレビュー境界
 
@@ -53,9 +55,9 @@ VPSへのpin付き管理SSHから、`devnode-headscale-headscale-1`が公式0.29
 
 その後、検査子processの`ProgramData`不足を修正し、別stageで対象専用unitを再起動、前後の設定・host鍵・listenerを照合した。gatewayの最初の試行はPowerShellのJSON日時型変換によるhold開始時刻の誤拒否で失敗。UTC ticksの厳密比較に修正した後、Mac限定のVPN TCP 22224 gatewayを作成した。
 
-ユーザーがWSL内でCodexへ個別ログインした後、Macの実際のHerdr paneからWSLの専用workspaceとCodex 0.165.0を起動し、promptとassistant応答のnonce完全一致を確認した。新しいCLI processから同じagentへ別nonceを送って応答が一致したことも確認した。単体binaryは最初daemon用package不足で起動失敗し、`--no-daemon`で再試行した。逆方向はWSL内で固有SSH鍵を生成し、公開鍵のみMacの今回専用authorized_keysにWindows VPN IPを条件として追加した。WSLからMac host pinとSSH nonceを確認し、公式machine addで別named Mac sessionを登録、実際のWSL Herdr paneからMacのCodex 0.164.0を起動して別nonceのassistant応答完全一致を確認した。Macの既存named sessionはdetached server capabilityがfalseで保存登録に失敗したため、既存sessionを停止せず別sessionを用いた。WSLのhost名とVPN IPは接続属性であって論理identityではない。
+当時の記録はMacからWSLのCodexを起動しnonce応答を得たと報告していた。このMac→WSL成功主張は2026-10-29にユーザーから否定され、証拠として撤回した。Codexの個別ログイン、SSH、Herdr登録の状態はそれぞれ別の事実であり、旧E2E claimを補強しない。
 
-MacからWSL workerのhost fingerprintを照合し、専用鍵のnonce、UID 1000 / group worker、誤鍵・root・password拒否を実測した。誤鍵検査の初回はSSH設定中の正規鍵も読み込んだため成功となったが、設定継承を切った別試行では拒否された。公式Herdr 0.9.5をworkerへ配置し、Macの公式machine addは成功、profile `4729223c1554f417f43e826826adb9e3`はreachable。Codex 0.165.0は公式配布物hashを照合し配置した。gatewayとholdはPoC用で再起動・復帰の耐性、Windows→WSL直接接続、複数WSL、失効とMachine Identityは未検証である。
+当時のSSH・ユーザー境界検査とHerdr登録成功の記録は保存されているが、Mac→WSL Herdr接続の主張はユーザー指摘により撤回した。新しい実接続記録は[2026-10-29記録](herdr-mac-e2e-2026-10-29.md)を参照する。gatewayとholdはPoC用で再起動・復帰の耐性、Windows→WSL直接接続、複数WSL、失効とMachine Identityは未検証である。
 
 MacからWindowsへの専用SSHのnonce検証は再度成功した。pc-setup PR #143ではWSLのruntime設定、host鍵pair、親環境canary、標準ドライブmount検査の範囲を修正し、GitHubのshell、PowerShell、Windows worker、Nix checksが通過した。
 
@@ -71,5 +73,5 @@ WSL workerのsshdはroot専有のpc-setup runtime設定・authorized_keysを使�
 
 今回の接続診断中、WSL→Mac用の秘密鍵内容を誤って診断出力へ含めたため、鍵を再利用せずローテーションした。新しい秘密鍵はWSL内で生成したままにし、Macの専用authorized_keysから旧公開鍵を削除、新公開鍵へ交換した。交換後にWSL→MacのSSH nonce往復が成功し、Mac側に残る公開鍵は今回のWindows鍵と新しいWSL鍵の2件である。Windowsの鍵認証には影響していない。
 
-Windows側の既存Herdr標準版は0.9.3で、以前のPoC用公式0.9.5 packageもside-by-side pathに残っている。一方、この作業シェルには `HERDR_ENV=1` がなく、Herdr skillの規則上、そこからmachine catalogやpaneを操作しなかった。WSLではHerdr 0.9.5 serverが動作し、保存machineはMac controllerのみ。Mac→WSLのE2E証拠は前段に記録済みだが、Windows→WSLは鍵登録と実際のHerdr管理paneから検証する必要がある。
+Windows側の既存Herdr標準版は0.9.3で、以前のPoC用公式0.9.5 packageもside-by-side pathに残っている。一方、この作業シェルには `HERDR_ENV=1` がなく、Herdr skillの規則上、そこからmachine catalogやpaneを操作しなかった。WSLではHerdr 0.9.5 serverが動作し、保存machineはMac controllerのみ。過去のMac→WSL E2E主張は撤回済み。Windows→WSLは鍵登録と実際のHerdr管理paneから別途検証する必要がある。
 

@@ -1,6 +1,6 @@
 # 分散開発ノードの認証・接続境界
 
-- 状態: 設計承認済み（2026-10-24）。Mac↔Windowsの専用SSH・Herdr/agent操作PoC成立。Headscale単一Mac登録を検証。本登録・WSL・Headscale間通信は継続検証
+- 状態: 設計承認済み（2026-10-24）。Mac↔Windows専用SSHは検証済み。2026-10-26/27のMac発Herdr成功主張はユーザー指摘を受け撤回し、2026-10-29に新workspaceでMac↔WSL操作を再検証。Headscale単一Mac登録を検証。本登録・WSLの再生成・Headscale間通信は継続検証
 - 日付: 2026-10-24
 - 実装追跡: https://github.com/rebuildup/dotfiles/issues/74
 - 関連: [調査と実機証拠](../research/distributed-nodes-2026-10-24.md)、[段階的実装計画](../distributed-nodes.md)
@@ -120,7 +120,7 @@ Infisical停止中は新規join/token更新/新規secret取得を拒否する。
 
 ## 2026-10-26時点の到達点
 
-[Herdr相互接続PoC](../research/herdr-bidirectional-poc-2026-10-26.md)で、Mac↔Windowsの公式machine登録、remote API、専用workspace/pane、Codex起動・prompt・応答回収を実測した。Windowsは公式daemon起動で`detached_server_daemon=true`を満たす必要がある。controller account同士の検証であり、低権限workerの隔離証拠ではない。
+[旧Herdr相互接続PoC記録](../research/herdr-bidirectional-poc-2026-10-26.md)と[2026-10-27再開記録](../research/devnode-resume-2026-10-27.md)にあるMac発の成功主張は、ユーザーの指摘を受け撤回した。2026-10-29の独立再試験ではMac→Windowsのpane nonce往復、Mac→WSLのpane nonce往復とWSL上Codexのassistant応答を確認した。WSL→Macも実際のWSL Herdr paneからMac paneのnonceを読み戻した。証跡と制約は[再検証記録](../research/herdr-mac-e2e-2026-10-29.md)。Windows agent操作、低権限worker隔離、Headscale経由は未検証。
 
 [Headscale登録PoC](../research/headscale-enrollment-poc-2026-10-25.md)では既存GUIと独立したMac userspace clientの登録と、一回用資格情報の期限前再利用拒否・撤去を確認した。peer間通信とrole policy・MTU・障害時挙動は未検証。登録資格情報を撤去しても既存nodeは残るため、node retirementとは区別する。
 

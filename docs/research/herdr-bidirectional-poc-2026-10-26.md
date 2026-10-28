@@ -1,4 +1,6 @@
-# Mac・Windows間のHerdr相互接続PoC
+# Mac・Windows間のHerdr相互接続PoC（旧報告・成功主張撤回）
+
+> **訂正（2026-10-29）:** ユーザーから「Macから他の端末のHerdrに繋がったことは一度もない」と報告を受けた。以下は当時の記録とコマンド出力を保存した履歴だが、Mac発の接続成功・相互接続・agent応答成功の証拠としては採用しない。過去の成功記述は撤回済み。独立した再検証結果は[2026-10-29の再検証](herdr-mac-e2e-2026-10-29.md)を参照する。raw JSONとhashは履歴保全のため残し、成功根拠として扱わない。
 
 2026-10-26 JST。関連: [設計](../adr/distributed-development-nodes.md)、[dotfiles PR75](https://github.com/rebuildup/dotfiles/pull/75)、[pc-setup PR131](https://github.com/rebuildup/pc-setup/pull/131)。Mac↔Windows controller間の相互接続・agent操作を実測した。下記の対象範囲に限定した結果である。
 
@@ -39,7 +41,7 @@ Macの機械固有resourceは`~/.local/state/dotfiles/herdr-poc/mac-14f29b3f-cda
 server停止・profile削除・SSH撤去はそれぞれ別操作である。profileを消すだけではserverや鍵を失効しない。既存session/profile、標準sshd、他SSH alias、既存WSLを巻き込まない。再接続のtimeout時は同じmutationを再送する前に対象workspace/pane一覧を確認する。
 
 
-## 双方向の成功結果
+## 旧記録に記載されていた「双方向の成功結果」（撤回）
 
 | 検査 | Mac→Windows | Windows→Mac |
 | --- | --- | --- |
