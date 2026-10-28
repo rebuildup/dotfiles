@@ -40,6 +40,8 @@ Windows担当の後続報告ではConfigureと対象distroだけのRestartが成
 
 GitHubの公式latest release APIを再確認し、Tailscaleは[v1.104.2](https://github.com/tailscale/tailscale/releases/tag/v1.104.2)、Headscaleは[v0.29.6](https://github.com/juanfont/headscale/releases/tag/v0.29.6)だった。[Tailscale公式bulletin](https://tailscale.com/security-bulletins)の最新掲載はTS-2026-013。既に実施した更新・公開範囲制限の証拠は[10月26日の調査](network-security-2026-10-26.md)を参照する。更新版がTailwormの全指摘を解決したとは判断しない。
 
+この段落は10月27日までの観測である。10月28日にTailscale v1.104.4とTS-2026-014〜017が公開されたため、上記の「latest」記載は現時点の推奨版ではない。Mac / Windowsの実測版はv1.104.2で、Mac更新は管理者認証待ち。HeadscaleのTailworm関連DoS修正はv0.29.6に含まれると確認できず、Headscale PR #3586はDraftのため、運用serverの再確認と到達範囲の緩和が必要。[追加の脆弱性確認記録](tailscale-headscale-tailworm-2026-10-28.md)。
+
 VPSへのpin付き管理SSHから、`devnode-headscale-headscale-1`が公式0.29.6 imageでhealthyなことを読取確認した。許可元から`https://headscale.rebuildup.dev/health`はHTTP200 / TLS検証0。外部からの拒否試験や多ノード通信の証拠ではない。
 
 ## ローカル検査
