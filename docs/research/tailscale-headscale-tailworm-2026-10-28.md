@@ -13,9 +13,10 @@
 - Windowsへ今回の専用SSH鍵でread-only接続し、レジストリと公式CLIの表示で v1.104.2を再確認。`debug prefs` は `RunSSH=false`, `ServeConfig=null`, `AdvertiseRoutes=null`。今回のWindows構成でもTailwormのTailscale SSH／Serve条件は見えなかったが、クライアントの版は修正版未満。
 - 公式CLI `tailscale update --dry-run` は 1.104.4を提示。`--yes` は公式1.104.4 amd64 MSIを取得し、署名とAuthenticodeを検証、終了コード0を返したが、約10秒後の実行ファイルProductVersionと更新時刻は1.104.2 / Oct20のまま、serviceはrunning、identityはonlineだった。更新は未完了。Windows管理者/UACを伴うデスクトップ導入経路の確認・適用を再依頼した。
 - VPSの前回の読取証拠（10月26日）では公式 Headscale v0.29.6 image / healthy、container memory limit 512 MiB、swap limit 1 GiB、restart policy `unless-stopped`、embedded DERP無効、明示deny-all policy。これは今回の再実測ではない。
-- 同日のHetzner firewall証拠ではTCP443は `27.83.76.30/32` のみ、TCP80はACME用にIPv4全許可だった。今回MacからDNS A `157.180.90.160`、HTTP `/health` がHTTPSへ302 redirect、HTTPS `/health` がHTTP200/TLS verify 0を確認した。別public sourceからの443拒否は未検証で、過去のfirewall source範囲が現在も維持されているかも再確認待ち。80番からHeadscale APIへ直接到達しないことをnginx/caddy設定やpacket traceで確認していないため、302観測だけで断定しない。
+- 同日のHetzner firewall証拠ではTCP443は `27.83.76.30/32` のみ、TCP80はACME用にIPv4全許可だった。今回MacからDNS A `157.180.90.160`、HTTP `/health` がHTTPSへ302 redirect、HTTPS `/health` がHTTP200/TLS verify 0を確認した。WindowsからのHTTPS healthもHTTP200だったが、Windowsのegress IPを比較していないため別public sourceからの443拒否試験とは数えない。過去のfirewall source範囲が現在も維持されているかも再確認待ち。80番からHeadscale APIへ直接到達しないことをnginx/caddy設定やpacket traceで確認していないため、302観測だけで断定しない。
 - Memory limit / restart policy はプロセスのメモリ影響と復旧を限定するが、OOM再起動による可用性喪失を防がず、DoS修正の代替ではない。Rate limitingの有無は未確認。
 - Tailscale v1.104.4 macOS `.pkg` を公式 stable package serverから取得。公式 `.sha256` と実ファイルのSHA-256が一致し、Developer ID Installer が Tailscale Inc. (W5364U7YZB)、Apple notarization trusted を確認。`sudo -n` は管理者パスワード要求で失敗したため、インストールは未実施。ファイルは `/tmp/Tailscale-1.104.4-macos.pkg` にあり、管理者認証後に利用できる。既存Tailscale stateやログインは変更していない。
+- Windows担当の Computer Use session にはアプリ権限用 `request_access` APIがないため、Windowsデスクトップ/UACへアクセスできず、更新未実施。SSH経由での更新は1.104.2のままなので、成功扱いにしていない。
 
 ## 次の対応
 
