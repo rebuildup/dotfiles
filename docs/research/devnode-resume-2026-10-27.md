@@ -61,3 +61,15 @@ MacからWindowsへの専用SSHのnonce検証は再度成功した。pc-setup PR
 
 対象WSLの専用unit再起動前に、専用管理SSHからのInfisical資格情報取得が2回失敗した。Windows対話ユーザーのUAC経由では取得と検査stage初期化まで進んだが、再起動前の検査がRuntimeExceptionで失敗した。この時点では再起動・gateway公開・Holdを実施していなかった。3回のattempt/resultを保持し、その後の修正と実測は上記のとおり。既存の他WSLには変更を加えていない。
 
+## 2026-10-28 Windows→WSL接続確認
+
+Windows `UUU\basic` から `100.118.123.62:22224` へ接続し、Windows portproxyの転送先 `172.22.157.236:22224` のWSL SSHDまでTCP接続した。Mac側で保存済みのWSL host key pinと一致したが、Windows専用公開鍵は `Permission denied (publickey)` で拒否された。WSL側のSSH接続情報はsource `172.22.144.1`、destination `172.22.157.236:22224`。Windows専用鍵はWindowsユーザーのmachine-local領域で生成しただけで、WSLへ登録していない。
+
+Windowsの現在の `wsl.exe --list --verbose` / HKCU distro registryには `Ubuntu` のみが登録されている。同環境は `172.22.156.22`、machine-id SHA256 `0627f92ceb85ef1022bb5406b6c8866ec4aaee4f30e83197676b132ee2babdbf`、`/home/worker`なし。portproxy先のWSL workerは `172.22.157.236`、machine-id SHA256 `c61060201ed31bcdddf294a77296cd337bcc1251cbee9bd1326dffebab633a72`、`/home/worker`あり。したがって、Windowsの登録済みUbuntuをworker本体として扱えない。`Ubuntu2` KeepAliveタスクは残っているが、同名distroの登録は確認できず、taskの実行結果も失敗だった。
+
+WSL workerのsshdはroot専有のpc-setup runtime設定・authorized_keysを使い、workerの `~/.ssh/authorized_keys` は未作成で、workerにsudo権限もない。pc-setupの `Initialize-WorkerSshStage` が公開鍵をroot管理のauthorized_keysとmanifestへ一緒に登録する正式経路であり、手動追記は既存Verifyと不整合になる。実際に使うWindows SSH鍵をまだ受け入れられていないので、Windows→WSLのHerdr操作は未完了。
+
+今回の接続診断中、WSL→Mac用の秘密鍵内容を誤って診断出力へ含めたため、鍵を再利用せずローテーションした。新しい秘密鍵はWSL内で生成したままにし、Macの専用authorized_keysから旧公開鍵を削除、新公開鍵へ交換した。交換後にWSL→MacのSSH nonce往復が成功し、Mac側に残る公開鍵は今回のWindows鍵と新しいWSL鍵の2件である。Windowsの鍵認証には影響していない。
+
+Windows側の既存Herdr標準版は0.9.3で、以前のPoC用公式0.9.5 packageもside-by-side pathに残っている。一方、この作業シェルには `HERDR_ENV=1` がなく、Herdr skillの規則上、そこからmachine catalogやpaneを操作しなかった。WSLではHerdr 0.9.5 serverが動作し、保存machineはMac controllerのみ。Mac→WSLのE2E証拠は前段に記録済みだが、Windows→WSLは鍵登録と実際のHerdr管理paneから検証する必要がある。
+
