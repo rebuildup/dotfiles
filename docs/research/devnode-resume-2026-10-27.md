@@ -47,3 +47,9 @@ VPSへのpin付き管理SSHから、`devnode-headscale-headscale-1`が公式0.29
 再開時の`script/test`、`script/test-workflow`、`script/check-secrets`は終了コード0。workflow中の意図的なtimeout / 不正fixture拒否を検査全体の失敗と混同しない。共通join / leave、worker MI、WSL再生成やHeadscaleでの複数ノード間通信の完成証拠ではない。
 
 現在の`script/secrets-doctor`もsite / project / environment、human login、project access / runtime injectionを含め成功した。
+# 2026-10-28 追加確認
+
+MacからWindowsへの専用SSHのnonce検証は再度成功した。pc-setup PR #143ではWSLのruntime設定、host鍵pair、親環境canary、標準ドライブmount検査の範囲を修正し、GitHubのshell、PowerShell、Windows worker、Nix checksが通過した。
+
+対象WSLの専用unit再起動前に、専用管理SSHからのInfisical資格情報取得が2回失敗した。Windows対話ユーザーのUAC経由では取得と検査stage初期化まで進んだが、再起動前の検査がRuntimeExceptionで失敗した。3回のattempt/resultを保持し、専用unit再起動、gateway公開、Holdは実施していない。原因は未確定であり、WSLへのSSH・Herdr接続も未検証である。既存の他WSLには変更を加えていない。
+
