@@ -121,3 +121,5 @@ WSLの個別Codex login statusはChatGPT login。試験paneで`codex exec --skip
 品質上の残件：workerのCodex0.165.0は単体binaryのみで`codex-code-mode-host`が欠落、Code Modeはfail closed。bwrapはPATHになくbundled fallbackの警告。単純応答は成功したが開発tool実行の完成とはしない。公式release APIにはfull package `codex-package-x86_64-unknown-linux-musl.tar.gz` SHA256 `e97c4463d7f146692a955d7b0e1c8cf48f97cd4d616cd45c5dcab2e8d9743316`があり、pc-setup側の再現可能なruntime導入手順で対応する。個別loginはコピーしない。[公式release](https://github.com/openai/codex/releases/tag/rust-v0.165.0)。
 
 Macの公式remote TUIを再接続し、Ctrl+B 2で試験tabを選択。実際のTUI描画に`connection-check`、`DEVNODE_WSL_AGENT_OK 391`、`CODEX_TEST_EXIT=0`を確認した。API読取だけでなくremote attachの描画も確認後、Ctrl+B qでdetach終了0。WSL user/hostはworker@UUU。2tabは同じserver/sessionの`w1:t1`と`w1:t2`で、clientの選択追従は要求しない。Windowsからの同tab表示は別途未検証。
+
+現行`devnode machines status`もWindows/WSL両方を`reachable`と返した。WSL worker catalogに残る認可撤回済みMac profile `b588309caf2d43f692d778147e6ac6ac`は公式`machine disable`で無効化し、同ID/target/sessionのままenabled=falseを確認。Macのserver/session/paneを変更していない。workerにoperator権限を与えず、WSL人間operatorの実行経路は別の受入項目として残す。

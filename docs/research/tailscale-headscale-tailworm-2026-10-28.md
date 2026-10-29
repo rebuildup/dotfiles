@@ -1,4 +1,6 @@
-# Tailscale / Headscale Tailworm 対応状況（2026-10-28〜29 JST）
+# Tailscale / Headscale Tailworm 対応状況（2026-10-28〜30 JST）
+
+現在の状態（2026-10-30 JST）：TailscaleはMac/Windowsとも修正版1.104.4。Headscale0.29.6は未修正の上流問題と現行edge制限の未確認が残るため、登録node0のPoCコンテナを一時停止した。以下の旧観測は履歴であり、末尾の再確認・停止結果を優先する。
 
 ## 確認した情報
 
@@ -55,3 +57,15 @@
 - Windows側でVPSを読み取り確認したところ、Caddy/nginx/Traefik/HAProxyは導入されておらず、調査したHeadscale/proxy設定にもrate-limit directiveはなかった。Composeはhost `0.0.0.0:80`をHeadscale container `8080`へ、`0.0.0.0:443`を`8443`へ直接mapする。`cloudflared.service`はactiveだが、unitから実効ingress policyは確認できなかった。MacからHTTP GETした`/health`、`/key`、`/ts2021`はいずれも同じHTTPS pathへの302だった。HTTP endpointがredirectすることは確認したが、外部HTTPSの拒否やrate limitを証明する結果ではない。
 - VivaldiでHetzner Consoleのsecurity verification後、対象projectのfirewall一覧に`tastile-infisical-ssh-only`が`Fully applied`、4 rules、1 serverとして表示された。詳細画面を開くブラウザークリックは操作層で2回失敗したため、現在のCIDR ruleは取得できていない。firewall・VPS設定・serviceの変更はしていない。最後に保存したrule snapshotはTCP443の送信元を`27.83.76.30/32`、TCP80をACME用IPv4許可としているが、現行値は未確認。
 - 対応状況: Tailscale nodeは修正版`1.104.4`。Headscaleは`v0.29.6+dirty`で、Tailwormのpending-authentication resource-exhaustionに対する上流修正は未確認。過去のingress allowlist、512 MiB memory limit、128 PID limit、restart supervisionは封じ込め策に過ぎず、修正の証明にもservice interruptionの防止にもならない。現行allowlistを維持し、firewall policyと上流対策を確かめるまで新しい送信元networkから登録しない。IPv4/IPv6全体へ公開範囲を広げない。この報告のHeadscale影響はcontrol/registration availabilityに関するもので、peer dataの機密性侵害を示す証拠はない。
+
+## 2026-10-30 上流再確認と公開停止
+
+公式確認では最新正式releaseは依然[v0.29.6](https://github.com/juanfont/headscale/releases/tag/v0.29.6)。[#3586](https://github.com/juanfont/headscale/pull/3586)はDraft解除済みだがopen・未mergeで、修正版releaseは未確認。[#3587](https://github.com/juanfont/headscale/pull/3587)は登録前のlock map増大を扱い未merge。[#3571](https://github.com/juanfont/headscale/issues/3571)はmetrics listener無効でも未登録Noise clientへmetricsが露出する報告で、通常HTTPS path filterではNoise内部を制限できない。準備中の0.29.7 [#3625](https://github.com/juanfont/headscale/pull/3625)も未release。最新正式版という理由で安全とは判定しない。
+
+VPSの再実測ではHeadscale0.29.6+dirty、commit `a2b1d7863926834e94479dcdd91ab344a9356bd0`、image digest `sha256:cabe84f0699913dbca9320f0883dca7565dd08df3c5be29edfabbebeff763966`。登録nodeは0。deny-all policy、embedded DERP無効、memory512MiB/CPU1/PID128/capdropALL/no-newprivilegesは維持されていた。DockerはIPv4/IPv6全interfaceで80/443を公開し、hostのDOCKER-USERは空、source allowlist/rate limitを確認できなかった。Hetznerの現行CIDRは未確認。Vivaldiに接続したChrome extensionへ管理画面tabを作る操作がtimeoutし、その空tab取得がbrowser URL policyで拒否されたため、別browserやraw CDP等で回避していない。
+
+現行公開面を保証できず、Headscaleを利用中のnodeもないため、VPS管理SSHで今回所有する`devnode-headscale-headscale-1`だけを`docker stop`した。事前に登録0、image digest、Compose所有root `/srv/devnode-headscale`、restart policy `unless-stopped`を確認。停止後は`exited 0 unless-stopped`、host TCP80/443のlistenerなしを確認した。コンテナ・設定・DBを削除していない。
+
+同時点でInfisical backend/DB/Redisは稼働し、`https://secrets.rebuildup.dev/api/status`はHTTP成功・message Ok・redisConfigured=trueを返した。Mac→Windows/WSLの既存Tailscale経路はHeadscaleを使っておらず、Herdr実作業への接続と切り離せる。この一時停止は上流修正の適用ではなく公開面を閉じる暫定措置。
+
+再開前に、正式修正releaseのadvisory・対象digestを確認し、既存stateのbackup後にpc-setup管理Composeを更新する。先にHetzner IPv4/IPv6双方の443 source制限または同等のhost制限を確認・検証し、認可されたsourceだけでhealth/TLS/policyを検証する。公開範囲を広げたまま起動しない。既存コンテナの単純復帰操作は`docker start devnode-headscale-headscale-1`だが、上記gatesを満たす前の日常起動手順としては使わない。停止によるACME更新停止も含め、再開時は証明書有効性を再確認する。
