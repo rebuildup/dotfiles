@@ -93,3 +93,13 @@ Windows repair codeはpc-setup PR143の4e08a23f958c18ccf80cc119e650bbe2efc97bc1�
 ユーザーが固定controllerを実行。result-RepairController-v1.jsonはStatus=failed、Phase=restart-worker-and-repair-owned-gateway、FailureType=RuntimeException。source SHA・SID・host pinは期待値と一致したが、CurrentAddress/HoldPIDはnull。SSH22224も未復旧。Windows側の管理者read-only事後診断ではrepair manifestのみ作成、journal空、worker process無し、旧mapping保持。失敗はhold intent保存・mapping変更より前のcredentialed V3検証呼出しに絞った。旧結果や証跡は上書きせず、次versionで非秘密の段階・exit code telemetryを追加する。
 
 画面共有の最終仕様はユーザーの回答「同じtabを選べば内容が一致すればよい」。各clientが別tabを選べるHerdr公式動作を許容し、選択focusの自動同期や別の画面共有基盤は追加しない。
+
+## 2026-10-30 再開時の再検証
+
+- WindowsのV2結果をMacから専用SSHで回収。`FailureStep=read-only-v3-verification`、`Expected fresh credentialed guest verification.`。Windows側調査ではV3 reportにV1 validatorを適用した不具合であり、credential失敗とは扱わない。修正PR143 `a2f7813c2251a11a271f1bd2cb45784cc4db6976`。
+- Windows上の`controller-repair-v3.ps1`をSHA256 `8B55FCFF98FF18DF3454BB1EB446145F349B45D31A38FF41E63CAC6472A08B6E`と照合。結果ファイルはまだ存在せず、人間へ管理者PowerShellで手動実行を依頼。前回の自動承認レビューによるsecret/admin controller実行拒否を回避しない。
+- Macのmachine catalogはWindows実`default` profile `3202e4b584c237bb11db58dddc10d640`、WSL専用profile `4729223c1554f417f43e826826adb9e3`の2件。
+- Macの専用runtime cloneの`mise run nodes`を実行。`1288919`から`9f12c79`へfast-forward、表示設定はnoop、実`default`とWindows Ae_Restro表示を確認してCtrl+B qでdetach、終了0。新規workspaceは作成していない。WSLはconnecting/reconnectingのまま。
+- MacからWindowsの公式`workspace list`はAe_Restro `wE`、2tab/2pane、active試験tab `wE:t2`を返した。CLIに`--json`は未対応でusage失敗したため、そのflagを外して再確認した。
+- `script/test`、`script/test-workflow`、`script/check-secrets`、`git diff --check`は成功。実`script/secrets-doctor`はself-hosted Infisicalのlogin、project access/runtime injectionまで成功。`script/check`はprimary checkoutを指す既存HOMEリンクとOS別missing、既存Claude設定差異で失敗し、worktreeへHOMEリンクを勝手に付け替えていない。
+- 未完：WSL V3修復、fresh Mac鍵登録、WSL実Herdr・拒否試験、Windows native再接続証拠、OS再起動後の復旧、別WSL再生成。起動入口の単回成功を再利用可能な基盤の完成とは扱わない。

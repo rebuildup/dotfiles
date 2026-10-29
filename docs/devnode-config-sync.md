@@ -29,9 +29,9 @@ fetchはremote refを読むためネットワークと通常のGit認証を使�
   "version": 1,
   "bindings": [{
     "name": "win-uuu",
-    "profileId": "e310d40031e946d9896f29d9f600d317",
+    "profileId": "3202e4b584c237bb11db58dddc10d640",
     "target": "devnode-win-uuu-recreated",
-    "session": "devnode-poc-win-20261026",
+    "session": "default",
     "expectedLabel": "UUU · Windows"
   }]
 }
@@ -45,7 +45,7 @@ bun script/devnode.ts machines apply --bindings /private/path/machines.json --he
 bun script/devnode.ts machines status --bindings /private/path/machines.json --herdr /absolute/path/herdr
 ```
 
-今回のMacでは`--herdr`に、専用SSH configを選ぶ既存の`~/.local/state/dotfiles/herdr-poc/mac-14f29b3f-cda1-4acf-9f18-26d35f8d6074/herdr-poc`を指定する。Windowsでは対応版の完全packageの`herdr.exe`を絶対pathで指定し、専用`HERDR_CONFIG_PATH`はそのprocessだけへ渡す。Herdr0.9.5以降を要求する。
+今回のMacでは`--herdr`に、mise管理下の`/Users/rebui/.local/share/mise/installs/herdr/0.9.5/herdr`を指定する。実作業の接続先は通常のHerdr machine catalogに登録済みの専用SSH aliasを使用する。旧PoC wrapperや旧PoC sessionを日常の起動先にしない。Windowsでは対応版の完全packageの`herdr.exe`を絶対pathで指定し、専用`HERDR_CONFIG_PATH`はそのprocessだけへ渡す。Herdr0.9.5以降を要求する。
 
 planは変更予定だけを表示する。applyは期待したprofile ID/SSH target/session/現在labelが一致する登録を、公式`machine rename`だけで更新する。完了したlabelをprivate bindingへ保存し、次のGit更新でも同じ所有接続として再調停できる。部分失敗は完全成功にせず、catalogを確認して同じdesired stateで再実行する。外部UIから同じprofile/bindingを同時編集しない。
 
@@ -53,7 +53,7 @@ planは変更予定だけを表示する。applyは期待したprofile ID/SSH ta
 
 ## 検証範囲
 
-Git updateはlocal Git remotesによるfast-forward/dirty/diverged/ignored file/filter/hook拒否を検証した。Macのcanonical originの専用cloneで実際のfast-forwardと次回noopを確認。Mac/Windowsの所有profileに対するplan/apply/noopを検証したが、既にdesired labelだったため、このadapterによる実機renameは発生していない。Windows ACL guardもCI/実機で確認した。
+Git updateはlocal Git remotesによるfast-forward/dirty/diverged/ignored file/filter/hook拒否を検証した。Macのcanonical originの専用cloneで実際のfast-forwardと次回noopを確認。Mac/Windowsの所有profileに対するplan/apply/noopを検証した。2026-10-29にはWindowsの実Mac接続profileを、この同期入口で`Mac · macOS`へrenameした。Windows ACL guardもCI/実機で確認した。
 
 WindowsではBunのrealpathが8.3短縮名を保持しGitが長い名前を返す差を実測し、非ゼロdirectory dev/inoの一致でrootを照合するよう修正した。Git fixtureはlocal core.autocrlf=falseに固定し、SSHの選択出力はCRLFを正規化する。Windowsのnative process起動試験には30秒の上限を設ける。global Git設定は変更しない。[選択結果と対象SHA](research/poc/config-sync-2026-10-26/results.json)を参照。
 
@@ -72,3 +72,15 @@ mise run --skip-tools devnode -- sync --repo /absolute/path/to/runtime-checkout 
 これは既存のsource更新と表示設定適用をまとめた入口。SSH資格情報、認可、Herdr session内容、OSサービス、HOMEリンクの配置は各ownerの操作が必要。起動時の実行を構成する場合も、pc-setupのOS別起動機構からこの明示コマンドを呼び、認証・binding・checkout driftで失敗した場合はその状態を残す。未認証nodeへの権限付与や未知profileの自動登録を行わない。
 
 同じflagsで`sync`を`open`にすると、同期が成功してからその端末の通常Herdr clientを起動する。これを日常の起動入口にすれば、新規常駐schedulerを導入せず起動時のsource/表示名更新を実行できる。同期失敗時はTUIを自動起動せず、そのエラーを表示する。開く先は各端末の実local defaultと公式machine profileで、VPSの試験sessionへの強制接続ではない。
+
+## 今回のMacで検証した短い起動入口
+
+専用runtime cloneに端末固有の`mise.local.toml` task `nodes`を置き、次で実際の起動・切断を確認した（2026-10-30）。
+
+```sh
+mise -C /Users/rebui/.local/share/dotfiles-node-runtime-74-20261029 run nodes
+```
+
+このtaskは`open`へ上記のprivate bindingとmise管理Herdrの絶対pathを渡す。local task fileはそのcloneの`.git/info/exclude`へ登録し、Git更新のclean判定を妨げない。`[settings.task] run_auto_install = false`を設定し、無関係なglobal toolの自動導入を起動操作に混在させない。新しい端末ではpath・binding・検証済みprofileをその端末用に構成する必要があり、このMac専用pathをコピーしない。
+
+観測：branch `74`を`1288919`から`9f12c79`へfast-forwardし、所有profileは変更不要、通常`default`の実workspaceとWindowsのAe_Restroを表示した。WSL workerは再接続待ちであり、この起動成功はWSL復旧やOS再起動後の自動復旧を証明しない。
