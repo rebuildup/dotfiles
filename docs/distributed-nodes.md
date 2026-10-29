@@ -1,6 +1,6 @@
 # 分散開発ノード: 実装・検証計画
 
-状態: 設計承認済み。2026-10-29にMac・Windows・WSL workerがMac-hosted Herdr sessionを共有するPoCを行ったが、Mac依存のため当初のNode Independence要件を満たさない。10-29に既存Infisical VPS上へ権限分離したHerdr 0.9.5 user/sessionを用意し、MacからのSSH接続・切断後のsession維持・同じpaneへの再接続を確認した。Windows/WSLの専用公開鍵追加と同一画面の再実機確認は未達。Herdr machine catalogのonline表示、Headscale、低権限Windows worker、Infisical MI、失効・再生成、join/leaveも未達。[独立Herdr host実測](research/herdr-independent-host-2026-10-29.md)および[従来の同一画面PoC](research/herdr-mac-e2e-2026-10-29.md)参照。prepare/trust/verifyの専用SSH試験結果は別記録を参照。
+状態: 実用化の修復中。MacとWindowsの実作業default sessionへHerdr profileを接続し、MacのAulymo(w3Q)・xyt-media(w4B)、WindowsのAe_Restro(wE)を同一IDで照合した。Windows native TUIでMac実workspaceの描画を確認し、双方の専用検証tabで入力を往復した。WSL専用workerは現在停止し、古いguest IPへのportproxyが残っているためpc-setup側で持続起動・復旧を修正中。低権限workerから人間用Mac/VPS consoleへ入る鍵認可は撤回した。VPS shared sessionの画面共有PoCだけで全体完成とはしない。[現状と実測](research/herdr-independent-host-2026-10-29.md)・[受入条件](herdr-acceptance.md)を参照。Infisical MI・Headscale peer間通信・失効再生成・join/leaveは未完了。
 
 [Issue #74](https://github.com/rebuildup/dotfiles/issues/74) / [提案ADR](adr/distributed-development-nodes.md) / [調査と証拠](research/distributed-nodes-2026-10-24.md)
 

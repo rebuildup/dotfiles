@@ -63,3 +63,15 @@ Windowsにはmac-default（profile e6ca621d2ba25e443df0a8c850e5fc84, target devn
 Windows担当の実機TUIでmac-defaultにMac defaultのAulymo(w3Q)・xyt-media(w4B)が表示された。Windows default Ae_Restro(wE)も維持した。同時刻のWindows client logはendpoint handshake成功、Mac server logもremote client接続を記録。nested SSHからのmachine APIのtimeoutとは異なる結果として扱う。
 
 新たにWSL worker endpoint TCP22224がbanner timeoutとなった。Windows portproxyは100.118.123.62:22224→172.22.157.236:22224だが、Windowsから転送先TCPへのTest-NetConnectionはFalse。Mac→Windows専用SSHは成功。したがってMac側のHerdr profile名変更だけでは復旧せず、worker起動/転送先と監視をWindows側で調査中。過去のWSL成功を現在の到達性の証拠として使わない。
+
+## セキュリティreviewによる訂正
+
+独立reviewで、低権限WSL workerが所有するMac用SSH鍵は`restrict,from=...`だけでは任意command実行を制限しないと指摘された。worker agent userからMacのhuman default sessionを操作できる状態は最小権限と両立しない。Macの専用sshd authorized_keysから当該worker rotated公開鍵を撤回し、Windows human operator公開鍵だけを維持した。VPS shared userのauthorized_keysからもworker専用鍵を撤回、Mac/Windows operator鍵は保持した。worker→Mac/VPSの新規認証拒否試験はworker復旧後に行う。人間がWSLを操作端末にする要件は、agent実行workerと別のoperator user境界で実現する必要がある。
+
+共有terminalの出力・topologyと、client固有の選択tab/focusは別に実測する。Herdrはclientごとに別tabを選べるため、同じserver/sessionだけでfocusの自動追従まで保証しない。実作業sessionの双方向入力試験には既存作業paneを使わず、所有を明示した検証tab一つを使い、終了後にそのtabだけを閉じる。
+
+## 実default sessionへの入力往復
+
+Mac defaultのAulymo(w3Q)に一つだけconnection-check tab w3Q:t4、pane w3Q:p7、cwd=/private/tmp、terminal_id=term_65ef7f60c7cb233をno-focusで作成。MAC_REAL_SESSION_20261029とWindows operator→Mac専用SSH経由のWINDOWS_TO_MAC_REAL_20261029が同じpaneで実行された。Windows defaultのAe_Restro(wE)にもconnection-check tab wE:t2、pane wE:p2、cwd=Windows user Temp、terminal_id=term_65ef7f7fb308c2をno-focusで作成。MacのHerdr machine APIでWrite-Output MAC_TO_WINDOWS_REAL_20261029を実行し同paneから一致出力を読戻し。既存作業paneは使用していない。検証tabはWindows側描画・再接続確認後に所有tabのみ閉じる予定。
+
+VPSのworker専用認可撤回後、herdr-shared userのprocess一覧にssh remote bridge/clientは存在せず、共有serverと二つのshellだけが残ることを確認した。既存workerの生きたVPS SSH sessionが残る状態ではなかった。
