@@ -58,3 +58,15 @@ Git updateはlocal Git remotesによるfast-forward/dirty/diverged/ignored file/
 WindowsではBunのrealpathが8.3短縮名を保持しGitが長い名前を返す差を実測し、非ゼロdirectory dev/inoの一致でrootを照合するよう修正した。Git fixtureはlocal core.autocrlf=falseに固定し、SSHの選択出力はCRLFを正規化する。Windowsのnative process起動試験には30秒の上限を設ける。global Git設定は変更しない。[選択結果と対象SHA](research/poc/config-sync-2026-10-26/results.json)を参照。
 
 LinuxはCIを確認し、Linux/WSL実機への適用と新WSLの接続bindingは未検証。テストやGit更新の成功をnode参加成功とは扱わない。
+
+## source更新と所有済み表示設定を一度に同期する
+
+```sh
+mise run --skip-tools devnode -- sync --repo /absolute/path/to/runtime-checkout --branch 74 --bindings /private/path/machines.json --herdr /absolute/path/to/mise-installed/herdr
+```
+
+必要なBunとHerdrはpc-setup/miseで先に導入する。`--skip-tools`は他の未導入global toolの自動installationをこの同期操作で始めないためのmise標準option。インストール経路の変更ではない。
+
+同期はprivate bindingの所有・権限と現在のHerdr profileを検査し、既存のbounded Git updaterでcanonical originの明示branchをfast-forwardする。その後、更新したcheckoutのコードで所有済みprofileの表示名を適用する。部分失敗時はsourceがどのcommitになったかを報告し、巻戻しやlocal fallbackを行わない。同じbindingへの並行syncは拒否する。
+
+これは既存のsource更新と表示設定適用をまとめた入口。SSH資格情報、認可、Herdr session内容、OSサービス、HOMEリンクの配置は各ownerの操作が必要。起動時の実行を構成する場合も、pc-setupのOS別起動機構からこの明示コマンドを呼び、認証・binding・checkout driftで失敗した場合はその状態を残す。未認証nodeへの権限付与や未知profileの自動登録を行わない。
