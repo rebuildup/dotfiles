@@ -69,3 +69,5 @@ VPSの再実測ではHeadscale0.29.6+dirty、commit `a2b1d7863926834e94479dcdd91
 同時点でInfisical backend/DB/Redisは稼働し、`https://secrets.rebuildup.dev/api/status`はHTTP成功・message Ok・redisConfigured=trueを返した。Mac→Windows/WSLの既存Tailscale経路はHeadscaleを使っておらず、Herdr実作業への接続と切り離せる。この一時停止は上流修正の適用ではなく公開面を閉じる暫定措置。
 
 再開前に、正式修正releaseのadvisory・対象digestを確認し、既存stateのbackup後にpc-setup管理Composeを更新する。先にHetzner IPv4/IPv6双方の443 source制限または同等のhost制限を確認・検証し、認可されたsourceだけでhealth/TLS/policyを検証する。公開範囲を広げたまま起動しない。既存コンテナの単純復帰操作は`docker start devnode-headscale-headscale-1`だが、上記gatesを満たす前の日常起動手順としては使わない。停止によるACME更新停止も含め、再開時は証明書有効性を再確認する。
+
+停止後にMac/Windowsの公式CLIを再実行し、双方`1.104.4`を再確認。`devnode machines status`はWindows/WSL両方reachableを返した。Headscaleの停止を既存Tailscale peer接続の停止と混同していない。

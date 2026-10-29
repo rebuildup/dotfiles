@@ -123,3 +123,13 @@ WSLの個別Codex login statusはChatGPT login。試験paneで`codex exec --skip
 Macの公式remote TUIを再接続し、Ctrl+B 2で試験tabを選択。実際のTUI描画に`connection-check`、`DEVNODE_WSL_AGENT_OK 391`、`CODEX_TEST_EXIT=0`を確認した。API読取だけでなくremote attachの描画も確認後、Ctrl+B qでdetach終了0。WSL user/hostはworker@UUU。2tabは同じserver/sessionの`w1:t1`と`w1:t2`で、clientの選択追従は要求しない。Windowsからの同tab表示は別途未検証。
 
 現行`devnode machines status`もWindows/WSL両方を`reachable`と返した。WSL worker catalogに残る認可撤回済みMac profile `b588309caf2d43f692d778147e6ac6ac`は公式`machine disable`で無効化し、同ID/target/sessionのままenabled=falseを確認。Macのserver/session/paneを変更していない。workerにoperator権限を与えず、WSL人間operatorの実行経路は別の受入項目として残す。
+
+### 回復性・runtime配置の追加検証
+
+WSLへの未登録鍵拒否を、新規一時ed25519鍵・専用known_hosts・StrictHostKeyChecking=yes・IdentityAgent=none・IdentitiesOnly=yesで実施。公開鍵認証拒否/終了255、stdout空を確認。試験鍵は一時領域とともに撤去し、既存鍵を変更していない。
+
+pc-setup PR143 `e0224923d98102925c0c976d0e98e3e72095a3f2`は、明示backup付き原子manifest置換と中途状態のresumeを追加。独立reviewで、receipt削除後の既存manifest.Hold再利用・no-op commit中断・backup残存からの回復を確認した。CIで実行bitとLinux PowerShell fixtureのWindows path依存を検出し、後続修正を検証中。実機への新controller実行はまだ行っていない。
+
+Codex runtime調査では、pc-setupのUbuntu/WSL guideがportable CLIのmise一元管理を指定し、既存mise global lockもaquaのfull packageを使用していた。workerへの独自tar installer追加ではなく、限定mise bootstrapと旧単体配置の非破壊migrationを次工程とする。0.165.0から既存lock0.162.1へ暗黙downgradeしない。公式packageは`bin/codex`隣の`bin/codex-code-mode-host`、`codex-resources/bwrap`、`codex-path/rg`、`codex-package.json`を含み、配置を保ってresource discoveryを利用する。[公式package構造](https://github.com/openai/codex/blob/rust-v0.165.0/scripts/codex_package/README.md)・[既存aqua backend](https://github.com/aquaproj/aqua-registry/blob/main/pkgs/openai/codex/registry.yaml)。
+
+最終fixture修正版 7f2241235b28ebd19439450554bfc3ebbbc0924c はGitHub CI run 40910971126 のnix/powershell/shell/windows-worker全jobが成功。CodeRabbitはReview skippedであり人的・独立コードレビューの代替に数えない。Macのmise管理PowerShell7.6.6でも独立tempcloneからscripts/test-windows-worker-ssh.ps1がPASS/終了0。productionのWindows exe取得helperはSystemDirectory空なら拒否し、従来のsystem wsl.exeだけを返すことを独立reviewで確認した。Linux用fallbackはfixtureのmockに限定。Windows固有の旧null-overload問題の再現試験はWindows jobで実行し、新backup方式とrepair全関数の中断/resume fixtureは全OSで実行する。実機controller成功・永続起動の証明とは分離する。
