@@ -43,3 +43,23 @@ Windows/WSLをofflineと推定して作業を止めた判断を撤回。Macか�
 この共有sessionには非秘密の検証文字列だけを置く。低権限workerが共有sessionへ接続できることを、他nodeを制御する権限の付与と混同しない。
 
 共通受入条件を `docs/herdr-acceptance.md` に固定。`script/test`、`script/test-workflow`、`script/check-secrets` は成功。`script/check` は実HOMEがprimary checkoutを参照していること、OS固有ファイル欠落、Claude composed settingsの差分を報告したため成功扱いにしていない。検査worktreeへ実HOMEを付け替える修正はしていない。
+
+## 実作業sessionとの不一致の根本原因
+
+追加調査でMacの実作業はdefaultのAulymo(w3Q)・xyt-media(w4B)、Windowsの実作業はdefaultのAe_Restro(wE)である一方、従来machine profileは別のPoC named sessionを指していたと判明した。VPSの空の共有sessionはこの不一致を解消しない。VPS共有はHerdrの共有能力確認として区別し、実用接続は各nodeの実作業sessionへ向ける。
+
+MacのWindows profileを公式machine addでdefaultへ向け、Ae_Restro(wE/t1)がWindows直読と一致することを確認した後、旧PoC profile参照だけを公式remove、新profileをUUU · Windowsへrenameした。新profile IDは3202e4b584c237bb11db58dddc10d640。private machine bindingもdefaultへ更新。Windows server/workspace/processは停止していない。
+
+VPS共有ではWindows TUI入力WINDOWS_SHARED_LIVE_20261029がMac/WSLにも描画され、Windows追加tab w1:t2/p2とWINDOWS_TAB2_20261029を確認。Mac direct client終了後もWINDOWS_WITHOUT_MAC_CLIENT_20261029が実行された。Mac再attachも成功。これは実作業nodeのsession照合と別の証拠である。
+
+## 実作業sessionへ接続する設定
+
+WSL workerのMac profileも旧PoC sessionからMac defaultへ変更。新profile b588309caf2d43f692d778147e6ac6ac（label Mac · macOS, target poc-mac, session default）でMac直読と同じAulymo(w3Q)・xyt-media(w4B)のworkspace一覧を確認。旧profile 6cf9da3f6f501e1c7952de8feb2e4825は接続参照のみ削除し、旧server/processは停止していない。
+
+Windowsにはmac-default（profile e6ca621d2ba25e443df0a8c850e5fc84, target devnode-mac-herdr-live, session default）が存在する。Mac→Windows SSH経由でこのmachine APIを実行した結果はnoninteractive SSH command timed outだった。一方、同じWindowsからMacへOpenSSHを直接実行し、mise実体とmise shim両方のHerdr version、およびMac defaultの実workspace一覧取得は成功。したがってSSH認証障害やnode offlineという判定は誤りで、Herdr remote probe/API経路を継続調査している。Windows native TUIでの実表示と、nested SSH経由のAPIを別々に確認する。
+
+## 19時台の継続検証
+
+Windows担当の実機TUIでmac-defaultにMac defaultのAulymo(w3Q)・xyt-media(w4B)が表示された。Windows default Ae_Restro(wE)も維持した。同時刻のWindows client logはendpoint handshake成功、Mac server logもremote client接続を記録。nested SSHからのmachine APIのtimeoutとは異なる結果として扱う。
+
+新たにWSL worker endpoint TCP22224がbanner timeoutとなった。Windows portproxyは100.118.123.62:22224→172.22.157.236:22224だが、Windowsから転送先TCPへのTest-NetConnectionはFalse。Mac→Windows専用SSHは成功。したがってMac側のHerdr profile名変更だけでは復旧せず、worker起動/転送先と監視をWindows側で調査中。過去のWSL成功を現在の到達性の証拠として使わない。
