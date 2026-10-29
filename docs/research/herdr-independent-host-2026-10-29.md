@@ -133,3 +133,11 @@ pc-setup PR143 `e0224923d98102925c0c976d0e98e3e72095a3f2`は、明示backup付�
 Codex runtime調査では、pc-setupのUbuntu/WSL guideがportable CLIのmise一元管理を指定し、既存mise global lockもaquaのfull packageを使用していた。workerへの独自tar installer追加ではなく、限定mise bootstrapと旧単体配置の非破壊migrationを次工程とする。0.165.0から既存lock0.162.1へ暗黙downgradeしない。公式packageは`bin/codex`隣の`bin/codex-code-mode-host`、`codex-resources/bwrap`、`codex-path/rg`、`codex-package.json`を含み、配置を保ってresource discoveryを利用する。[公式package構造](https://github.com/openai/codex/blob/rust-v0.165.0/scripts/codex_package/README.md)・[既存aqua backend](https://github.com/aquaproj/aqua-registry/blob/main/pkgs/openai/codex/registry.yaml)。
 
 最終fixture修正版 7f2241235b28ebd19439450554bfc3ebbbc0924c はGitHub CI run 40910971126 のnix/powershell/shell/windows-worker全jobが成功。CodeRabbitはReview skippedであり人的・独立コードレビューの代替に数えない。Macのmise管理PowerShell7.6.6でも独立tempcloneからscripts/test-windows-worker-ssh.ps1がPASS/終了0。productionのWindows exe取得helperはSystemDirectory空なら拒否し、従来のsystem wsl.exeだけを返すことを独立reviewで確認した。Linux用fallbackはfixtureのmockに限定。Windows固有の旧null-overload問題の再現試験はWindows jobで実行し、新backup方式とrepair全関数の中断/resume fixtureは全OSで実行する。実機controller成功・永続起動の証明とは分離する。
+
+## V4実機確定と古い選択参照の撤去
+
+人間がcontroller-repair-v4.ps1（SHA256 F6B2E64B6FB61EC80B7B23C2C030FA557D07130F6C9B5D162757419EA990C84C）を実行。result-RepairController-v4.jsonを専用SSHで回収しStatus pass / PendingConsumed trueを確認。SourceCommit7f224123、runtime77C209A4BE06B8F0275292556852BDA6BDF9C5D0E9D62D0F0DED1769024A6004、HoldPID21964、guest172.22.157.236、hostpinFoPM…を維持。manifest SHA256 B1567AED8AEBAD1335C5F9EF1811F27B9A4B635D04DA98519F88946B9562DD0F。標準sshdはStopped/Manual。MacからSSH nonceと既存worker Herdr w1/t1,t2も再確認。これはrepair記録確定の成功で、常設起動やreboot成功ではない。
+
+Windows catalogには今回所有する旧mac-poc profile c0f6ac3950c614ced3b168c9e5952183（target devnode-poc-mac-20261026/session devnode-poc-mac-14f29b3f-cda）がselected=trueで残っていた。実Mac default profile e6ca621d2ba25e443df0a8c850e5fc84と別なので、旧PoC profileだけ公式machine removeで撤去。server/session/paneの削除は行っていない。既存Ubuntu/Ubuntu2の参照は対象外。
+
+worker runtimeの再現可能なmise導入はpc-setup Issue146として別branch146/worktree /Users/rebui/.local/share/devnode-source/worktrees/worker-runtimeで着手。App native worktreeはsourceRootがchat workspace外のため利用できず、Operating Modelのnative Git fallbackで分離。Windowsのcontroller用checkoutへは書き込まない。まだruntime実装・実機適用は未完了。
