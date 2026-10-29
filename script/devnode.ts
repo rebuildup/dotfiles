@@ -130,9 +130,16 @@ export function verify(root: string, name: string) {
 async function main() {
   const args = process.argv.slice(2);
   const command = args.shift();
-  if (command === "sync") {
+  if (command === "sync" || command === "open") {
     const { main: sync } = await import("./devnode-sync.ts");
-    console.log(JSON.stringify(sync(args))); return;
+    console.log(JSON.stringify(sync(args)));
+    if (command === "open") {
+      const binary = args[args.indexOf("--herdr") + 1];
+      const result = spawnSync(binary, ["--session", "default"], { stdio: "inherit" });
+      if (result.error || result.status === null) throw new Error("Herdr client launch failed after synchronization.");
+      process.exitCode = result.status;
+    }
+    return;
   }
   if (command === "machines") {
     const { main: machines } = await import("./devnode-machines.ts");
@@ -143,7 +150,7 @@ async function main() {
     console.log(JSON.stringify(update(args))); return;
   }
   if (!command || command === "--help") {
-    console.log("Connection PoC only: prepare --name LABEL [--no-passphrase]; trust --name LABEL --host ADDRESS --port PORT --user ACCOUNT --fingerprint SHA256:...; verify --name LABEL. Optional --state-dir PATH. No node enrollment or global SSH modification. Also: update check|apply --repo PATH --branch BRANCH; machines plan|apply|status --bindings PRIVATE_JSON --herdr ABSOLUTE_BINARY; sync --repo ABSOLUTE_PATH --branch BRANCH --bindings PRIVATE_JSON --herdr ABSOLUTE_BINARY.");
+    console.log("Connection PoC only: prepare --name LABEL [--no-passphrase]; trust --name LABEL --host ADDRESS --port PORT --user ACCOUNT --fingerprint SHA256:...; verify --name LABEL. Optional --state-dir PATH. No node enrollment or global SSH modification. Also: update check|apply --repo PATH --branch BRANCH; machines plan|apply|status --bindings PRIVATE_JSON --herdr ABSOLUTE_BINARY; sync|open --repo ABSOLUTE_PATH --branch BRANCH --bindings PRIVATE_JSON --herdr ABSOLUTE_BINARY.");
     return;
   }
   const options = new Map<string, string>();

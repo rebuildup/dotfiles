@@ -70,3 +70,5 @@ mise run --skip-tools devnode -- sync --repo /absolute/path/to/runtime-checkout 
 同期はprivate bindingの所有・権限と現在のHerdr profileを検査し、既存のbounded Git updaterでcanonical originの明示branchをfast-forwardする。その後、更新したcheckoutのコードで所有済みprofileの表示名を適用する。部分失敗時はsourceがどのcommitになったかを報告し、巻戻しやlocal fallbackを行わない。同じbindingへの並行syncは拒否する。
 
 これは既存のsource更新と表示設定適用をまとめた入口。SSH資格情報、認可、Herdr session内容、OSサービス、HOMEリンクの配置は各ownerの操作が必要。起動時の実行を構成する場合も、pc-setupのOS別起動機構からこの明示コマンドを呼び、認証・binding・checkout driftで失敗した場合はその状態を残す。未認証nodeへの権限付与や未知profileの自動登録を行わない。
+
+同じflagsで`sync`を`open`にすると、同期が成功してからその端末の通常Herdr clientを起動する。これを日常の起動入口にすれば、新規常駐schedulerを導入せず起動時のsource/表示名更新を実行できる。同期失敗時はTUIを自動起動せず、そのエラーを表示する。開く先は各端末の実local defaultと公式machine profileで、VPSの試験sessionへの強制接続ではない。
