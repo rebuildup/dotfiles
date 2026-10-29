@@ -34,6 +34,16 @@ WindowsのHerdr clientは0.9.3、Windows local serverは0.9.5 running・互換�
 
 Mac catalogのWSL表示名を共有desired state `WSL · worker 1`へ追加し、既存private bindingでprofile ID/target/session一致を確認した後、公式`machine rename`でMac側だけ更新した。表示名はnon-secret configから再適用可能。Herdr profile追加/削除、Windows/WSLの設定変更は行っていない。
 
+## Windows発接続の再確認
+
+- 2026-10-29にWindowsの公式Tailscale CLIからv1.104.4へ更新。更新前後でBackendState=Running、IPv4=100.118.123.62、Self ID/User ID/tailnet identity一致を確認。Mac peerは更新試験中にofflineだったため、更新後peer疎通は未検証。
+- Windowsから`100.118.123.62:22224`のWSL SSH host keyを照合し、Macの既存pinと一致。Windowsの既存`id_ed25519_herdr`で`StrictHostKeyChecking=yes`を有効にしても`Permission denied (publickey)`。Windowsの公開鍵fingerprintは`SHA256:DIyjoh8RN6/N1+ZcT5OLuev5tPLUkvaPC55ZyCPa1oI`。鍵登録・WSL変更は行わなかった。
+- WSL変更前のread-only preflightでは、Windows `UUU\\basic`のWSL registryにUbuntu（default、WSL2、Running）だけがあり、専用devnode distroを識別できなかったためUbuntuには入らず停止。Windows `basic`のHerdr clientはMedium integrity。別Windows SIDが所有するworker distroをWindows controllerから操作する準備は未完了。
+- WindowsからMacの専用SSH endpointも、Mac Tailscale peer offline中にtimeout。Herdrの一時profile追加は未実施。既存profileに変更なし。
+- Macでは`brew-cask:tailscale`をmise package設定へ追加した。1.104.4公式pkgはmise applyが取得し、`sudo installer`の管理者認証待ち。インストールとMac peerの復帰はまだ確認していないため、現時点でMac Tailscaleは停止中。
+
+従ってHerdr UI上の`Reconnecting`解消は未確認で、Windows発のいずれのHerdr操作も成功扱いにしない。Mac側UIをコンピューター操作ツールから再観察しようとしたが、Ghosttyアプリはそのツールの安全制約でアクセス拒否された。ユーザー画面を見たとは主張しない。
+
 ## Mac → Windows
 
 Windows machine profile `e310d40031e946d9896f29d9f600d317`（`devnode-win-uuu-recreated`）で`machine status`がreachable、remote `workspace list`と`agent list`が成功した。新規workspace `mac-herdr-e2e-20261029`（remote workspace `w6`、pane `w6:p1`）をWindows上の既存監査用作業ディレクトリ配下に`--no-focus`で作成。Mac clientからpane commandを実行し、pane readで次のnonceと同一の出力を確認した。
