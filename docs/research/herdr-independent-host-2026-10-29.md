@@ -75,3 +75,9 @@ Windows担当の実機TUIでmac-defaultにMac defaultのAulymo(w3Q)・xyt-media(
 Mac defaultのAulymo(w3Q)に一つだけconnection-check tab w3Q:t4、pane w3Q:p7、cwd=/private/tmp、terminal_id=term_65ef7f60c7cb233をno-focusで作成。MAC_REAL_SESSION_20261029とWindows operator→Mac専用SSH経由のWINDOWS_TO_MAC_REAL_20261029が同じpaneで実行された。Windows defaultのAe_Restro(wE)にもconnection-check tab wE:t2、pane wE:p2、cwd=Windows user Temp、terminal_id=term_65ef7f7fb308c2をno-focusで作成。MacのHerdr machine APIでWrite-Output MAC_TO_WINDOWS_REAL_20261029を実行し同paneから一致出力を読戻し。既存作業paneは使用していない。検証tabはWindows側描画・再接続確認後に所有tabのみ閉じる予定。
 
 VPSのworker専用認可撤回後、herdr-shared userのprocess一覧にssh remote bridge/clientは存在せず、共有serverと二つのshellだけが残ることを確認した。既存workerの生きたVPS SSH sessionが残る状態ではなかった。
+
+## Git同期コマンドの実測
+
+`devnode sync`を7694c93で追加。Macの正規GitHub sourceから作った一時cloneをfbbd807へ戻したtest fixtureで、7694c93へのfast-forward→更新checkout側machines apply（既存Windows/worker表示変更なし）→再実行noopを実測した。fixtureは検証後削除。既存Bunテスト29 pass / Windows ACL test1 skip、script/test、script/test-workflow、script/check-secretsは成功。
+
+Windows operatorには`C:/Users/rebui/AppData/Local/dotfiles-node-runtime-74-20261029`のclean branch74 cloneと、`C:/Users/rebui/AppData/Local/dotfiles-devnode-operator-20261029/machines.json`のprivate bindingを作成。binding file/parentは本人・SYSTEM・Administratorsのみ、本人owner/protectedACL。mise導入済みBun1.4.2の実体でsync成功し、Mac profile e6ca621d2ba25e443df0a8c850e5fc84のlabelがmac-defaultからMac · macOSへ公式renameされた。target/sessionは維持。起動時自動同期は未構成。これはsourceと所有済み表示名の同期であり、worker登録・remote session自動切替・資格情報同期を行わない。
