@@ -18,7 +18,7 @@ fetchはremote refを読むためネットワークと通常のGit認証を使�
 
 ## Herdrの表示設定を適用する
 
-[config/devnode-machines.json](../config/devnode-machines.json)は表示名のdesired stateであり、node認証registryではない。`name`は設定参照keyで、node UUID、物理hostname、Herdr profile IDと区別する。現在の表示名は`UUU · Windows`と`Mac · macOS`。
+[config/devnode-machines.json](../config/devnode-machines.json)は表示名のdesired stateであり、node認証registryではない。`name`は設定参照keyで、node UUID、物理hostname、Herdr profile IDと区別する。現在の表示名は`UUU · Windows`、`Mac · macOS`、`WSL · worker 1`。
 
 各端末で、SSH host pin/nonceとofficial machine addを確認した登録だけをprivate bindingへ記録する。`herdr machine list --json`の実際のID・target・session・labelを使う。次はMacの今回所有する接続例であり、他端末へコピーする汎用値ではない。
 
@@ -47,7 +47,7 @@ bun script/devnode.ts machines status --bindings /private/path/machines.json --h
 
 planは変更予定だけを表示する。applyは期待したprofile ID/SSH target/session/現在labelが一致する登録を、公式`machine rename`だけで更新する。完了したlabelをprivate bindingへ保存し、次のGit更新でも同じ所有接続として再調停できる。部分失敗は完全成功にせず、catalogを確認して同じdesired stateで再実行する。外部UIから同じprofile/bindingを同時編集しない。
 
-新しい接続はunboundとして表示され、自動adopt/add/removeしない。既存Ubuntu/Ubuntu2も変更しない。別環境や再生成先へ表示名を引き継いでも、instance・SSH trust・MI権限を自動継承させない。
+新しい接続はunboundとして表示され、自動adopt/add/removeしない。既存Ubuntu/Ubuntu2も変更しない。別環境や再生成先へ表示名を引き継いでも、instance・SSH trust・MI権限を自動継承させない。2026-10-29にMacの検証用WSL profileを`wsl-worker-1` private bindingで明示所有し、desired label `WSL · worker 1`への公式renameを実適用した。他ノードのHerdr catalogは自動同期されないため、そのnodeに登録済みのprofile ID/target/sessionを個別にbindingし、各nodeでapplyする。
 
 ## 検証範囲
 

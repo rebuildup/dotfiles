@@ -18,6 +18,22 @@ WindowsのHerdr clientは0.9.3、Windows local serverは0.9.5 running・互換�
 
 従って以前のpane nonce応答は遠隔API操作の履歴として保持するが、「Mac・Windows・WSLがonlineで相互運用可能」という結論は撤回する。現状の正しい判定は、**ユーザーUI上で接続不成立、再接続中。Herdrの常用接続とWSL登録は未達**である。
 
+## Mac SSH経路修復後のHerdr操作
+
+通常のHerdr UIが使うOpenSSH経路と、前回の専用CLIの経路が異なる可能性を調べた。`~/.ssh/config`には`devnode-win-uuu-recreated`と`devnode-wsl-worker-1`のhost stanzaがなく、Herdr machine catalogが参照する両targetを解決できなかった。既存ファイルを0600でバックアップし、node固有ssh_config 2件をIncludeした。`ssh -G`でWindows `basic@100.118.123.62:22222`とWSL `worker@100.118.123.62:22224`に解決し、標準sshからhost pin/public-keyを通じて両方へ接続した。
+
+修復後、通常のMac Herdr CLIで明示profile IDを指定し、それぞれ別の`--no-focus` workspace/paneを作成してcommand出力を読み戻した。
+
+| 方向 | 実機応答 | 制約 |
+|---|---|---|
+| Mac → WSL | `HERDR_LIVE_MAC_TO_WSL_20261029_1793237796` 完全一致 | WSL `worker`、Herdr 0.9.5。WSL server sessionは`devnode-poc-wsl-2a1084ec`で稼働。 |
+| Mac → Windows | `HERDR_LIVE_MAC_TO_WINDOWS_20261029_1793237848` 完全一致 | paneの`UUU\\basic`はHigh Mandatory Level / Administrators enabled。nonceだけ実行し、agentは起動していない。低権限worker要件は未達。 |
+| WSL → Mac | `HERDR_LIVE_WSL_TO_MAC_20261029_A73D58F9` 完全一致 | WSL `worker`のHerdr 0.9.5からMac profileへの専用remote session API経由。 |
+
+これは明示Herdr machine API経由の3方向操作が今回応答した証拠である。Herdr UIのオンライン表示が`Reconnecting`から変わったかは再観察できていないため、UI上の常時接続・再接続完了は依然として未確認。Windows→Mac/WSLおよびWSL→Windowsは未達。Windows側はWSL profilesが`127.0.0.1:2222/2223`を指す一方、SSH listenersがTailscale IPv4 `100.118.123.62`にbindしている。WindowsのMac profileは終了済みremote session `devnode-poc-mac-20261026`を参照し、Macの稼働session名と一致しない。Windows向け修正と逆方向確認は未完了。
+
+Mac catalogのWSL表示名を共有desired state `WSL · worker 1`へ追加し、既存private bindingでprofile ID/target/session一致を確認した後、公式`machine rename`でMac側だけ更新した。表示名はnon-secret configから再適用可能。Herdr profile追加/削除、Windows/WSLの設定変更は行っていない。
+
 ## Mac → Windows
 
 Windows machine profile `e310d40031e946d9896f29d9f600d317`（`devnode-win-uuu-recreated`）で`machine status`がreachable、remote `workspace list`と`agent list`が成功した。新規workspace `mac-herdr-e2e-20261029`（remote workspace `w6`、pane `w6:p1`）をWindows上の既存監査用作業ディレクトリ配下に`--no-focus`で作成。Mac clientからpane commandを実行し、pane readで次のnonceと同一の出力を確認した。
@@ -54,6 +70,6 @@ HERDR_E2E_WSL_TO_MAC_06757283b8e52cfd9e1651b710b605b3
 
 当日の試験では一回のMac→Windows / Mac→WSL / WSL→Mac remote pane API操作とMac→WSL agent応答が返った。一方、後続のユーザーUI確認では常時接続が成立しておらず、各端末の実際のオンライン相互接続要件は満たしていない。nonce応答をHerdrの安定接続成功とみなさない。
 
-未達/未検証: Herdr UI上のonline維持と再接続復旧、WindowsからMacおよびWSLへの常用接続、WSL Herdr client/serverの永続導入・登録、Windows→WSL、Headscale peer間、異ネットワークの研究室PC、Windows agentを非管理者workerとして起動、Infisical MIの発行・最小権限、失効後の既存session停止、登録tokenの再利用拒否、制御面停止時の認証挙動、WSL再生成とjoin/leave。Tailscale/Headscale脆弱性対応も別途未完了であり、このHerdr試験はセキュリティ更新の根拠にならない。
+未達/未検証: Herdr UI上のonline維持と再接続復旧、WindowsからMacおよびWSLへの常用接続、WSL→Windows、Windows Herdrの非管理者worker化、Headscale peer間、異ネットワークの研究室PC、Infisical MIの発行・最小権限、失効後の既存session停止、登録tokenの再利用拒否、制御面停止時の認証挙動、WSL再生成とjoin/leave。Tailscale/Headscale脆弱性対応も別途未完了であり、このHerdr試験はセキュリティ更新の根拠にならない。
 
 試験で作成したHerdr workspace/paneは既存のfocused/default sessionに触れない専用検証資源として残した。削除や資格情報撤去の完了を主張しない。

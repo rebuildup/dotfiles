@@ -27,6 +27,14 @@
 3. 正しい管理接続とhost identity確認が得られたらVPSの実稼働Headscale version、memory limit、ingress source範囲を再照合する。TailwormのHeadscale DoS項目に正式release修正が確認できるまで、曝露面とrate limitを確認し、未検証patchやVPS再起動はしない。
 4. Headscale PR #3586のmergeと後続正式releaseを追跡する。2026-10-29の確認ではPRはopen / Draft。
 
+## 2026-10-29 再確認・mise更新経路
+
+- Tailscale公式の2026-10-26 bulletinと10-28 remediation記事を再確認した。Tailworm対応版は1.104.4以降。Mac実機は1.104.2、Windowsも1.104.2で、両方とも修正前である。公式は特にTailscale SSH利用者へ更新を推奨する。
+- Macはユーザー方針に合わせ、pc-setupのmise global package宣言へ`brew-cask:tailscale`を追加し、miseのcask経由で1.104.4を適用する。起動中アプリはmiseが「自動更新アプリ」としてskipすることをdry-runで確認した。アプリを終了してmise applyを実行すると、公式1.104.4 macOS pkgの`sudo installer`実行時に管理者パスワード待ちになった。認証がまだ提供されていないため、インストール未完了。現時点のアプリ版は1.104.2で、アプリ終了によりMacのtailnet通信も停止中。mise cask installer完了後にアプリを再起動し、版・BackendState・peer疎通を再検証する。
+- Windowsは公式1.104.2のまま。2026-10-29のWindows taskで、現在のUUU\\basicセッションは`ADMIN=False`のため更新は実行していない。UACを伴う公式更新と認証保持の確認待ち。
+- Headscale実稼働環境の前回確認版は0.29.6。2026-10-29に公式releaseと[#3586](https://github.com/juanfont/headscale/pull/3586)を再確認し、後者はまだDraft。確認済みrelease noteではTailworm報告の未認証pending-authentication resource-exhaustion修正は確認できず、0.29.6や最新であることを理由に修正済みとは扱わない。VPSへ管理SSHできず、現行稼働版・設定・外部到達範囲は今回再確認していない。
+- Tailscaleノード更新とHeadscale更新は管理権限が異なる。現在のローカル管理者権限不足とVPS管理SSH失敗により、更新は未完了。未検証patchの適用やVPS再起動はしていない。
+
 ## Sources
 
 - [Tailscale: SSH Findings and Fixes](https://tailscale.com/blog/tailscale-ssh-findings-fixes)
@@ -34,4 +42,5 @@
 - [Headscale releases](https://github.com/juanfont/headscale/releases)
 - [Headscale PR #3586](https://github.com/juanfont/headscale/pull/3586)
 - [Tailworm research report and per-finding status](https://www.tailworm.com/)
+- [Headscale PR #3586](https://github.com/juanfont/headscale/pull/3586)
 - [Tailscale stable packages](https://pkgs.tailscale.com/stable/)
