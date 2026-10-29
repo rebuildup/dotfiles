@@ -1,6 +1,6 @@
 # 分散開発ノード: 実装・検証計画
 
-状態: 実用化の修復中。MacとWindowsの実作業default sessionへHerdr profileを接続し、MacのAulymo(w3Q)・xyt-media(w4B)、WindowsのAe_Restro(wE)を同一IDで照合した。Windows native TUIでMac実workspaceの描画を確認し、双方の専用検証tabで入力を往復した。WSL専用workerは現在停止し、古いguest IPへのportproxyが残っているためpc-setup側で持続起動・復旧を修正中。低権限workerから人間用Mac/VPS consoleへ入る鍵認可は撤回した。VPS shared sessionの画面共有PoCだけで全体完成とはしない。[現状と実測](research/herdr-independent-host-2026-10-29.md)・[受入条件](herdr-acceptance.md)を参照。Infisical MI・Headscale peer間通信・失効再生成・join/leaveは未完了。
+状態: 実用化の修復中。MacとWindowsの実作業default sessionへHerdr profileを接続し、MacのAulymo(w3Q)・xyt-media(w4B)、WindowsのAe_Restro(wE)を同一IDで照合した。Windows native TUIでMac実workspaceの描画を確認し、双方の専用検証tabで入力を往復した。WSL専用workerは手動V3修復でSSH到達が戻り、既存Herdr sessionへMacから接続し、専用試験tabの出力とCodex応答・終了0を確認した。ただし修復manifestの原子保存で失敗した中途状態で、pc-setup側で安全な確定と持続起動を修正中。Codexの補助binary不足も未解決。低権限workerから人間用Mac/VPS consoleへ入る鍵認可は撤回した。VPS shared sessionの画面共有PoCだけで全体完成とはしない。[現状と実測](research/herdr-independent-host-2026-10-29.md)・[受入条件](herdr-acceptance.md)を参照。Infisical MI・Headscale peer間通信・失効再生成・join/leaveは未完了。
 
 [Issue #74](https://github.com/rebuildup/dotfiles/issues/74) / [提案ADR](adr/distributed-development-nodes.md) / [調査と証拠](research/distributed-nodes-2026-10-24.md)
 

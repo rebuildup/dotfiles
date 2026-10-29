@@ -103,3 +103,21 @@ Windows repair codeはpc-setup PR143の4e08a23f958c18ccf80cc119e650bbe2efc97bc1�
 - MacからWindowsの公式`workspace list`はAe_Restro `wE`、2tab/2pane、active試験tab `wE:t2`を返した。CLIに`--json`は未対応でusage失敗したため、そのflagを外して再確認した。
 - `script/test`、`script/test-workflow`、`script/check-secrets`、`git diff --check`は成功。実`script/secrets-doctor`はself-hosted Infisicalのlogin、project access/runtime injectionまで成功。`script/check`はprimary checkoutを指す既存HOMEリンクとOS別missing、既存Claude設定差異で失敗し、worktreeへHOMEリンクを勝手に付け替えていない。
 - 未完：WSL V3修復、fresh Mac鍵登録、WSL実Herdr・拒否試験、Windows native再接続証拠、OS再起動後の復旧、別WSL再生成。起動入口の単回成功を再利用可能な基盤の完成とは扱わない。
+
+### V3実行後：SSH復旧とcommit失敗を分離
+
+人間によるV3実行を確認。結果は`Status=failed`、`FailureStep=manifest-commit`、`File.Replace`の空path例外。runtime312行の`[IO.File]::Replace($pending,(Join-Path $root 'manifest.json'),$null)`が失敗箇所で、記録commit未完了。版を増やした即時再実行は依頼せず、Windowsの一時fixtureで原子保存処理とresume経路の再検証を依頼した。
+
+同時点でMacから既存strict host pin付きSSHは終了0、`WSL_REPAIR_PROBE`が完全一致。`id`はworker uid1000/groupworkerのみ。Herdr0.9.5はあるが、対象named sessionはserver_not_runningであり、停止前のprocessが復元したとは主張しない。修復記録の確定前にworkerを再起動していない。
+
+実際の失効検証：workerから既存`poc-mac`へBatchMode接続は`Permission denied (publickey)`終了255、workerから`herdr-shared-vps`も同じく公開鍵認証拒否終了255。以前撤回したworkerのoperator権限を復活させていない。SSH到達だけを修復・永続化・Herdrの完成と扱わない。
+
+### WSLの実Herdrとagent起動を再検証
+
+通常の公式`herdr --remote devnode-wsl-worker-1 --session devnode-poc-wsl-2a1084ec`で既存named serverを起動し、detach終了0。既存workspace `~` (`w1`)の試験用tab `connection-check` (`w1:t2`, `w1:p2`, terminal `term_65efcb5bfdb872`, `/tmp`, no-focus)を1つ作成。Macのmachine APIで`MAC_TO_WSL_REAL_20261030`を出し、同APIとWSL内のHerdr APIから同じpaneをreadして全文一致した。元tabは触っていない。
+
+WSLの個別Codex login statusはChatGPT login。試験paneで`codex exec --skip-git-repo-check --sandbox read-only --ephemeral`を起動し、ファイル・ツールを使わない算術のみの指示に`DEVNODE_WSL_AGENT_OK 391`、`CODEX_TEST_EXIT=0`を取得。Mac/WSL両APIで同じ応答・終了表示を確認。agent session ID `01a18860-8567-75b3-b685-54e411c75048`。
+
+品質上の残件：workerのCodex0.165.0は単体binaryのみで`codex-code-mode-host`が欠落、Code Modeはfail closed。bwrapはPATHになくbundled fallbackの警告。単純応答は成功したが開発tool実行の完成とはしない。公式release APIにはfull package `codex-package-x86_64-unknown-linux-musl.tar.gz` SHA256 `e97c4463d7f146692a955d7b0e1c8cf48f97cd4d616cd45c5dcab2e8d9743316`があり、pc-setup側の再現可能なruntime導入手順で対応する。個別loginはコピーしない。[公式release](https://github.com/openai/codex/releases/tag/rust-v0.165.0)。
+
+Macの公式remote TUIを再接続し、Ctrl+B 2で試験tabを選択。実際のTUI描画に`connection-check`、`DEVNODE_WSL_AGENT_OK 391`、`CODEX_TEST_EXIT=0`を確認した。API読取だけでなくremote attachの描画も確認後、Ctrl+B qでdetach終了0。WSL user/hostはworker@UUU。2tabは同じserver/sessionの`w1:t1`と`w1:t2`で、clientの選択追従は要求しない。Windowsからの同tab表示は別途未検証。
