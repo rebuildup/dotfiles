@@ -81,3 +81,15 @@ VPSのworker専用認可撤回後、herdr-shared userのprocess一覧にssh remo
 `devnode sync`を7694c93で追加。Macの正規GitHub sourceから作った一時cloneをfbbd807へ戻したtest fixtureで、7694c93へのfast-forward→更新checkout側machines apply（既存Windows/worker表示変更なし）→再実行noopを実測した。fixtureは検証後削除。既存Bunテスト29 pass / Windows ACL test1 skip、script/test、script/test-workflow、script/check-secretsは成功。
 
 Windows operatorには`C:/Users/rebui/AppData/Local/dotfiles-node-runtime-74-20261029`のclean branch74 cloneと、`C:/Users/rebui/AppData/Local/dotfiles-devnode-operator-20261029/machines.json`のprivate bindingを作成。binding file/parentは本人・SYSTEM・Administratorsのみ、本人owner/protectedACL。mise導入済みBun1.4.2の実体でsync成功し、Mac profile e6ca621d2ba25e443df0a8c850e5fc84のlabelがmac-defaultからMac · macOSへ公式renameされた。target/sessionは維持。起動時自動同期は未構成。これはsourceと所有済み表示名の同期であり、worker登録・remote session自動切替・資格情報同期を行わない。
+
+## 日常起動入口と修復の実行境界
+
+source1288919の`devnode open`をMac operatorの専用runtime checkoutで実機確認。別named session環境HERDR_SESSION=devnode-sharedを与えても、sync後のchildは実際に`herdr --session default`で起動し、Macの実作業とWindows実Ae_Restroを表示した。clientはdetachでexit0、serverと作業processは継続した。実機確認用runtimeは`~/.local/share/dotfiles-node-runtime-74-20261029`。HOMEのprimary checkoutリンクは移していない。
+
+Windows repair codeはpc-setup PR143の4e08a23f958c18ccf80cc119e650bbe2efc97bc1へ更新。instance lockとjournal resumeを含み、対象test/CI成功とのWindows報告を受領。Windows CIのmise global dataへの副作用は同じ版への復元とCIのdata/cache分離修正を行った。実機controller自動実行はツール承認reviewが理由詳細なしで拒否したため回避しない。controllerはclean source/commit/runtime SHAの事前検査付きで、人間の管理者PowerShell7実行待ち。controllerSHA256=8D33EC02C665D4104E1B23555F4C8C9BABE0CBE76EF900CDC1B76B7B6637D8F5、runtimeSHA256=1DBB76DBE660317C2BC197DEE81ADA34CE8D2FEA4358D921818C81A01953822A。結果はWindowsのsetup-audit/wsl-ssh-142-20261026/result-RepairController-v1.jsonをread-only回収する。実機復旧成功とはまだ扱わない。
+
+## 人間による限定repair実行の結果
+
+ユーザーが固定controllerを実行。result-RepairController-v1.jsonはStatus=failed、Phase=restart-worker-and-repair-owned-gateway、FailureType=RuntimeException。source SHA・SID・host pinは期待値と一致したが、CurrentAddress/HoldPIDはnull。SSH22224も未復旧。Windows側の管理者read-only事後診断ではrepair manifestのみ作成、journal空、worker process無し、旧mapping保持。失敗はhold intent保存・mapping変更より前のcredentialed V3検証呼出しに絞った。旧結果や証跡は上書きせず、次versionで非秘密の段階・exit code telemetryを追加する。
+
+画面共有の最終仕様はユーザーの回答「同じtabを選べば内容が一致すればよい」。各clientが別tabを選べるHerdr公式動作を許容し、選択focusの自動同期や別の画面共有基盤は追加しない。
