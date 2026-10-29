@@ -18,7 +18,7 @@
 
 Windowsの既存0.9.3を置換せず、公式0.9.5 ZIPのGitHub release API digestと実測SHA256 `d2c6c9c971c43a0bfdde8c692a9a1a7a45c3e4807cd01ae45662b4734fac1cbf`を一致確認した。ConPTYの3ファイルもmanifest hashと照合。`allow_unelevated_clients=false`を維持し、同じbasicの非昇格clientはPermissionDenied/os error5・exit1。PoCの管理者serverが低権限worker向けという意味ではない。
 
-両端で既存global plugin/hookがないことを確認し、process-scoped `HERDR_CONFIG_PATH`で専用非秘密configを指定。XDG rootは既定のままにした。Herdrのmachine catalogは共有されるため、Windowsに元からあるUbuntu/Ubuntu2 profileの全field一致を確認し、新profileだけを公式CLIで追加する。既存default sessionは操作しない。
+両端で既存global plugin/hookがないことを確認し、process-scoped `HERDR_CONFIG_PATH`で専用非秘密configを指定。XDG rootは既定のままにした。Windowsに元からあるUbuntu/Ubuntu2 profileの全field一致を確認し、新profileだけを公式CLIで追加した。訂正（2026-10-29）：machine catalogは各clientにローカルであり、共有されない。このPoCで共有したのは明示したremote Herdr server/sessionへの接続であって、profile catalogでも端末ごとのdefault sessionでもない。
 
 ## SSHと実行環境
 

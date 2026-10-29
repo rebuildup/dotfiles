@@ -1,6 +1,6 @@
 # 分散開発ノード: 実装・検証計画
 
-状態: 設計承認済み。[Git設定更新・表示名同期](devnode-config-sync.md)を追加実装中。Macの標準OpenSSH configへnode固有Includeを追加後、Herdr API経由でMac→Windows、Mac→WSL、WSL→Macのpane nonceを読み戻し一致。ただしHerdr UI online状態は再観察しておらず、Windows paneは管理者token。Windows→Mac/WSL、WSL→Windows、低権限Windows worker、再接続復旧は未達。[後続状態記録](research/herdr-mac-e2e-2026-10-29.md)参照。Headscale経由、join/leaveも未完了。prepare/trust/verifyの専用SSH試験結果は別記録を参照。
+状態: 設計承認済み。2026-10-29にMac・Windows・WSL workerがMac-hosted Herdr sessionを共有するPoCを行ったが、Mac依存のため当初のNode Independence要件を満たさない。10-29に既存Infisical VPS上へ権限分離したHerdr 0.9.5 user/sessionを用意し、MacからのSSH接続・切断後のsession維持・同じpaneへの再接続を確認した。Windows/WSLの専用公開鍵追加と同一画面の再実機確認は未達。Herdr machine catalogのonline表示、Headscale、低権限Windows worker、Infisical MI、失効・再生成、join/leaveも未達。[独立Herdr host実測](research/herdr-independent-host-2026-10-29.md)および[従来の同一画面PoC](research/herdr-mac-e2e-2026-10-29.md)参照。prepare/trust/verifyの専用SSH試験結果は別記録を参照。
 
 [Issue #74](https://github.com/rebuildup/dotfiles/issues/74) / [提案ADR](adr/distributed-development-nodes.md) / [調査と証拠](research/distributed-nodes-2026-10-24.md)
 

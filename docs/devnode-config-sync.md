@@ -2,6 +2,8 @@
 
 共通の非秘密設定はこのGit repository、秘密鍵・host pin・Herdr session・認証cacheは各端末が所有する。これらを丸ごと他端末へコピーしない。OSと常駐起動はpc-setupが所有する。
 
+このdesired-state同期はHerdrの接続先表示名だけを調停する。Herdr machine catalog/profileはクライアントごとのローカル参照であり、端末間の画面・pane・workspace・agent sessionを共有しない。複数端末で同じ画面を操作するには、全クライアントから同一のHerdr serverと同一のsessionへ公式remote接続する。各端末のローカルdefault sessionを開いたままでは画面は別々になる。
+
 ## Gitから更新する
 
 更新専用のclean checkoutを使う。初回cloneは通常のGit、以後は次の入口で対象branchを明示する。未merge検証中は`74`、release後は管理者が選んだrelease branchを使う。実行中の別作業checkoutや既存HOMEリンクを無断で切り替えない。
@@ -47,7 +49,7 @@ bun script/devnode.ts machines status --bindings /private/path/machines.json --h
 
 planは変更予定だけを表示する。applyは期待したprofile ID/SSH target/session/現在labelが一致する登録を、公式`machine rename`だけで更新する。完了したlabelをprivate bindingへ保存し、次のGit更新でも同じ所有接続として再調停できる。部分失敗は完全成功にせず、catalogを確認して同じdesired stateで再実行する。外部UIから同じprofile/bindingを同時編集しない。
 
-新しい接続はunboundとして表示され、自動adopt/add/removeしない。既存Ubuntu/Ubuntu2も変更しない。別環境や再生成先へ表示名を引き継いでも、instance・SSH trust・MI権限を自動継承させない。2026-10-29にMacの検証用WSL profileを`wsl-worker-1` private bindingで明示所有し、desired label `WSL · worker 1`への公式renameを実適用した。他ノードのHerdr catalogは自動同期されないため、そのnodeに登録済みのprofile ID/target/sessionを個別にbindingし、各nodeでapplyする。
+新しい接続はunboundとして表示され、自動adopt/add/removeしない。既存Ubuntu/Ubuntu2も変更しない。別環境や再生成先へ表示名を引き継いでも、instance・SSH trust・MI権限を自動継承させない。2026-10-29にMacの検証用WSL profileを`wsl-worker-1` private bindingで明示所有し、desired label `WSL · worker 1`への公式renameを実適用した。他ノードのHerdr catalogは自動同期されないため、そのnodeに登録済みのprofile ID/target/sessionを個別にbindingし、各nodeでapplyする。これは接続参照の同期であり、同じ画面を作る仕組みではない。
 
 ## 検証範囲
 

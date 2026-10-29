@@ -1,6 +1,6 @@
 # 分散開発ノードの認証・接続境界
 
-- 状態: 設計承認済み（2026-10-24）。Mac↔Windows専用SSHは検証済み。2026-10-26/27のMac発Herdr成功主張はユーザー指摘を受け撤回し、2026-10-29に新workspaceでMac↔WSL操作を再検証。Headscale単一Mac登録を検証。本登録・WSLの再生成・Headscale間通信は継続検証
+- 状態: 設計承認済み（2026-10-24）。Mac↔Windows専用SSHと、既存Tailscale経由のMac・Windows・WSL workerによる同一Mac Herdr named session/pane共有は歴史的PoCとして確認したが、Mac依存なのでNode Independenceの完成証拠ではない。2026-10-29に既存Infisical VPSへ専用unprivileged Herdr user/sessionを置き、Macからのremote attachとdetach後の稼働を確認。Windows/WSLからのVPS共有session接続は未検証。Headscale現行版のTailworm対策、複数Headscale peer通信、Infisical MI、node lifecycle、低権限Windows worker、本登録・WSL再生成は継続検証。[VPS-hosted Herdr記録](../research/herdr-independent-host-2026-10-29.md)
 - 日付: 2026-10-24
 - 実装追跡: https://github.com/rebuildup/dotfiles/issues/74
 - 関連: [調査と実機証拠](../research/distributed-nodes-2026-10-24.md)、[段階的実装計画](../distributed-nodes.md)
@@ -52,10 +52,10 @@ WindowsとWSLのVPN二重実行は既定にしない。まずWindows gateway方�
 | VPN ID / address / gateway / SSH endpoint | network側identityと接続属性。論理identityから分離 |
 | SSH fingerprint | 操作者の別経路確認後に承認したhost key。専用known_hostsへpin |
 | Infisical MI ID | instanceごとに一つ。roleで許可範囲を束ね、認証主体は共有しない |
-| Herdr profile ID / session | クライアントごとの参照。Herdr CLIが所有。catalogを直接編集しない |
+| Herdr profile ID / session | クライアントごとの接続参照。Herdr CLIが所有。catalogを直接編集しない。画面共有では全clientを同一server/sessionへremote attachする |
 | observed status | timestamp、probe元、理由コード付き一時観測。Gitのdesired stateと混同しない |
 
-最小inventoryにはこれらを持たせるが、秘密値・token・session credentialを入れない。Herdr profile IDは全クライアント共通IDではない。各クライアントはinventoryを読んで自分のcatalogへCLI経由で同期する。自動発見は到達性の候補を提示するだけで参加承認には使わない。
+最小inventoryにはこれらを持たせるが、秘密値・token・session credentialを入れない。Herdr profile IDは全クライアント共通IDではない。各クライアントはinventoryを読んで自分のcatalogへCLI経由で同期する。これは接続先を各clientへ登録するだけで、terminal screen、pane、workspace、agent sessionを同期しない。同一画面を複数端末で扱う要件では、一つのHerdr server/sessionを共有ホストとして選び、各clientがその同じserver/sessionへ公式remote接続する。自動発見は到達性の候補を提示するだけで参加承認には使わない。
 
 ## Bootstrapと承認境界
 

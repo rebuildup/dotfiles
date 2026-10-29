@@ -44,3 +44,14 @@
 - [Tailworm research report and per-finding status](https://www.tailworm.com/)
 - [Headscale PR #3586](https://github.com/juanfont/headscale/pull/3586)
 - [Tailscale stable packages](https://pkgs.tailscale.com/stable/)
+
+## 2026-10-29 後続の版確認
+
+- Mac実機の`/Applications/Tailscale.app/Contents/MacOS/Tailscale version`は`1.104.4`、`status --json`の`BackendState`は`Running`、Tailscale IPv4は`100.83.203.34`。公式TS-2026-014〜017の修正版最低版を満たし、peerもonlineを確認した。Macの更新はmise管理`brew-cask:tailscale`経路で適用済み。別配布経路は使っていない。
+- Windows側の専用管理タスクから、Tailscale CLI、実行中IPN app、daemonがすべて`1.104.4`、BackendState=`Running`と確認。再起動・設定変更なし。
+- 同じWindows管理SSH経路でHeadscale Compose `/srv/devnode-headscale/compose.yaml`とhealthy containerを確認。実行versionは`v0.29.6+dirty`、commit `a2b1d7863926834e94479dcdd91ab344a9356bd0`、build time `2026-10-24T09:21:24Z`。変更・再起動なし。
+- Headscale upstreamの最新release notesはv0.29.6で、Go 1.27.3、CA bundle、`x/net` / `x/text` / gRPCの更新を記載する。一方、Tailwormのpending-authentication負荷を有限化する[PR #3586](https://github.com/juanfont/headscale/pull/3586)は2026-10-29時点でDraft。従って現在版を最新と確認できても、そのTailworm findingは解消済みと主張しない。
+- 現行Headscaleに対するHetzner firewall ingress、reverse proxy rate limiting、port 80のrouteは、この版確認では再確認していない。前回の保存済みsnapshotは443を単一IPv4 source `/32`へ制限、80をACME用IPv4許可としているが、現在値・別送信元拒否・HTTP routeは未検証。別ネットワークのnodeをHeadscaleへ登録する前に再確認する。
+- Windows側でVPSを読み取り確認したところ、Caddy/nginx/Traefik/HAProxyは導入されておらず、調査したHeadscale/proxy設定にもrate-limit directiveはなかった。Composeはhost `0.0.0.0:80`をHeadscale container `8080`へ、`0.0.0.0:443`を`8443`へ直接mapする。`cloudflared.service`はactiveだが、unitから実効ingress policyは確認できなかった。MacからHTTP GETした`/health`、`/key`、`/ts2021`はいずれも同じHTTPS pathへの302だった。HTTP endpointがredirectすることは確認したが、外部HTTPSの拒否やrate limitを証明する結果ではない。
+- VivaldiでHetzner Consoleのsecurity verification後、対象projectのfirewall一覧に`tastile-infisical-ssh-only`が`Fully applied`、4 rules、1 serverとして表示された。詳細画面を開くブラウザークリックは操作層で2回失敗したため、現在のCIDR ruleは取得できていない。firewall・VPS設定・serviceの変更はしていない。最後に保存したrule snapshotはTCP443の送信元を`27.83.76.30/32`、TCP80をACME用IPv4許可としているが、現行値は未確認。
+- 対応状況: Tailscale nodeは修正版`1.104.4`。Headscaleは`v0.29.6+dirty`で、Tailwormのpending-authentication resource-exhaustionに対する上流修正は未確認。過去のingress allowlist、512 MiB memory limit、128 PID limit、restart supervisionは封じ込め策に過ぎず、修正の証明にもservice interruptionの防止にもならない。現行allowlistを維持し、firewall policyと上流対策を確かめるまで新しい送信元networkから登録しない。IPv4/IPv6全体へ公開範囲を広げない。この報告のHeadscale影響はcontrol/registration availabilityに関するもので、peer dataの機密性侵害を示す証拠はない。
