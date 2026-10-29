@@ -136,3 +136,13 @@ Infisical停止中は新規join/token更新/新規secret取得を拒否する。
 `devnode machines plan|apply|status`は非秘密desired nameとmachine-local bindingを使う。planは変更予定だけを表示し、applyは期待profile ID・SSH target・remote session・現在labelが一致する登録だけをofficial `machine rename`で更新する。未知profileを採用せず、重複名・binding driftを拒否する。新規接続登録は別途SSH pin/nonceとofficial machine addを確認後、明示bindingする。既存Ubuntu/Ubuntu2の実体を確認せずrename/removeしない。
 
 初期表示は`UUU · Windows`と`Mac · macOS`。新規WSLは物理hostと独立したworker名を併記する。表示変更でinstanceや権限を引き継がない。runtime configやOS常駐化は、それぞれのownerであるuser-level config/pc-setup側で扱い、単なるGit update成功を再起動後の稼働証拠にはしない。
+
+## 実作業の共有対象（2026-10-29修正）
+
+画面共有の対象は、実行nodeでユーザーが普段使うserver/session/paneである。Macのdefaultと別のPoC named session、WindowsのdefaultとDesktopだけのPoC named sessionを対応させても、実作業は共有されない。現在の実用profileはMac default、Windows default、隔離WSL workerの実sessionを明示し、各clientのlocal表示とremote表示で同じworkspace/tab/pane IDを照合する。
+
+実行node自身が自分のprocessをhostすることは、そのnodeの通常の責務である。特定Macを全体の親機に固定する構成とは区別する。あるnodeが停止すれば、そのnodeのlive processは停止する。Node Independenceはその停止が他nodeの参加・操作・資格情報管理まで止めないことを要求する。Herdrのlive processが別OSへ自動移送される保証を追加しない。
+
+VPSのshared sessionは非秘密の画面共有能力PoCとして記録する。空のVPS shellに全clientを集めるだけでは、各nodeで動く既存作業の共有要件を満たさない。VPSを全nodeの常設schedulerとして必須化せず、公式Herdrのnode別session接続を利用する。
+
+WSL gatewayの以前の検証controllerはPersistent=falseの一時実装だった。実用化にはworker本人の固有Windows accountでの再起動、現在guest IPの取得、当該instance限定のportproxy修復と監視が必要。資格情報はInfisicalのoperator専用管理から取得し、別workerや共有sessionへ渡さない。OS設定・常設機構はpc-setupが所有する。
