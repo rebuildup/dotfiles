@@ -71,3 +71,7 @@ VPSの再実測ではHeadscale0.29.6+dirty、commit `a2b1d7863926834e94479dcdd91
 再開前に、正式修正releaseのadvisory・対象digestを確認し、既存stateのbackup後にpc-setup管理Composeを更新する。先にHetzner IPv4/IPv6双方の443 source制限または同等のhost制限を確認・検証し、認可されたsourceだけでhealth/TLS/policyを検証する。公開範囲を広げたまま起動しない。既存コンテナの単純復帰操作は`docker start devnode-headscale-headscale-1`だが、上記gatesを満たす前の日常起動手順としては使わない。停止によるACME更新停止も含め、再開時は証明書有効性を再確認する。
 
 停止後にMac/Windowsの公式CLIを再実行し、双方`1.104.4`を再確認。`devnode machines status`はWindows/WSL両方reachableを返した。Headscaleの停止を既存Tailscale peer接続の停止と混同していない。
+
+## 2026-10-30 後続の上流確認
+
+GitHub公式APIで再確認したところ、[#3586](https://github.com/juanfont/headscale/pull/3586)は2026-10-29 19:51:50 UTCにmerge済みへ変わっていた。ただし最新正式releaseは引き続きv0.29.6で、[#3587](https://github.com/juanfont/headscale/pull/3587)と0.29.7準備の[#3625](https://github.com/juanfont/headscale/pull/3625)はopen。mergeを既存コンテナへの修正適用とみなさず、停止状態と再開gateを維持する。上のopen/Draft観測は取得時点の履歴として残す。

@@ -155,3 +155,9 @@ worker runtimeの再現可能なmise導入はpc-setup Issue146として別branch
 sandboxはmodelの報告だけを証拠にせず、追加の実shell-tool probeで作業内file書込成功、作業外の専用probeへの書込がRead-only file system、OUTSIDE_WRITE_DENIED、SANDBOX_AGENT_EXIT=0を確認。rootから作業内probeあり・外probeなしも再確認。直接codex sandbox CLIの試行はdefault read-onlyで作業内も拒否したため、このworkspace-writeの証拠には数えない。
 
 通常入口へのmigrationは旧binaryのSHA256（Codex c06a67fd8ac76508dc78bd99ce20c9f317b8d568beda59485f3f4134df9962d5、Herdr14d9e8bc8b4a9e0118d77c32266f76d461f09b40342eb23752960bd89f59929d）を確認し、sourceの明示migrateでlegacy backupを保持して.local/bin symlinkへ切替。個別Codex loginは維持されている。Macから新Herdr入口へremote TUI再接続し、verifyを選択して実出力を描画・detach終了0を確認。tab keyboard indexは現在の並び順2であり、安定ID末尾3とは区別した。userのwork paneへコマンド入力していない。
+
+### 2026-10-30 後続の疎通・ネットワーク確認
+
+MacからWSL machine ID4729223c1554f417f43e826826adb9e3のstatusはreachable。tab一覧は既存w1:t1とverify w1:t3の2件で、w1:p3には先のsandbox実測出力が残る。SSHでworker uid1000/group workerのみ、password status L、Codex個別ChatGPT login、Herdr0.9.5を再確認した。今回sudoが失敗した対象はこの専用workerであるとユーザーが確定した。
+
+Mac/WindowsのTailscale statusを同時期に取得し、双方BackendState Running、広告されたpublic IPv4は各1件で同一だった。これを異なるpublic NAT越しの検証として数えない。公開endpoint値・認証情報は記録しない。
