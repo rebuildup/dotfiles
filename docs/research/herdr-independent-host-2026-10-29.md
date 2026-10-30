@@ -161,3 +161,7 @@ sandboxはmodelの報告だけを証拠にせず、追加の実shell-tool probe�
 MacからWSL machine ID4729223c1554f417f43e826826adb9e3のstatusはreachable。tab一覧は既存w1:t1とverify w1:t3の2件で、w1:p3には先のsandbox実測出力が残る。SSHでworker uid1000/group workerのみ、password status L、Codex個別ChatGPT login、Herdr0.9.5を再確認した。今回sudoが失敗した対象はこの専用workerであるとユーザーが確定した。
 
 Mac/WindowsのTailscale statusを同時期に取得し、双方BackendState Running、広告されたpublic IPv4は各1件で同一だった。これを異なるpublic NAT越しの検証として数えない。公開endpoint値・認証情報は記録しない。
+
+非rootのdpkg-queryではcanonical APT baseline20件のうち12件が不足（git-lfs/build-essential/pkg-config/libssl-dev/cmake/ninja-build/clang/lldb/tree/unzip/zip/python3-venv）。apt-get -s --no-install-recommends --no-upgrade installの現一覧によるsimulationは終了0、追加73件、既存版更新0・削除0。rootやapt-get updateは実行しておらず、実適用時の再simulationを省略する証拠ではない。
+
+Mac→Windows VPN gateway→WSL専用SSHでzero byte列を1024/65536/1048576/16777216 byte取得し、全てexit0・長さとSHA256一致。1回ずつの経過時間は1.220/1.164/4.501/36.870秒。これは現在のgateway経路でサイズを変えた転送が停止しなかった確認で、圧縮可能データのため性能benchmarkにしない。WSL自身のVPN、二重VPNカプセル化、MTUの最適性・異ネットワークは未検証。
