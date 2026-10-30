@@ -57,3 +57,13 @@ Identity GETのouter `identity.id`は組織メンバーシップIDで、Identity
 - [最終runの実験用harness](poc/infisical-enrollment/harness.ts): journalのsource SHA256と一致するsnapshot。共通bootstrapや常用commandではなく、このMacの既存CLI実体と一時schema pathを参照する診断用source。通常のtestからは実行されず、`--execute`なしでは説明だけを表示する。
 
 harnessの実行は既存human loginで一時的な外部資源を作る。再実行を通常のtest gateへ組み込まない。全ての検査がgreenだったとは扱わず、membership撤回だけに依存できないことを次の実装・review条件へ引き継ぐ。
+
+## 2026-10-30 読み取り再確認
+
+VPSのbackend imageは引き続きlocal/tastile-infisical:devtest-20261006、image ID sha256:878835c6ab5057f039437d7c49bc5328f356ad07fc4c7af4cbf81629075363f8、OCI v0.165.15/revision f030c8c921b0945568c928eef81d1ca453d4199f。10月6日起動/RestartCount0。backend/package.jsonの1.0.0は製品version根拠ではない。公開OpenAPIは10/24の保存schemaとSHA256が一致した。製品release公式版との完全同一性は未確認。
+
+MI/Universal Auth、一回用client secret TTL120秒/uses1、cross-project読取403、viewer書込403、Identity削除後tokenと未使用secretの期限内401は上記の既存実機証拠を再利用する。membership削除だけでは既発行tokenが使えたためretire条件にはしない。target worker内の取得・注入、再生成nodeと旧MIの拒否は引き続き追加E2Eが必要。
+
+このinstanceのclient secret fieldsはttl/numUsesLimit。token更新・撤回は/api/v1/auth/token/renewと/api/v1/auth/token/revokeで、最新docsのuniversal-auth/renewをそのまま移植しない。Period=0を保ち、client secret寿命とtoken寿命を区別する。
+
+今回の読取では認証token/cache/license keyを取得せず、CLIにもplan読取commandが見つからなかったため現行planは未再取得。10/24のrbac=false/secretsFolderRbac=false/auditLogs=falseは履歴として扱う。[公式RBAC](https://infisical.com/docs/documentation/platform/access-controls/role-based-access-controls)でもbuilt-in viewerはproject全体の権限で、custom roleはEnterprise。path/env flagsを認可境界にしない。[監査ログ](https://infisical.com/docs/documentation/platform/audit-logs)のself-hosted Enterprise要件もあるため、secret-access監査は未達のまま。通常SSH接続ログやwrapper実行ログをその代替とは表示しない。自動課金・license変更は行っていない。

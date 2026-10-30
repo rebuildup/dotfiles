@@ -1,6 +1,8 @@
 # 分散開発ノード: 実装・検証計画
 
-状態: 実用化の修復中。MacとWindowsの実作業default sessionへHerdr profileを接続し、MacのAulymo(w3Q)・xyt-media(w4B)、WindowsのAe_Restro(wE)を同一IDで照合した。Windows native TUIでMac実workspaceの描画を確認し、双方の専用検証tabで入力を往復した。WSL専用workerは手動V3修復でSSH到達が戻り、既存Herdr sessionへMacから接続し、専用試験tabの出力とCodex応答・終了0を確認した。ただし修復manifestの原子保存で失敗した中途状態で、pc-setup側で安全な確定と持続起動を修正中。Codexの補助binary不足も未解決。低権限workerから人間用Mac/VPS consoleへ入る鍵認可は撤回した。VPS shared sessionの画面共有PoCだけで全体完成とはしない。[現状と実測](research/herdr-independent-host-2026-10-29.md)・[受入条件](herdr-acceptance.md)を参照。Infisical MI・Headscale peer間通信・失効再生成・join/leaveは未完了。
+状態: 実機検証を継続中。MacとWindowsは実作業のdefault sessionへ接続し、専用tabの入出力を照合済み。WSL workerもV4で修復記録を確定し、SSH・Herdr接続を維持している。WSLにはmise管理のCodex 0.165.0/Herdr 0.9.5を導入し、Herdrの専用tabでコード編集・3件のテスト成功・sandboxの作業外書込拒否を実測した。旧単体binaryはhash確認後にbackupし、通常のcodex/herdr入口を切り替えた。
+
+未完了: WindowsからWSLへの常用接続、Windowsサインイン後の自動復旧・再起動、管理側OSパッケージsetup、対象workerのInfisical MI、失効・再生成、共通join/leave。workerはLinux password locked・非sudoのままにし、OS管理処理とagent実行を分ける。Headscale PoCは未修正問題とedge制限未確認のため停止中。既存Tailscale経路は継続している。[実測と現状](research/herdr-independent-host-2026-10-29.md)・[受入条件](herdr-acceptance.md)・[worker runtime PR147](https://github.com/rebuildup/pc-setup/pull/147)を参照。
 
 [Issue #74](https://github.com/rebuildup/dotfiles/issues/74) / [提案ADR](adr/distributed-development-nodes.md) / [調査と証拠](research/distributed-nodes-2026-10-24.md)
 
@@ -21,7 +23,7 @@ mise run devnode -- verify --name win-uuu
 
 既定stateは`~/.local/state/dotfiles/devnodes/LABEL/`。鍵はGitや`home/`で管理しない。同名rerunは同じidentityを維持し、不明directoryやsymlinkは採用しない。別環境には別state/鍵を作る。`trust`はfingerprint不一致と既存接続変更を拒否する。`verify`の成功はSSHだけで、Herdr/MIはunverifiedと表示する。暗黙local fallbackはない。PoC clientはmacOSで検証済み、Windows clientのACLは未検証。
 
-このPoCは専用`ssh -F`を使い、既存`~/.ssh/config`を変更しない。Herdr catalog同期/管理Includeは後段の未実装機能である。必要なCLIはpc-setup管理のBun/OpenSSH。ローカルmiseにglobal toolの自動準備がある場合、既存のexact Bun 1.4.2実体で`bun script/devnode.ts ...`を実行する明示fallbackを使える。miseの設定を回避するため別の恒久runtimeを導入しない。
+このPoCは専用`ssh -F`を使い、既存`~/.ssh/config`を変更しない。所有済みHerdr表示名とsource更新は[設定更新手順](devnode-config-sync.md)の別コマンドが扱う。接続登録・MI発行を自動採用する機能ではない。必要なCLIはpc-setup管理のBun/OpenSSH。ローカルmiseにglobal toolの自動準備がある場合、既存のexact Bun 1.4.2実体で`bun script/devnode.ts ...`を実行する明示fallbackを使える。miseの設定を回避するため別の恒久runtimeを導入しない。
 
 ## 1. 接続PoC
 
