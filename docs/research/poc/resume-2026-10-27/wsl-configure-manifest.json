@@ -1,0 +1,11 @@
+{
+  "originalSHA256": "27388856d3ed84e69dd1b5750a2d2dc14afa927e25f9fc3962e23ac311a0cb6f",
+  "originalHashConfirmedByWindowsOwner": true,
+  "retrievedUsingPinnedSSH": true,
+  "sshExitCode": 0,
+  "sourceCommit": "8eb034d07c1b2f14aea7bbe788f75bbe1dd4023a",
+  "controllerSHA256": "0e93b0573744df81024ed43b02590cc84a2570cb5410e90f96c0acfeed1e6bca",
+  "gitFile": "wsl-configure-v4.json",
+  "gitSHA256": "9faac982f554b10537f530888ab2ff545fc21370d06e3ee9cd02fe3a62cc6178",
+  "scope": "Partial failed attempt; Configure/Restart only; not WSL SSH or Herdr proof"
+}

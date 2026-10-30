@@ -1,0 +1,24 @@
+{
+  "Status": "pe-probe-observed",
+  "Report": {
+    "Sid": "S-1-5-21-3608086955-217808620-105719149-1013",
+    "Administrator": false,
+    "NativeProfileLoaded": true,
+    "RegistrationVerified": true,
+    "DistroName": "pcw-2a1084ec-5389-4b0b-a0f0-9a38fcfaece5",
+    "ProbeId": "8ca51150-3167-43fb-beb1-f91e744433b1",
+    "WindowsPositiveControl": true,
+    "PublicBinaryDigest": "DEAD40B714C5F3AF1077C754458434489631EAE04B93B1E8960FFAE7017DCE22",
+    "PublicBinarySignature": "Valid",
+    "NativeExit": 0,
+    "DiagnosticPresent": false,
+    "SelectedDiagnostics": "linux_uid=1000\nlinux_groups=worker\nwindows_path_present=false\nwsl_interop_env_present=false\ncopy_digest_match=true\nnormal_exit=1\nnormal_class=other\nnormal_windows_sid_match=false\nclean_exit=1\nclean_class=other\nclean_windows_sid_match=false\n",
+    "LinuxPrivateProbeCreated": true,
+    "RootConfigurationChanged": false,
+    "GlobalBinfmtChanged": false
+  },
+  "StagingCreated": false,
+  "AclChanged": false,
+  "GuestConfigurationChanged": false,
+  "GatewayApplied": false
+}

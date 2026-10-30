@@ -1,0 +1,174 @@
+{
+  "schemaVersion": 1,
+  "stage": "HERDR-BIDIR-20261026",
+  "direction": "Mac-to-Windows",
+  "scope": "Operator controller PoC; no standard-worker/WSL isolation claim",
+  "verifiedAt": "2026-10-25T15:34:21.948457+00:00",
+  "result": "pass",
+  "profile": {
+    "id": "e310d40031e946d9896f29d9f600d317",
+    "label": "devnode-poc-win-20261026",
+    "target": "devnode-win-uuu-recreated",
+    "session": "devnode-poc-win-20261026"
+  },
+  "machineStatus": [
+    {
+      "id": "e310d40031e946d9896f29d9f600d317",
+      "label": "devnode-poc-win-20261026",
+      "status": "reachable",
+      "error": null
+    }
+  ],
+  "serverStatus": {
+    "status": "running",
+    "running": true,
+    "version": "0.9.5",
+    "protocol": 22,
+    "capabilities": {
+      "live_handoff": false,
+      "detached_server_daemon": true,
+      "endpoint_protocol_generation": 1,
+      "surface_interest": true,
+      "health_check": true,
+      "ssh_agent_registration": false
+    },
+    "compatible": true,
+    "endpoint_compatible": true,
+    "socket": "machine:e310d40031e946d9896f29d9f600d317/devnode-poc-win-20261026",
+    "session": "devnode-poc-win-20261026",
+    "restart_needed": false,
+    "server_binary_stale": null
+  },
+  "workspace": {
+    "active_tab_id": "w2:t1",
+    "agent_status": "unknown",
+    "focused": false,
+    "label": "herdr-bidir-mac-to-win-20261026",
+    "number": 2,
+    "pane_count": 1,
+    "tab_count": 1,
+    "workspace_id": "w2"
+  },
+  "paneProof": {
+    "pane": "w2:p1",
+    "nonceLine": "RESULT_d68db56589894795b61ee6404699842c",
+    "os": "Microsoft Windows 10.0.29695",
+    "user": "UUU\\basic",
+    "herdrEnv": "1",
+    "manuallyInjectedHerdrEnv": false,
+    "exactOutputLinesChecked": true
+  },
+  "agent": {
+    "name": "poc_macwin",
+    "kind": "codex",
+    "version": "0.164.0",
+    "startResult": {
+      "agent": "codex",
+      "agent_status": "idle",
+      "cwd": "C:\\Users\\rebui\\setup-audit\\herdr-readonly-20261026\\windows-agent-workspace",
+      "focused": false,
+      "interactive_ready": true,
+      "name": "poc_macwin",
+      "pane_id": "w2:p1",
+      "revision": 2,
+      "state_change_seq": 1,
+      "tab_id": "w2:t1",
+      "terminal_id": "term_65eabdff3db102",
+      "terminal_title": "windows-agent-workspace",
+      "terminal_title_stripped": "windows-agent-workspace",
+      "workspace_id": "w2"
+    },
+    "promptResult": {
+      "agent": "codex",
+      "agent_status": "done",
+      "completion_seq": 3,
+      "cwd": "C:\\Users\\rebui\\setup-audit\\herdr-readonly-20261026\\windows-agent-workspace",
+      "focused": false,
+      "interactive_ready": true,
+      "name": "poc_macwin",
+      "pane_id": "w2:p1",
+      "revision": 3,
+      "state_change_seq": 3,
+      "tab_id": "w2:t1",
+      "terminal_id": "term_65eabdff3db102",
+      "terminal_title": "Reply with connectivity token | windows-agent-workspace",
+      "terminal_title_stripped": "Reply with connectivity token | windows-agent-workspace",
+      "workspace_id": "w2"
+    },
+    "exactAssistantLine": "• agent-macwin-cea5754baa2f49caae503d429ecbf49b",
+    "exactLineChecked": true,
+    "promptRetried": false
+  },
+  "reconnect": {
+    "samePane": "w3:p1",
+    "freshCliProcesses": true,
+    "serverStopped": false,
+    "firstOutput": "RECONNECT_cac1acc59bf8475b9e19ffaee8bb02dc",
+    "secondOutput": "RECONNECT_1e1698adfc6d49f98bbbfaefc893acc3",
+    "bothOutputsChecked": true
+  },
+  "limitations": [
+    "PowerShell non_login still loaded existing user profile; missing winget/mise errors observed.",
+    "Codex existing user permissions/auth/hooks inherited; hook error observed, nonce reply succeeded.",
+    "No clean-worker or Headscale transport proof."
+  ],
+  "evidence": [
+    {
+      "file": "/Users/rebui/.local/state/dotfiles/herdr-poc/mac-14f29b3f-cda1-4acf-9f18-26d35f8d6074/machine-status.json",
+      "sha256": "f363e40bd46e71883423282e23b0afbda92263a39e178cf2512135a813f62a8d"
+    },
+    {
+      "file": "/Users/rebui/.local/state/dotfiles/herdr-poc/mac-14f29b3f-cda1-4acf-9f18-26d35f8d6074/remote-status.json",
+      "sha256": "e6a177b033235b4f11b937ecfb0246f986887acced90999fc6ca7cd78f7ec888"
+    },
+    {
+      "file": "/Users/rebui/.local/state/dotfiles/herdr-poc/mac-14f29b3f-cda1-4acf-9f18-26d35f8d6074/windows-server-status.json",
+      "sha256": "266c0f9abd9aca6c5967ea9dd1606d5cff7550b5ae6764e5bad448cee4f93992"
+    },
+    {
+      "file": "/Users/rebui/.local/state/dotfiles/herdr-poc/mac-14f29b3f-cda1-4acf-9f18-26d35f8d6074/workspace-create.json",
+      "sha256": "1a89127c3546331a4ccc9da76ee3c60bc3633f0f766a0224ac10a9a360fa6eef"
+    },
+    {
+      "file": "/Users/rebui/.local/state/dotfiles/herdr-poc/mac-14f29b3f-cda1-4acf-9f18-26d35f8d6074/pane-run.json",
+      "sha256": "431b925dd6550b2eccc234f5bc2f4a5a381ebf2bdd3a50173474154a20d7339e"
+    },
+    {
+      "file": "/Users/rebui/.local/state/dotfiles/herdr-poc/mac-14f29b3f-cda1-4acf-9f18-26d35f8d6074/pane-read.json",
+      "sha256": "f3c8be67d8a8a0f72d2763b4a80bf32666aec2c3ab1ede2d400bdd126888cb09"
+    },
+    {
+      "file": "/Users/rebui/.local/state/dotfiles/herdr-poc/mac-14f29b3f-cda1-4acf-9f18-26d35f8d6074/agent-start.json",
+      "sha256": "a6a934ab92886b8a5a72c3b6ab57cfd4f0c6b67c0661e69444aabd85bf8766e6"
+    },
+    {
+      "file": "/Users/rebui/.local/state/dotfiles/herdr-poc/mac-14f29b3f-cda1-4acf-9f18-26d35f8d6074/agent-prompt.json",
+      "sha256": "d5535ac125533b28475cd74456e9e21d54298869a9753eef4422330005109b2b"
+    },
+    {
+      "file": "/Users/rebui/.local/state/dotfiles/herdr-poc/mac-14f29b3f-cda1-4acf-9f18-26d35f8d6074/agent-read.json",
+      "sha256": "09c7a1e762956da50a911b1887e6ba1240cdf462e3e5b6a5c8ac2f45decbcd0f"
+    },
+    {
+      "file": "/Users/rebui/.local/state/dotfiles/herdr-poc/mac-14f29b3f-cda1-4acf-9f18-26d35f8d6074/reconnect-workspace.json",
+      "sha256": "b2450417ea90081bdf1b9360e3d8868b0bdf0312ee4635b2d4490a782ed4f2d6"
+    },
+    {
+      "file": "/Users/rebui/.local/state/dotfiles/herdr-poc/mac-14f29b3f-cda1-4acf-9f18-26d35f8d6074/reconnect-first-run.json",
+      "sha256": "ccf1da0cfaa0e3a2a5f25020c5c34dd7ce179e2b321d813b0601ae998ed370a9"
+    },
+    {
+      "file": "/Users/rebui/.local/state/dotfiles/herdr-poc/mac-14f29b3f-cda1-4acf-9f18-26d35f8d6074/reconnect-first-read.json",
+      "sha256": "6466e7a0b0c03dcf915892bd0f43803f60ce82363e4b43f6172c47505dba915e"
+    },
+    {
+      "file": "/Users/rebui/.local/state/dotfiles/herdr-poc/mac-14f29b3f-cda1-4acf-9f18-26d35f8d6074/reconnect-second-run.json",
+      "sha256": "6c6dddc93ea338a45babe228ea99f8c965f4e34d2b866232b6521f173c0a18e2"
+    },
+    {
+      "file": "/Users/rebui/.local/state/dotfiles/herdr-poc/mac-14f29b3f-cda1-4acf-9f18-26d35f8d6074/reconnect-second-read.json",
+      "sha256": "f8d342ed5f6ed59dfedf15f7aa7d5cc46c022158b6843e31deafe86ac042d356"
+    }
+  ],
+  "privacy": "Selected verified outputs only; raw terminal histories, credentials and usage data omitted."
+}

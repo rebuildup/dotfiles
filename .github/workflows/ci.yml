@@ -39,6 +39,8 @@ jobs:
           bun script/agent.ts shortcuts > /dev/null
       - name: Test agent launcher (mock harnesses)
         run: bun test script/agent.test.ts script/claude-settings.test.ts
+      - name: Test node connection and configuration sync
+        run: bun test script/devnode.test.ts script/devnode-update.test.ts script/devnode-machines.test.ts
       - name: Guard secret material
         run: ./script/check-secrets
 
@@ -56,5 +58,7 @@ jobs:
         run: bun script/agent.ts check
       - name: Test Windows layers (batch shims, .cmd shortcuts, PowerShell wrapper)
         run: bun test script/agent.test.ts script/agent.windows.test.ts script/agent.entrypoint.windows.test.ts
+      - name: Test node configuration update and display planner (Windows)
+        run: bun test script/devnode-update.test.ts script/devnode-machines.test.ts
       - name: Test Windows link adapter (adoption-first symlinks)
         run: bun test script/link.windows.test.ts

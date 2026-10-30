@@ -1,0 +1,61 @@
+{
+  "Status": "failed",
+  "Phase": "guest-boundary-verify",
+  "Kind": "controller-or-worker-failure",
+  "CompletedReports": {
+    "FirewallBaseline": {
+      "InterfaceAlias": "Tailscale",
+      "Profiles": [
+        {
+          "Name": "Domain",
+          "Enabled": "True",
+          "AllowInboundRules": "True",
+          "AllowLocalFirewallRules": "True",
+          "DisabledInterfaceAliases": null
+        },
+        {
+          "Name": "Private",
+          "Enabled": "True",
+          "AllowInboundRules": "True",
+          "AllowLocalFirewallRules": "True",
+          "DisabledInterfaceAliases": null
+        },
+        {
+          "Name": "Public",
+          "Enabled": "True",
+          "AllowInboundRules": "True",
+          "AllowLocalFirewallRules": "True",
+          "DisabledInterfaceAliases": null
+        }
+      ],
+      "PolicyChanged": false
+    },
+    "Configure": {
+      "Sid": "S-1-5-21-3608086955-217808620-105719149-1013",
+      "Administrator": false,
+      "CanaryPresent": false,
+      "DistroName": "pcw-2a1084ec-5389-4b0b-a0f0-9a38fcfaece5",
+      "Action": "Configure",
+      "Guest": {
+        "action": "Configure",
+        "host_fp": "SHA256:FoPMohEbvfyo3e1b+Zjj8BO2stEFh7HfP38rLV27f6U",
+        "restart_required": "true"
+      },
+      "DiagnosticPresent": false
+    },
+    "Restart": {
+      "Sid": "S-1-5-21-3608086955-217808620-105719149-1013",
+      "Administrator": false,
+      "CanaryPresent": false,
+      "DistroName": "pcw-2a1084ec-5389-4b0b-a0f0-9a38fcfaece5",
+      "Action": "Restart",
+      "Guest": {
+        "action": "Restart",
+        "distro_stopped": true
+      },
+      "DiagnosticPresent": false
+    }
+  },
+  "PartialStatePreserved": true,
+  "AutomaticRollback": false
+}

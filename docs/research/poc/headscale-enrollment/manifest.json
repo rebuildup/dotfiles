@@ -1,0 +1,73 @@
+{
+  "recordedAt": "2026-10-26",
+  "scope": "read-only archival; no network requests or mutation; original records are snapshots, not current service status",
+  "jsonReview": "Recursive sensitive field-name check; only reviewed credential IDs, expiry flags and secret-name pointers allowed; no credential-shaped string found",
+  "artifacts": [
+    {
+      "file": "preparation.json",
+      "source": "/Users/rebui/.local/state/dotfiles/headscale-poc/mac-9f8f6a26-3686-455f-be33-0e6ddb845105/preparation.json",
+      "sha256": "10888b1072c9119f3cf790c17829c49a84d03312767ddaccb0cdf1fe6dc0d47e",
+      "kind": "non-secret journal snapshot"
+    },
+    {
+      "file": "network-recovery.json",
+      "source": "/Users/rebui/.local/state/dotfiles/headscale-poc/mac-9f8f6a26-3686-455f-be33-0e6ddb845105/network-recovery.json",
+      "sha256": "c208589948c8bd5484487feaf96bc22d8da17a2b5f75e26be0f4a776b1ad06fe",
+      "kind": "non-secret journal snapshot"
+    },
+    {
+      "file": "credential-cleanup.json",
+      "source": "/Users/rebui/.local/state/dotfiles/headscale-poc/mac-9f8f6a26-3686-455f-be33-0e6ddb845105/credential-cleanup.json",
+      "sha256": "ca85405515bfaa529a44dae1410fa221a68055f6784bab593cdf933c5e0f33b6",
+      "kind": "non-secret journal snapshot"
+    },
+    {
+      "file": "existing-gui-before.json",
+      "source": "/Users/rebui/.local/state/dotfiles/headscale-poc/mac-9f8f6a26-3686-455f-be33-0e6ddb845105/existing-gui-before.json",
+      "sha256": "c8ea7fa3ad10ba90fcbc0aac36a60dbe665a8491f57733e9a4ab97771c5ca749",
+      "kind": "non-secret journal snapshot"
+    },
+    {
+      "file": "existing-gui-after.json",
+      "source": "/Users/rebui/.local/state/dotfiles/headscale-poc/mac-9f8f6a26-3686-455f-be33-0e6ddb845105/existing-gui-after.json",
+      "sha256": "c28e6702abea8415065e2460a0fbc90faaef89b9270bda6f8dd0c8e02ea8331d",
+      "kind": "non-secret journal snapshot"
+    },
+    {
+      "file": "network-replay-recovery.json",
+      "source": "/Users/rebui/.local/state/dotfiles/headscale-poc/r-ff48fa9e26c54c85/network-replay-recovery.json",
+      "sha256": "1c092bc9984617a826ea6d61a7cee6fe95fef525b69fe494982fe3c1234a979a",
+      "kind": "non-secret journal snapshot"
+    },
+    {
+      "file": "headscale-key-metadata.ts",
+      "source": "/tmp/headscale-key-metadata.ts",
+      "sha256": "ed36aa5e6977fd320f71169831b33ff7c0ffd400654096bbb28546b3c93ff93e",
+      "kind": "research source snapshot; never auto-run"
+    },
+    {
+      "file": "headscale-key-metadata.test.ts",
+      "source": "/tmp/headscale-key-metadata.test.ts",
+      "sha256": "7ee8ee3eab929cca2c6570c63c07dd54a57a678053ce0feab7b738a4d8d0c329",
+      "kind": "research source snapshot; never auto-run"
+    },
+    {
+      "file": "devnode-recover-mac-headscale-poc.ts",
+      "source": "/tmp/devnode-recover-mac-headscale-poc.ts",
+      "sha256": "427ded7fa376d79b63f713a1ba0e5363f9001b9560e644d9684f98c1846f8c47",
+      "kind": "research source snapshot; never auto-run"
+    },
+    {
+      "file": "devnode-recover-replay-headscale-poc.ts",
+      "source": "/tmp/devnode-recover-replay-headscale-poc.ts",
+      "sha256": "4be0ac5e7eefa4ed4df1ea3c89a7122b79ec8c2900ef1741bb4a1f7f7d41cfdf",
+      "kind": "research source snapshot; never auto-run"
+    },
+    {
+      "file": "devnode-cleanup-headscale-registration.ts",
+      "source": "/tmp/devnode-cleanup-headscale-registration.ts",
+      "sha256": "16bcc3236cc87e620bd4ee13bed9d43acc014b2095417f2fe237ef78193cb154",
+      "kind": "research source snapshot; never auto-run"
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "Status": "read-only-diagnostic-collected",
+  "Report": {
+    "Sid": "S-1-5-21-3608086955-217808620-105719149-1013",
+    "Administrator": false,
+    "NativeProfileLoaded": true,
+    "RegistrationVerified": true,
+    "DistroName": "pcw-2a1084ec-5389-4b0b-a0f0-9a38fcfaece5",
+    "ReadOnly": true,
+    "NativeExit": 0,
+    "DiagnosticPresent": false,
+    "SelectedDiagnostics": "root_meta=0:0:700\nauth_meta=0:0:755\nauth_file_meta=0:0:644\nmanifest_meta=0:0:600\nhost_private_meta=0:0:600\nunit_meta=0:0:644\nowner_match=true\ninstance_match=true\nsource_match=true\nkey_match=true\nhash_host_ed25519_pub=true\nhash_sshd_template=true\nhash_runner=true\nhash_wsl_conf_desired=true\nauth_hash_match=true\nunit_hash_match=true\nwsl_conf_match=true\nuid=1000\ngroups=worker\nhome_meta=1000:1000:700\ninterop_WSLInterop_status=enabled\ninterop_registration_present=true\ndrive_mount_targets=/usr/lib/wsl/drivers,\nservice_active=active\nservice_sub=running\nservice_result=success\neth0=172.22.157.236/20,\nlisten22=\nlisten22224=172.22.157.236:22224,\nsshd_syntax=true\nhost_fp=SHA256:FoPMohEbvfyo3e1b+Zjj8BO2stEFh7HfP38rLV27f6U\n"
+  },
+  "StagingCreated": false,
+  "AclChanged": false,
+  "GuestConfigurationChanged": false,
+  "GatewayApplied": false
+}

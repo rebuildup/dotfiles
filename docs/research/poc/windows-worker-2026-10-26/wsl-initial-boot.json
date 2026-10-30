@@ -1,0 +1,29 @@
+{
+  "Status": "linux-boot-inventory-pass",
+  "SourceCommit": "42639b08b00d7ec28c2523799b6bb69e1bcdb8f2",
+  "Report": {
+    "Sid": "S-1-5-21-3608086955-217808620-105719149-1013",
+    "Administrator": false,
+    "CanaryPresent": false,
+    "DistroName": "pcw-2a1084ec-5389-4b0b-a0f0-9a38fcfaece5",
+    "RegistrationVerified": true,
+    "LinuxBootTested": true,
+    "DiagnosticPresent": false,
+    "Linux": {
+      "Nonce": "3079902558e54912bff3b472cce86615",
+      "OS": "Linux",
+      "Uid": 0,
+      "Architecture": "x86_64",
+      "Release": "24.04",
+      "Cpu": 2,
+      "MemoryKB": 4013088,
+      "WindowsMountPresent": true,
+      "InteropPresent": true,
+      "SshTested": false,
+      "HerdrTested": false
+    }
+  },
+  "SshTested": false,
+  "HerdrTested": false,
+  "AutomaticRollback": false
+}

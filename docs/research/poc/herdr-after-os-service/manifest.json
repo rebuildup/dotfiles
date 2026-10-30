@@ -1,0 +1,23 @@
+{
+  "date": "2026-10-26",
+  "rawMachineLocalSHA256": {
+    "resume-windows-agent-prompt-after-review.json": "abc1d8c733f76db0c81523099fd188817ba733a2604cf4005cdeaf74fedb97c5",
+    "resume-windows-reconnect-prompt.json": "a619fcb04b5204d7109601752786a50c4ba9992085c66d2e4128cc5c3d658b6b",
+    "resume-windows-agent-response.txt": "0cdbc78f47bfd0ef223ba4169ed303659755eb9700891ed0615c88acfe8d984e",
+    "resume-windows-reconnect-read.txt": "88bd363e206de1fb6bb60da42e1b5b3c48b6107fd9b0f1dffa8323ecb43beda2",
+    "resume-reverse-result.json": "69aa2ee61b60a31a4664caf75d80f1ca3efdd49f98e8cc188b8f24c5aa0034fd",
+    "resume-reverse-result-v2.json": "0ab4e1abc23b736d6bc5ce57b4d7f47793496bf62a5bce71be691579be257800"
+  },
+  "sources": [
+    {
+      "path": "sources/windows-reverse-v1.ps1",
+      "sha256": "167b994d1a946887c90b97eb11b9ca110017b29389151b0408022cb3c2605421"
+    },
+    {
+      "path": "sources/windows-reverse-v2.ps1",
+      "sha256": "8e57a0f75fac875dd9d9d19fd5bc83743e475b92c7b41b787eb16d3a522998e0"
+    }
+  ],
+  "scope": "No terminal history, credentials, login cache or Codex conversation/session IDs archived. Source fixtures are one-shot observed PoC payloads, not a common bootstrap.",
+  "resultsSHA256": "6e0027ced93bdb84c5f3322b50573020bd9fda2e121aa97003b6ffe503baeb12"
+}

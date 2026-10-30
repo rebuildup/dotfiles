@@ -1,0 +1,135 @@
+{
+  "ObservedAt": "2026-10-26T15:34:26.3558754+09:00",
+  "Worker": {
+    "InstanceId": "2a1084ec-5389-4b0b-a0f0-9a38fcfaece5",
+    "Inventory": {
+      "Status": "inventory-pass",
+      "Stage": "WSL-FIRST-2a1084ec-Inventory-v1",
+      "SourceCommit": "bb1df22cbe8182f9593324eaa0525b01d676c4ea",
+      "Report": {
+        "InstanceId": "2a1084ec-5389-4b0b-a0f0-9a38fcfaece5",
+        "ProtectedDirectoryReadable": false,
+        "ProtectedFileReadable": false,
+        "DistroName": "pcw-2a1084ec-5389-4b0b-a0f0-9a38fcfaece5",
+        "ImportCommandSucceeded": false,
+        "Sid": "S-1-5-21-3608086955-217808620-105719149-1013",
+        "LinuxBootTested": false,
+        "CanaryPresent": false,
+        "NativeProfileLoaded": true,
+        "RegistrationVerified": false,
+        "Mode": "Inventory",
+        "Administrator": false,
+        "InstallLocation": "C:\\ProgramData\\pc-setup-worker-data-2a1084ec-5389-4b0b-a0f0-9a38fcfaece5\\wsl",
+        "RegistryCountBefore": 0,
+        "DenialScope": "Existing operator file/directory only; not another standard worker."
+      },
+      "LinuxBootTested": false,
+      "SshTested": false,
+      "HerdrTested": false,
+      "AutomaticRollback": false
+    },
+    "Import": {
+      "Status": "import-and-registration-verified",
+      "Stage": "WSL-FIRST-2a1084ec-Import-v1",
+      "SourceCommit": "bb1df22cbe8182f9593324eaa0525b01d676c4ea",
+      "Report": {
+        "Sid": "S-1-5-21-3608086955-217808620-105719149-1013",
+        "ImportCommandSucceeded": false,
+        "InstanceId": "2a1084ec-5389-4b0b-a0f0-9a38fcfaece5",
+        "Mode": "Verify",
+        "InstallLocation": "C:\\ProgramData\\pc-setup-worker-data-2a1084ec-5389-4b0b-a0f0-9a38fcfaece5\\wsl",
+        "CanaryPresent": false,
+        "RegistrationVerified": true,
+        "Administrator": false,
+        "LinuxBootTested": false,
+        "DistroName": "pcw-2a1084ec-5389-4b0b-a0f0-9a38fcfaece5",
+        "RegistryCountBefore": 1,
+        "NativeProfileLoaded": true
+      },
+      "LinuxBootTested": false,
+      "SshTested": false,
+      "HerdrTested": false,
+      "AutomaticRollback": false,
+      "ImportReport": {
+        "CanaryPresent": false,
+        "InstallLocation": "C:\\ProgramData\\pc-setup-worker-data-2a1084ec-5389-4b0b-a0f0-9a38fcfaece5\\wsl",
+        "Mode": "Import",
+        "DistroName": "pcw-2a1084ec-5389-4b0b-a0f0-9a38fcfaece5",
+        "InstanceId": "2a1084ec-5389-4b0b-a0f0-9a38fcfaece5",
+        "ImportCommandSucceeded": true,
+        "RegistrationVerified": false,
+        "RegistryCountBefore": 0,
+        "LinuxBootTested": false,
+        "NativeProfileLoaded": true,
+        "Administrator": false,
+        "Sid": "S-1-5-21-3608086955-217808620-105719149-1013"
+      },
+      "VerifyReport": {
+        "Sid": "S-1-5-21-3608086955-217808620-105719149-1013",
+        "ImportCommandSucceeded": false,
+        "InstanceId": "2a1084ec-5389-4b0b-a0f0-9a38fcfaece5",
+        "Mode": "Verify",
+        "InstallLocation": "C:\\ProgramData\\pc-setup-worker-data-2a1084ec-5389-4b0b-a0f0-9a38fcfaece5\\wsl",
+        "CanaryPresent": false,
+        "RegistrationVerified": true,
+        "Administrator": false,
+        "LinuxBootTested": false,
+        "DistroName": "pcw-2a1084ec-5389-4b0b-a0f0-9a38fcfaece5",
+        "RegistryCountBefore": 1,
+        "NativeProfileLoaded": true
+      }
+    },
+    "BootSourceCommit": "42639b08b00d7ec28c2523799b6bb69e1bcdb8f2",
+    "LinuxBootTested": false,
+    "SshTested": false,
+    "HerdrTested": false
+  },
+  "VPN": {
+    "WindowsIPv4": "100.118.123.62",
+    "MacIPv4": "100.83.203.34",
+    "Unattended": {
+      "Status": "unattended-enabled",
+      "Before": false,
+      "After": true,
+      "ExistingIdentityPreserved": true,
+      "AddressesPreserved": true,
+      "SelectedPrefsAndServePreserved": true,
+      "RunSSH": false,
+      "ControlServerPreserved": true,
+      "NewLoginPerformed": false,
+      "LogoutTested": false,
+      "RebootTested": false
+    }
+  },
+  "WindowsPersistentSSH": {
+    "SourceCommit": "2a1f895e08599df2a1f793da3d8c68a3e58d52f0",
+    "PR": "https://github.com/rebuildup/pc-setup/pull/140",
+    "TaskInstalled": false,
+    "LastLaunch": "UAC canceled before controller start",
+    "RetryPerformed": false
+  },
+  "ConfigSync": {
+    "TestCommit": "dfd03eac77122ea3f174dd56e6610baa6ef84b0d",
+    "Passed": 28,
+    "Skipped": 2,
+    "Failed": 0,
+    "SkipReason": "POSIX-only CLI permission fixtures",
+    "WindowsACLGuard": "pass",
+    "UpdateFrom": "dfd03eac77122ea3f174dd56e6610baa6ef84b0d",
+    "UpdateTo": "0ef27817817fccd359afe18f6d919172fc0c1fb8",
+    "CheckDidNotChangeCheckout": true,
+    "FastForwardApplySucceeded": true,
+    "SecondApplyNoop": true,
+    "OnlyOwnedMacBinding": true,
+    "MachinePlanApplyPlanNoop": true,
+    "EntireHerdrCatalogUnchanged": true
+  },
+  "MacLaunchAgentAfterSSH": {
+    "Endpoint": "rebui@100.83.203.34:22223",
+    "ExistingDedicatedKeyAndPin": true,
+    "Nonce": "c9f78e9445cf4e4a84b8f78ac9d02265",
+    "ExitCode": 0,
+    "NonceMatch": true,
+    "HerdrReconnectTested": false
+  }
+}

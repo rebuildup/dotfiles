@@ -1,0 +1,21 @@
+{
+  "Status": "listening",
+  "SourceCommit": "b39bba1faf4da456b54226342323b4a8e3ef5295",
+  "User": "basic",
+  "PowerShell": "7.6.9",
+  "Address": "100.118.123.62",
+  "ControllerAddress": "100.83.203.34",
+  "Port": 22222,
+  "PID": 49792,
+  "Executable": "C:\\WINDOWS\\System32\\OpenSSH\\sshd.exe",
+  "ProcessSid": "S-1-5-18",
+  "CommandLine": "\"C:\\WINDOWS\\System32\\OpenSSH\\sshd.exe\" -D -f C:\\ProgramData\\pc-setup-ssh-poc\\sshd_config -E C:\\ProgramData\\pc-setup-ssh-poc-runtime\\logs\\sshd.log",
+  "Fingerprint": "256 SHA256:jiE0bH0QH92Mc46Eiows6oJIFIEykCUAQqN+bj5ogfY basic@UUU (ED25519)",
+  "TaskApiAcl": "O:BAG:BAD:PAI(A;;FA;;;SY)(A;;FA;;;BA)",
+  "TaskFileAclProtected": true,
+  "StandardSshdState": "Stopped",
+  "StandardSshdStartMode": "Manual",
+  "RebootTested": false,
+  "AuthenticationTested": false,
+  "RestartPerformed": false
+}

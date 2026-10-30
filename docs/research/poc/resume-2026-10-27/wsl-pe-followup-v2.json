@@ -1,0 +1,27 @@
+{
+  "Status": "pe-read-only-followup-collected",
+  "Report": {
+    "Sid": "S-1-5-21-3608086955-217808620-105719149-1013",
+    "Administrator": false,
+    "NativeProfileLoaded": true,
+    "RegistrationVerified": true,
+    "ReadOnly": true,
+    "NativeExit": 0,
+    "DiagnosticPresent": false,
+    "SelectedDiagnostics": "normal_error_bytes=63\nnormal_error_sha=67f49188c120f58ee51c55d95bca5725964ac46a35a8ff8f2874fed07335c4a3\nnormal_mentions_interop=false\nnormal_mentions_disabled=false\nnormal_mentions_support=false\nnormal_mentions_socket=false\nnormal_mentions_exec_format=false\nnormal_mentions_permission=false\nnormal_mentions_no_file=false\nclean_error_bytes=63\nclean_error_sha=e57a056b5e42c8d4fd2127060545b6bf559b9e25494b77cceeab9f39609b6c35\nclean_mentions_interop=false\nclean_mentions_disabled=false\nclean_mentions_support=false\nclean_mentions_socket=false\nclean_mentions_exec_format=false\nclean_mentions_permission=false\nclean_mentions_no_file=false\n",
+    "UncPositive": {
+      "Phase": "native-copy-positive",
+      "Exit": 0,
+      "SidMatch": true,
+      "FailureType": null,
+      "FailureHResult": null,
+      "WindowsError": null
+    },
+    "RootConfigurationChanged": false,
+    "GlobalBinfmtChanged": false
+  },
+  "StagingCreated": false,
+  "AclChanged": false,
+  "GuestConfigurationChanged": false,
+  "GatewayApplied": false
+}

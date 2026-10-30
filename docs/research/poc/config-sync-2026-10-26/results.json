@@ -1,0 +1,60 @@
+{
+  "date": "2026-10-26",
+  "source": "10da82b9b1635891bdb63c1602df8790d306db96",
+  "macRuntimeClone": {
+    "path": "/Users/rebui/.local/share/dotfiles-devnode",
+    "branch": "74",
+    "original": "59a14ae8e0e5a635f0d6c74480e9208f63374139",
+    "checkChanged": false,
+    "applyTarget": "10da82b9b1635891bdb63c1602df8790d306db96",
+    "applyChanged": true,
+    "secondApplyNoop": true,
+    "submodulesInitialized": false
+  },
+  "macMachines": {
+    "planChanges": [],
+    "applyChanges": [],
+    "unchanged": [
+      "win-uuu"
+    ],
+    "unbound": [
+      "mac"
+    ],
+    "profileId": "e310d40031e946d9896f29d9f600d317",
+    "label": "UUU · Windows",
+    "renameDuringAdapterVerification": false
+  },
+  "windowsReported": {
+    "source": "dfd03eac77122ea3f174dd56e6610baa6ef84b0d",
+    "gitVersion": "2.55.0.windows.5",
+    "bunVersion": "1.4.4",
+    "focusedTests": {
+      "pass": 28,
+      "skipPOSIX": 2,
+      "fail": 0
+    },
+    "aclGuard": "pass",
+    "updateCheckNoop": true,
+    "updateApplyNoop": true,
+    "machineChanges": [],
+    "unchanged": [
+      "mac"
+    ],
+    "catalogAllFieldsUnchanged": true,
+    "renameDuringAdapterVerification": false,
+    "evidenceKind": "Windows担当からの実測報告。詳細artifactはWindows側で保存、root未回収"
+  },
+  "ci": {
+    "source": "0ef27817817fccd359afe18f6d919172fc0c1fb8",
+    "run": "https://github.com/rebuildup/dotfiles/actions/runs/40280314188",
+    "macos": "pass",
+    "ubuntu": "pass",
+    "windows": "pass",
+    "codeReview": "independent review completed; CodeRabbit paused is not completed review"
+  },
+  "limitations": [
+    "新規node登録/MI発行/資格情報配布の検証ではない",
+    "Windows adapterで実renameは発生していない",
+    "LinuxはCI。Linux/WSL実機での構成同期は未検証"
+  ]
+}
