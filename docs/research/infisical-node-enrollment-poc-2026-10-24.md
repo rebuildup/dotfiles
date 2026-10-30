@@ -67,3 +67,11 @@ MI/Universal Auth、一回用client secret TTL120秒/uses1、cross-project読取
 このinstanceのclient secret fieldsはttl/numUsesLimit。token更新・撤回は/api/v1/auth/token/renewと/api/v1/auth/token/revokeで、最新docsのuniversal-auth/renewをそのまま移植しない。Period=0を保ち、client secret寿命とtoken寿命を区別する。
 
 今回の読取では認証token/cache/license keyを取得せず、CLIにもplan読取commandが見つからなかったため現行planは未再取得。10/24のrbac=false/secretsFolderRbac=false/auditLogs=falseは履歴として扱う。[公式RBAC](https://infisical.com/docs/documentation/platform/access-controls/role-based-access-controls)でもbuilt-in viewerはproject全体の権限で、custom roleはEnterprise。path/env flagsを認可境界にしない。[監査ログ](https://infisical.com/docs/documentation/platform/audit-logs)のself-hosted Enterprise要件もあるため、secret-access監査は未達のまま。通常SSH接続ログやwrapper実行ログをその代替とは表示しない。自動課金・license変更は行っていない。
+
+## 2026-10-30 現行planの認証付きmetadata再取得
+
+上記の未再取得状態の後、正規mise CLIのuser get tokenをprocess memoryへcaptureし、canonical APIへのmetadata GETにだけ利用してHTTP200を確認した。tokenは表示・保存・argv埋込み・別node転送をしていない。MI/secret/role/service/課金設定の変更なし。
+
+現行flagsはrbac=false、secretsFolderRbac=false、auditLogs=false、auditLogsRetentionDays=0、auditLogStreams=false、ipAllowlisting=false、gateway=false、pam=null、dynamicSecret=false、secretApproval=false、secretRotation=false、secretVersioning=true。plan.slug=null/tier=-1、identityLimit/environmentLimit=nullであり、正式契約名や無制限とは解釈しない。細粒度認可・secret-access監査を利用可能と扱えない点を現行応答でも確認した。
+
+既存dotfiles projectはID/org一致、dev/staging/prodの3環境が存在した。builtin viewerをこのprojectへ付与するとdev限定にはならない。worker用は許可する値だけを置く専用projectで分離する。現行capability確認と、対象workerのMI発行・実注入・再生成後の拒否試験の完成は別で、後者は未実施。
