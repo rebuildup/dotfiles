@@ -75,3 +75,7 @@ MI/Universal Auth、一回用client secret TTL120秒/uses1、cross-project読取
 現行flagsはrbac=false、secretsFolderRbac=false、auditLogs=false、auditLogsRetentionDays=0、auditLogStreams=false、ipAllowlisting=false、gateway=false、pam=null、dynamicSecret=false、secretApproval=false、secretRotation=false、secretVersioning=true。plan.slug=null/tier=-1、identityLimit/environmentLimit=nullであり、正式契約名や無制限とは解釈しない。細粒度認可・secret-access監査を利用可能と扱えない点を現行応答でも確認した。
 
 既存dotfiles projectはID/org一致、dev/staging/prodの3環境が存在した。builtin viewerをこのprojectへ付与するとdev限定にはならない。worker用は許可する値だけを置く専用projectで分離する。現行capability確認と、対象workerのMI発行・実注入・再生成後の拒否試験の完成は別で、後者は未実施。
+
+## 2026-10-30 専用workerでの短期MI PoC
+
+実機worker instance `2a1084ec-5389-4b0b-a0f0-9a38fcfaece5` 上のprocessで、専用の合成値projectとinstance専用MI（org no-access、project viewer）を使用。検証担当の報告では、120秒・1回限りcredentialのlogin 200と再使用401、許可project読取200、子processへの環境注入成功と親環境非変更、書込403、別の合成project読取403を確認した。MI削除前は旧token読取200、削除後は自然期限前401。MIおよび作成した2 projectはowner確認後DELETE 200とGET 404を確認。人間tokenをworkerへ渡していない。実行コードSHA256 `67a9a5f3812080146c2bc9e3e371136643e0243c9f18e830dd3af6177700b267`、run ID `9bd9a0aa-4c78-437a-a0d9-d41d936ad11b`。これは一時PoCの担当者報告であり、継続認証・実運用secret・再生成の完成やsecretアクセス監査の代替ではない。
