@@ -1,5 +1,7 @@
 # 開発ノードの設定更新とHerdr表示名
 
+> **2026-11-01: 旧方式の採用中止。** この文書は履歴です。本文の成功・稼働状態は現在の利用可否を保証しません。旧手順による追加実装・復旧を継続しないでください。[撤回理由・必要な最小構成・撤去範囲](adr/distributed-development-reset-2026-11-01.md)を優先します。
+
 共通の非秘密設定はこのGit repository、秘密鍵・host pin・Herdr session・認証cacheは各端末が所有する。これらを丸ごと他端末へコピーしない。OSと常駐起動はpc-setupが所有する。
 
 このdesired-state同期はHerdrの接続先表示名だけを調停する。Herdr machine catalog/profileはクライアントごとのローカル参照であり、端末間の画面・pane・workspace・agent sessionを共有しない。複数端末で同じ画面を操作するには、全クライアントから同一のHerdr serverと同一のsessionへ公式remote接続する。各端末のローカルdefault sessionを開いたままでは画面は別々になる。

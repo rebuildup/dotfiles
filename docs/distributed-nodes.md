@@ -1,5 +1,7 @@
 # 分散開発ノード: 実装・検証計画
 
+> **2026-11-01: 旧方式の採用中止。** この文書は履歴です。本文の成功・稼働状態は現在の利用可否を保証しません。旧手順による追加実装・復旧を継続しないでください。[撤回理由・必要な最小構成・撤去範囲](adr/distributed-development-reset-2026-11-01.md)を優先します。
+
 状態: 実機検証を継続中。MacとWindowsは実作業のdefault sessionへ接続し、専用tabの入出力を照合済み。WSL workerもV4で修復記録を確定し、SSH・Herdr接続を維持している。WSLにはmise管理のCodex 0.165.0/Herdr 0.9.5を導入し、Herdrの専用tabでコード編集・3件のテスト成功・sandboxの作業外書込拒否を実測した。旧単体binaryはhash確認後にbackupし、通常のcodex/herdr入口を切り替えた。
 
 未完了: WindowsからWSLへの常用接続、Windowsサインイン後の自動復旧・再起動、管理側OSパッケージsetup、対象workerのInfisical MI、失効・再生成、共通join/leave。workerはLinux password locked・非sudoのままにし、OS管理処理とagent実行を分ける。Headscale PoCは未修正問題とedge制限未確認のため停止中。既存Tailscale経路は継続している。[実測と現状](research/herdr-independent-host-2026-10-29.md)・[受入条件](herdr-acceptance.md)・[worker runtime PR147](https://github.com/rebuildup/pc-setup/pull/147)を参照。

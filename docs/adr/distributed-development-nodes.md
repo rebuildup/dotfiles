@@ -1,5 +1,7 @@
 # 分散開発ノードの認証・接続境界
 
+> **2026-11-01: 旧方式の採用中止。** この文書は履歴です。本文の成功・稼働状態は現在の利用可否を保証しません。旧手順による追加実装・復旧を継続しないでください。[撤回理由・必要な最小構成・撤去範囲](distributed-development-reset-2026-11-01.md)を優先します。
+
 - 状態: 設計承認済み（2026-10-24）。Mac↔Windows専用SSHと、既存Tailscale経由のMac・Windows・WSL workerによる同一Mac Herdr named session/pane共有は歴史的PoCとして確認したが、Mac依存なのでNode Independenceの完成証拠ではない。2026-10-29に既存Infisical VPSへ専用unprivileged Herdr user/sessionを置き、Macからのremote attachとdetach後の稼働を確認。Windows/WSLからのVPS共有session接続は未検証。Headscale現行版のTailworm対策、複数Headscale peer通信、Infisical MI、node lifecycle、低権限Windows worker、本登録・WSL再生成は継続検証。[VPS-hosted Herdr記録](../research/herdr-independent-host-2026-10-29.md)
 - 日付: 2026-10-24
 - 実装追跡: https://github.com/rebuildup/dotfiles/issues/74

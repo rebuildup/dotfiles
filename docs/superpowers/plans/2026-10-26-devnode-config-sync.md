@@ -1,5 +1,7 @@
 # Devnode configuration sync implementation plan
 
+> **2026-11-01: 旧方式の採用中止。** この文書は履歴です。本文の成功・稼働状態は現在の利用可否を保証しません。旧手順による追加実装・復旧を継続しないでください。[撤回理由・必要な最小構成・撤去範囲](../../adr/distributed-development-reset-2026-11-01.md)を優先します。
+
 > **For agentic workers:** Use superpowers:subagent-driven-development or executing-plans, preserving the existing Mac integration/Windows provisioning ownership split.
 
 **Goal:** Non-secret Git updates and readable Herdr machine labels can be applied independently on each node, while Windows continues isolated WSL enrollment.
