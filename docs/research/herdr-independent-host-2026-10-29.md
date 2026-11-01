@@ -165,3 +165,9 @@ Mac/WindowsのTailscale statusを同時期に取得し、双方BackendState Runn
 非rootのdpkg-queryではcanonical APT baseline20件のうち12件が不足（git-lfs/build-essential/pkg-config/libssl-dev/cmake/ninja-build/clang/lldb/tree/unzip/zip/python3-venv）。apt-get -s --no-install-recommends --no-upgrade installの現一覧によるsimulationは終了0、追加73件、既存版更新0・削除0。rootやapt-get updateは実行しておらず、実適用時の再simulationを省略する証拠ではない。
 
 Mac→Windows VPN gateway→WSL専用SSHでzero byte列を1024/65536/1048576/16777216 byte取得し、全てexit0・長さとSHA256一致。1回ずつの経過時間は1.220/1.164/4.501/36.870秒。これは現在のgateway経路でサイズを変えた転送が停止しなかった確認で、圧縮可能データのため性能benchmarkにしない。WSL自身のVPN、二重VPNカプセル化、MTUの最適性・異ネットワークは未検証。
+
+同じWSL endpointで二つのSSH拒否試験を実行。使い捨て未登録Ed25519鍵はclient側IdentityAgent無効/IdentitiesOnly/既存hostpinで接続し、exit255 Permission denied(publickey)、command出力なし。正規worker鍵でUser=rootを明示した接続も同じ拒否結果。試験用privatekeyはtemp directoryごと撤去。これは誤鍵・別userの拒否で、password authenticationの実試験とは区別する。
+
+### 2026-11-01 接続喪失の実機診断
+
+Windows TailscaleはactiveだがworkerのTCP22224はtimeout。ユーザー実行の固定hash controller Status/WslInventoryはいずれもpass、専用WSL登録済み、workerから指定管理側file/directoryは読取不可。Statusはlistenerなし、lifecycle未登録、Repair invalid-or-missing。Windows側の読取検査ではV3/worker/WSL stageはvalid、portproxy mappingが存在せず、既存RepairV1はmanifestまたはjournalの既知targetに一致するmappingを必要とするため欠落時に停止する。mapping消失の原因は未確認。修復処理は未実行で、missing mappingの限定復旧とforeign target拒否をpc-setup側で修正・検証中。
