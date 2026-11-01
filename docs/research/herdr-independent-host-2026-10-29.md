@@ -171,3 +171,5 @@ Mac→Windows VPN gateway→WSL専用SSHでzero byte列を1024/65536/1048576/167
 ### 2026-11-01 接続喪失の実機診断
 
 Windows TailscaleはactiveだがworkerのTCP22224はtimeout。ユーザー実行の固定hash controller Status/WslInventoryはいずれもpass、専用WSL登録済み、workerから指定管理側file/directoryは読取不可。Statusはlistenerなし、lifecycle未登録、Repair invalid-or-missing。Windows側の読取検査ではV3/worker/WSL stageはvalid、portproxy mappingが存在せず、既存RepairV1はmanifestまたはjournalの既知targetに一致するmappingを必要とするため欠落時に停止する。mapping消失の原因は未確認。修復処理は未実行で、missing mappingの限定復旧とforeign target拒否をpc-setup側で修正・検証中。
+
+Windows側でPersistentStoreとActiveStoreを分けて再確認。ActiveStoreのAllow/BlockはPrimaryStatus OK、EnforcementStatusにEnforcedを含み、対象VPN IPv4とMac送信元に限定されていた。PersistentStoreのNotApplicableだけでは有効policyの失敗と判定できない。設定変更なし。修復はsource/fixture検証中で実機未適用。
