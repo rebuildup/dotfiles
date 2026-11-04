@@ -96,7 +96,8 @@ describeWin("link.ps1 (Windows adoption adapter)", () => {
       const repo = makeRepo(root, { initSubmodule: true });
       const home = join(root, "home");
       mkdirSync(home);
-      expect(link(repo, home, "-Apply").code).toBe(0);
+      const r = link(repo, home, "-Apply");
+      expect(r.code).toBe(0);
       expect(isLink(join(home, ".gitconfig"))).toBe(true);
       expect(realpathSync.native(join(home, ".gitconfig"))).toBe(realpathSync.native(join(repo, "home", ".gitconfig")));
       // a directory unit is linked to the resolved agents/dsh checkout
