@@ -41,7 +41,14 @@ $PosixOnly = @{
     '.local/bin/devices'            = 'POSIX launcher; on Windows use script/devices.ps1'
     '.local/bin/agent'              = 'POSIX symlink to agent.ts; on Windows use script/agent.ps1 and `agent shortcuts create`'
     '.claude/statusline-command.sh' = 'bash status line renderer; not wired for Windows-native Claude Code'
+    '.vimrc'                        = 'POSIX Vim entry point; Windows Vim reads the install-dir _vimrc under home/AppData/Local/Programs/Vim/_vimrc'
+    '.config/nvim/init.lua'         = 'POSIX Neovim entry point; Windows Neovim reads %LOCALAPPDATA%\nvim\init.lua under home/AppData/Local/nvim/init.lua'
 }
+
+# Directory-scoped POSIX-only trees. The table above matches exact paths only,
+# so without this a future home/.config/nvim/ file would slip through and land
+# in a Windows HOME that Neovim never reads.
+$PosixOnlyPrefixes = @('.config/nvim/')
 
 $SourceRoot = Join-Path $RepoRoot 'home'
 if (-not (Test-Path -LiteralPath $SourceRoot)) {
@@ -91,6 +98,15 @@ foreach ($entry in $entries) {
 
     if ($PosixOnly.ContainsKey($relative)) {
         Add-Result -State 'skip' -Relative $relative -Detail $PosixOnly[$relative]
+        continue
+    }
+
+    $posixPrefix = ''
+    foreach ($prefix in $PosixOnlyPrefixes) {
+        if ($relative.StartsWith($prefix)) { $posixPrefix = $prefix; break }
+    }
+    if ($posixPrefix -ne '') {
+        Add-Result -State 'skip' -Relative $relative -Detail "POSIX-only tree $posixPrefix; Windows Neovim reads %LOCALAPPDATA%\nvim\init.lua"
         continue
     }
 

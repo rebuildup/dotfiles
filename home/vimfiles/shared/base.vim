@@ -7,8 +7,8 @@ scriptencoding utf-8
 "   https://github.com/yasunori0418/dotfiles/blob/0fb4280199581af9a0b19cdea9f8c61a54f89c03/home/.vimrc
 "
 " 読み込み方:
-"   Vim     : _vimrc      から source
-"   Neovim  : init.lua    から vim.cmd('source ...')
+"   Vim     : ~/.vimrc (POSIX) / _vimrc (Windows) から source
+"   Neovim  : init.lua (薄い loader) → ~/vimfiles/nvim/init.lua から source
 "
 " Vim と Neovim で挙動が異なる設定 (文字コード、backup file) は
 " if has('nvim') で分けている。
@@ -180,7 +180,7 @@ syntax on
 " 端末の背景を透かす。
 " 'background' に transparent を指定する書き方は Vim でも Neovim でも
 " E474 になるので、guibg=NONE でハイライト側だけ背景を落とす。
-" Vim 側 (_vimrc 経由) と Neovim 側 (init.lua 経由) で同じ関数を共有する。
+" Vim 側 (.vimrc / _vimrc 経由) と Neovim 側 (init.lua 経由) で同じ関数を共有する。
 " :colorscheme で配色し直した後にも ColorScheme ごとに掛け直す。
 function! s:TransparentBG() abort
   for s:hl in ['Normal', 'NormalNC', 'SignColumn', 'EndOfBuffer']

@@ -98,6 +98,7 @@ git submodule status --recursive
 
 - Keep only configuration that I actually use or need to reproduce.
 - `home/` mirrors `$HOME`; managed files are linked individually into the real home directory. An entry may be a regular file or a symlink into an agent submodule.
+- Platform-specific entries are skipped by name (`AppData/` on POSIX, `.vimrc` and `.config/nvim/` on Windows), with the reason printed. A skipped source is never linked and never removed: existing user state is left exactly as it is.
 - Linking is idempotent and non-destructive. `script/link` never overwrites unmanaged targets; `script/bootstrap` only adopts known legacy Git targets after preserving backups and migrating user-owned state.
 - Secret values are not Git state. The self-hosted Infisical instance at `https://secrets.rebuildup.dev` is the canonical secret source of truth.
 - Prefer process-scoped `infisical run` injection over global exports or persistent plaintext `.env` files.
@@ -247,11 +248,14 @@ The current common Git baseline includes:
 - global ignore via `~/.config/git/ignore`
 - machine/user-local `~/.gitconfig.local`
 
-The editor baseline is shared between Vim and Neovim:
+The editor baseline is shared between Vim and Neovim. Each OS has only a thin
+entry point; the configuration itself lives once under `home/vimfiles/`:
 
-- `~/vimfiles/shared/base.vim` — the single source of truth for both editors (encoding, `~/.cache/vim` backup/swap/undo, display, folding, search, indent, statusline, `list`, window/tab/normal/insert/visual mappings, transparent background). Sourced by Vim's `_vimrc` and by Neovim's `init.lua`.
+- `~/vimfiles/shared/base.vim` — the single source of truth for both editors (encoding, `~/.cache/vim` backup/swap/undo, display, folding, search, indent, statusline, `list`, window/tab/normal/insert/visual mappings, transparent background).
 - `~/vimfiles/keymap/onishi.vim` — 大西配列 key placement; sourced last from `base.vim` so it overrides the defaults above.
-- `%LOCALAPPDATA%\Programs\Vim\_vimrc` and `%LOCALAPPDATA%\nvim\` (Neovim config, lockfiles, `scripts/`, `snippets/`) mirror their real Windows locations under `home/AppData/Local/` so neither editor needs an environment variable to find its config.
+- `~/vimfiles/nvim/init.lua` — the canonical Neovim config (plugins, keymaps, LSP). The two Neovim entry points below are byte-identical thin loaders of this file, so the lua config is never maintained per OS.
+- Entry points: `home/.vimrc` → `~/.vimrc` and `home/.config/nvim/init.lua` → `~/.config/nvim/init.lua` on macOS/WSL; `home/AppData/Local/Programs/Vim/_vimrc` and `home/AppData/Local/nvim/init.lua` at their real `%LOCALAPPDATA%` locations on Windows. `home/AppData/Local/nvim/` also keeps Neovim's lockfiles plus `scripts/` and `snippets/`, which only Windows reads.
+- Platform ownership is explicit in both linkers: `script/link` / `script/check` skip `home/AppData/` on POSIX, and `script/link.ps1` skips `home/.vimrc` and `home/.config/nvim/` on Windows. Skipped sources are never deleted — a machine that already linked them keeps its symlinks untouched.
 
 `set background=transparent` is rejected with E474 by both Vim and Neovim, so transparency is applied as `guibg=NONE` on `Normal` / `NormalNC` / `SignColumn` / `EndOfBuffer`, re-applied on `ColorScheme`.
 
