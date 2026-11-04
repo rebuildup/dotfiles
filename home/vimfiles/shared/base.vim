@@ -66,7 +66,25 @@ if !has('win32') && !has('win64')
 endif
 
 " diff を縦並び・行の差を強調
-set diffopt+=vertical,algorithm:histogram,indent-heuristic
+" Apple のシステム vim (internal-diff option items を持たない 9.1 ビルド) は
+" algorithm:/indent-heuristic を E474 で拒否し、エラー表示の hit-enter で
+" batch 起動 (vim --not-a-term -c ...) が中断する。まず一括で適用し、
+" 拒否された場合だけ項目ごとに再適用して、未対応の項目だけを失う。
+" 対応済みビルドは一括側が成功するため &diffopt は従来と一字一句同じ結果に
+" なる (diffopt+= の単一項目追加は既存フラグに対して no-op なので、
+" 既存の重複を含む文字列まで再現できる)。
+try
+  set diffopt+=vertical,algorithm:histogram,indent-heuristic
+catch /^Vim\%((\a\+)\)\=:E474/
+  for s:diffopt_item in ['vertical', 'algorithm:histogram', 'indent-heuristic']
+    try
+      execute 'set diffopt+=' . s:diffopt_item
+    catch /^Vim\%((\a\+)\)\=:E474/
+      " この vim ビルドは当該項目をサポートしていない
+    endtry
+  endfor
+  unlet s:diffopt_item
+endtry
 
 " ビープを鳴らさない
 set belloff=all
