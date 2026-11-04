@@ -51,7 +51,26 @@ pwsh -NoProfile -File script/link.ps1 -Apply   # target が存在しない entry
 - 既存ファイルは置換・移動・削除しない。内容が同一なら `identical`、異なる/別先を指す symlink は `conflict` として手動マージ対象に残す(`-Apply` は conflict が残ると終了コード 1)。
 - symlink 権限が無い場合 (Developer Mode / 管理者が必要) は copy にフォールバックせず `error` を報告する。
 - symlink entry は git index (mode 120000) から読む。`core.symlinks=false` では plain file として checkout されるため。
-- 未初期化 submodule の unit (`.dsh`) と POSIX 専用 entry (`.local/bin/agent`, `.claude/statusline-command.sh`) は理由付きで skip する。Windows の agent は `script/agent.ps1` と `agent shortcuts create` を使う。
+- 未初期化 submodule の unit (`.dsh`) と POSIX 専用 entry (`.local/bin/agent`, `.claude/statusline-command.sh`, `.vimrc`, `.config/nvim/`) は理由付きで skip する。Windows の agent は `script/agent.ps1` と `agent shortcuts create` を使う。
+
+#### 既存リンクの配置先を `~\src\dotfiles` から `~\.dotfiles` に是正する
+
+古い配備では symlink が feature branch の checkout (`~\src\dotfiles`) を指したままになる。`link.ps1` は adoption-first なので、別先を指す symlink を勝手に張り替えず `conflict` として報告する。安全・再実行可能な是正手順 (この手順自体は各 Windows machine 上で実行する):
+
+```powershell
+cd ~\.dotfiles
+git switch main; git pull; git submodule update --init --recursive
+pwsh -NoProfile -File script/link.ps1        # plan: `conflict … (symlink points to …)` が stale link の一覧
+# 各 conflict 行について、symlink であることを確認してから link 側だけ削除する
+# (削除されるのは link で、~\src\dotfiles 側の実体は残る。実体ファイルなら何もしない)
+$p = 'C:\Users\<you>\.gitconfig'              # conflict 行の 1 つに置き換える
+$item = Get-Item -LiteralPath $p -Force
+if ($item.LinkType) { $item.Delete() } else { "not a symlink, skipped: $p" }
+pwsh -NoProfile -File script/link.ps1 -Apply # 欠けていた entry を ~\.dotfiles 向けに作成
+pwsh -NoProfile -File script/link.ps1        # 再計画: conflict が 0 で ok/identical のみなら完了
+```
+
+手順は何度でも再実行できる (既存の link は触らず、欠けた entry だけ作る)。
 
 ### Direct dotfiles recovery
 
