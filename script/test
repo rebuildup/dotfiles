@@ -116,7 +116,11 @@ fi
 platform_home="$tmp/platform-home"
 platform_xdg="$platform_home/.config"
 mkdir -p "$platform_home"
-XDG_CONFIG_HOME="$platform_xdg" HOME="$platform_home" "$repo_root/script/link" >"$tmp/platform-link.log" 2>&1
+if ! XDG_CONFIG_HOME="$platform_xdg" HOME="$platform_home" "$repo_root/script/link" >"$tmp/platform-link.log" 2>&1; then
+  cat "$tmp/platform-link.log" >&2
+  printf 'link failed for a POSIX HOME with AppData platform-skipped\n' >&2
+  exit 1
+fi
 XDG_CONFIG_HOME="$platform_xdg" HOME="$platform_home" bun "$repo_root/script/claude-settings.ts" compose
 if ! XDG_CONFIG_HOME="$platform_xdg" HOME="$platform_home" "$repo_root/script/check" >"$tmp/platform-check.log" 2>&1; then
   cat "$tmp/platform-link.log" "$tmp/platform-check.log" >&2
@@ -128,8 +132,11 @@ if [[ -e "$platform_home/AppData" || -L "$platform_home/AppData" ]]; then
   printf 'link published the Windows-only AppData tree into a POSIX HOME\n' >&2
   exit 1
 fi
-if grep -q 'AppData' "$tmp/platform-link.log" "$tmp/platform-check.log"; then
-  printf 'link/check still manage the platform-skipped AppData tree\n' >&2
+# Management actions only: a skip reason may legitimately mention AppData
+# (link.ps1 spells out the Windows path it is skipping for), so a bare
+# 'AppData' match would assert the wrong invariant.
+if grep -Eq '^(missing|drift|ok|linked|conflict)[[:space:]].*AppData' "$tmp/platform-link.log" "$tmp/platform-check.log"; then
+  printf 'link/check reported a management action for the platform-skipped AppData tree\n' >&2
   exit 1
 fi
 if [[ "$(readlink "$platform_home/.vimrc")" != "$repo_root/home/.vimrc" ]]; then
@@ -141,6 +148,22 @@ if [[ "$(readlink "$platform_home/.config/nvim/init.lua")" != "$repo_root/home/.
   exit 1
 fi
 
+# Negative control for the skip itself: if is_platform_skipped over-matched
+# (a catch-all pattern), sources() would emit nothing, check would exit 0 on
+# every HOME, and every assertion above would still pass. Removing a managed
+# target must make check fail and name it (check prints `missing <target>`).
+rm "$platform_home/.vimrc"
+if XDG_CONFIG_HOME="$platform_xdg" HOME="$platform_home" "$repo_root/script/check" >"$tmp/platform-check-missing.log" 2>&1; then
+  cat "$tmp/platform-check-missing.log" >&2
+  printf 'check passed with a managed target missing (sources() skip is over-matching)\n' >&2
+  exit 1
+fi
+if ! grep -q 'missing .*\.vimrc' "$tmp/platform-check-missing.log"; then
+  cat "$tmp/platform-check-missing.log" >&2
+  printf 'check did not report the removed .vimrc as missing\n' >&2
+  exit 1
+fi
+
 # Non-destructive default for a now-skipped source: an AppData tree linked by
 # an older script/link is left exactly as it is (never removed, never
 # retargeted) and is no longer reported as missing or drift.
@@ -148,7 +171,11 @@ legacy_home="$tmp/legacy-appdata-home"
 legacy_xdg="$legacy_home/.config"
 mkdir -p "$legacy_home/AppData/Local/nvim"
 ln -s "$repo_root/home/AppData/Local/nvim/init.lua" "$legacy_home/AppData/Local/nvim/init.lua"
-XDG_CONFIG_HOME="$legacy_xdg" HOME="$legacy_home" "$repo_root/script/link" >"$tmp/legacy-link.log" 2>&1
+if ! XDG_CONFIG_HOME="$legacy_xdg" HOME="$legacy_home" "$repo_root/script/link" >"$tmp/legacy-link.log" 2>&1; then
+  cat "$tmp/legacy-link.log" >&2
+  printf 'link failed while a pre-existing AppData link was present\n' >&2
+  exit 1
+fi
 XDG_CONFIG_HOME="$legacy_xdg" HOME="$legacy_home" bun "$repo_root/script/claude-settings.ts" compose
 if ! XDG_CONFIG_HOME="$legacy_xdg" HOME="$legacy_home" "$repo_root/script/check" >"$tmp/legacy-check.log" 2>&1; then
   cat "$tmp/legacy-link.log" "$tmp/legacy-check.log" >&2
@@ -159,8 +186,8 @@ if [[ "$(readlink "$legacy_home/AppData/Local/nvim/init.lua")" != "$repo_root/ho
   printf 'link removed or retargeted a pre-existing AppData link\n' >&2
   exit 1
 fi
-if grep -q 'AppData' "$tmp/legacy-link.log" "$tmp/legacy-check.log"; then
-  printf 'link/check still manage a pre-existing AppData link that is platform-skipped\n' >&2
+if grep -Eq '^(missing|drift|ok|linked|conflict)[[:space:]].*AppData' "$tmp/legacy-link.log" "$tmp/legacy-check.log"; then
+  printf 'link/check reported a management action for the platform-skipped pre-existing AppData link\n' >&2
   exit 1
 fi
 

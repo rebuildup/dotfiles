@@ -31,7 +31,7 @@ function git(cwd: string, ...args: string[]) {
 function makeRepo(root: string, { initSubmodule }: { initSubmodule: boolean }) {
   const repo = join(root, "repo");
   mkdirSync(join(repo, "home", ".config", "git"), { recursive: true });
-  mkdirSync(join(repo, "home", ".config", "nvim"), { recursive: true });
+  mkdirSync(join(repo, "home", ".config", "nvim", "lua"), { recursive: true });
   mkdirSync(join(repo, "home", ".local", "bin"), { recursive: true });
   mkdirSync(join(repo, "home", ".claude"), { recursive: true });
   mkdirSync(join(repo, "home", "AppData", "Local", "nvim"), { recursive: true });
@@ -41,6 +41,9 @@ function makeRepo(root: string, { initSubmodule }: { initSubmodule: boolean }) {
   writeFileSync(join(repo, "home", ".gitconfig"), "[user]\n\tname = managed\n");
   writeFileSync(join(repo, "home", ".config", "git", "ignore"), "*.log\n");
   writeFileSync(join(repo, "home", ".config", "nvim", "init.lua"), "-- POSIX Neovim entry point\n");
+  // Not in the $PosixOnly exact table: only the $PosixOnlyPrefixes branch can
+  // skip this file, so the fixture gives that branch real coverage.
+  writeFileSync(join(repo, "home", ".config", "nvim", "lua", "plugins.lua"), "-- prefix-skip fixture\n");
   writeFileSync(join(repo, "home", ".vimrc"), '" POSIX Vim entry point\n');
   writeFileSync(join(repo, "home", ".local", "bin", "agent"), "#!/bin/sh\n");
   writeFileSync(join(repo, "home", ".claude", "statusline-command.sh"), "#!/bin/sh\n");
@@ -112,7 +115,12 @@ describeWin("link.ps1 (Windows adoption adapter)", () => {
       expect(existsSync(join(home, ".vimrc"))).toBe(false);
       expect(existsSync(join(home, ".config", "nvim", "init.lua"))).toBe(false);
       expect(r.out).toContain("skip       .vimrc");
+      // exact-table branch ($PosixOnly) and prefix branch ($PosixOnlyPrefixes)
+      // both skip, and neither publishes anything under home/.config/nvim/
       expect(r.out).toContain("skip       .config/nvim/init.lua");
+      expect(r.out).toContain("skip       .config/nvim/lua/plugins.lua");
+      expect(r.out).toContain("POSIX-only Neovim tree");
+      expect(existsSync(join(home, ".config", "nvim"))).toBe(false);
       expect(isLink(join(home, "AppData", "Local", "nvim", "init.lua"))).toBe(true);
 
       const again = link(repo, home, "-Apply");

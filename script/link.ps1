@@ -45,10 +45,13 @@ $PosixOnly = @{
     '.config/nvim/init.lua'         = 'POSIX Neovim entry point; Windows Neovim reads %LOCALAPPDATA%\nvim\init.lua under home/AppData/Local/nvim/init.lua'
 }
 
-# Directory-scoped POSIX-only trees. The table above matches exact paths only,
-# so without this a future home/.config/nvim/ file would slip through and land
-# in a Windows HOME that Neovim never reads.
-$PosixOnlyPrefixes = @('.config/nvim/')
+# Directory-scoped POSIX-only trees, prefix -> reason (same printed-reason
+# contract as $PosixOnly). The table above matches exact paths only, so without
+# this any other file under home/.config/nvim/ would slip through and land in a
+# Windows HOME that Neovim never reads. Longest prefix wins when rules nest.
+$PosixOnlyPrefixes = @{
+    '.config/nvim/' = 'POSIX-only Neovim tree; Windows Neovim reads %LOCALAPPDATA%\nvim\init.lua'
+}
 
 $SourceRoot = Join-Path $RepoRoot 'home'
 if (-not (Test-Path -LiteralPath $SourceRoot)) {
@@ -101,12 +104,12 @@ foreach ($entry in $entries) {
         continue
     }
 
-    $posixPrefix = ''
-    foreach ($prefix in $PosixOnlyPrefixes) {
-        if ($relative.StartsWith($prefix)) { $posixPrefix = $prefix; break }
+    $posixReason = ''
+    foreach ($prefix in ($PosixOnlyPrefixes.Keys | Sort-Object { -$_.Length })) {
+        if ($relative.StartsWith($prefix)) { $posixReason = $PosixOnlyPrefixes[$prefix]; break }
     }
-    if ($posixPrefix -ne '') {
-        Add-Result -State 'skip' -Relative $relative -Detail "POSIX-only tree $posixPrefix; Windows Neovim reads %LOCALAPPDATA%\nvim\init.lua"
+    if ($posixReason -ne '') {
+        Add-Result -State 'skip' -Relative $relative -Detail $posixReason
         continue
     }
 
