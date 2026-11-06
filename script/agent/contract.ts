@@ -699,6 +699,8 @@ const SECRET_VALUE: readonly RegExp[] = [
   /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}\b/,
   /\bAKIA[0-9A-Z]{16}\b/,
   /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/,
+  // JWT: three base64url segments (issue #122 — same boundary for human text).
+  /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/,
 ];
 
 /** True when a field with this key may carry a secret value. */
