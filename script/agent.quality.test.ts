@@ -384,15 +384,19 @@ describe("evaluateQualityGate", () => {
 
 // -- independent review --------------------------------------------------------
 
+const DIFF_FP = "c".repeat(64);
+
 /** Mock review record (synthetic evidence, clearly labelled). */
 function review(overrides: Partial<ReviewRecord> = {}): ReviewRecord {
   return {
     reviewer: "cold-reviewer-1",
     sha: SHA,
     verdict: "approve",
+    diffFingerprint: DIFF_FP,
+    findings: [],
     snapshotClean: true,
     at: FRESH_AT,
-    summary: "Looks consistent with the diff.",
+    summary: "The diff matches the described change and introduces no new findings.",
     ...overrides,
   };
 }
@@ -402,6 +406,7 @@ function reviewInput(overrides: Record<string, unknown> = {}): Record<string, un
     taskClass: "cross-boundary",
     builder: "worker-1",
     candidateSha: SHA,
+    diffFingerprint: DIFF_FP,
     now: NOW,
     record: envelope(review()),
     ...overrides,
@@ -409,14 +414,18 @@ function reviewInput(overrides: Record<string, unknown> = {}): Record<string, un
 }
 
 describe("buildReviewInput", () => {
-  test("the reviewer channel carries ONLY the SHA and changed paths", () => {
-    const input = buildReviewInput(SHA, PATHS);
-    expect(Object.keys(input).sort()).toEqual(["filesChanged", "sha"]);
+  test("the reviewer channel carries ONLY the SHA, changed paths, and diff identity", () => {
+    const input = buildReviewInput(SHA, PATHS, DIFF_FP);
+    expect(Object.keys(input).sort()).toEqual(["diffFingerprint", "filesChanged", "sha"]);
     expect(input.sha).toBe(SHA);
+    expect(input.diffFingerprint).toBe(DIFF_FP);
   });
 
-  test("hostile change surfaces fail closed", () => {
-    expect(() => buildReviewInput(SHA, [])).toThrow(ContractError);
+  test("hostile change surfaces and diff identities fail closed", () => {
+    expect(() => buildReviewInput(SHA, PATHS, "not-a-fingerprint")).toThrow(ContractError);
+    expect(() => buildReviewInput(SHA, PATHS, "c".repeat(63))).toThrow(ContractError);
+    expect(() => buildReviewInput(SHA, PATHS, "C".repeat(64))).toThrow(ContractError);
+    expect(() => buildReviewInput(SHA, [], DIFF_FP)).toThrow(ContractError);
     expect(() => buildReviewInput(SHA, [""])).toThrow(ContractError);
     expect(() => buildReviewInput(SHA, ["../../etc/passwd"])).toThrow(ContractError);
     expect(() => buildReviewInput(SHA, ["/etc/passwd"])).toThrow(ContractError);
@@ -454,6 +463,80 @@ describe("parseReviewRecord", () => {
 });
 
 describe("evaluateReview", () => {
+  test("a BARE approve — no diff identity, no findings, no rationale — fails closed", () => {
+    const bare = {
+      contract_version: "1.0.0",
+      reviewer: "cold-reviewer-1",
+      sha: SHA,
+      verdict: "approve",
+      snapshotClean: true,
+      at: FRESH_AT,
+    };
+    expect(() => parseReviewRecord(bare, "t")).toThrow(ContractError);
+    expect(() => evaluateReview(reviewInput({ record: bare }))).toThrow(ContractError);
+  });
+
+  test("a review whose diff identity mismatches the candidate fails closed", () => {
+    const d = evaluateReview(
+      reviewInput({ record: envelope(review({ diffFingerprint: "d".repeat(64) })) }),
+    );
+    expect(d.passed).toBe(false);
+    expect(d.reasons.join(" ")).toContain("diff identity");
+  });
+
+  test("a missing or malformed diff identity fails closed on both sides", () => {
+    const noRecordFp = envelope(review());
+    delete noRecordFp["diffFingerprint"];
+    expect(() => parseReviewRecord(noRecordFp, "t")).toThrow(ContractError);
+    expect(() => parseReviewRecord(envelope(review({ diffFingerprint: "deadbeef" })), "t")).toThrow(
+      ContractError,
+    );
+    // The candidate's actual diff identity is a required gate input too.
+    expect(() => evaluateReview(reviewInput({ diffFingerprint: undefined }))).toThrow(ContractError);
+    expect(() => evaluateReview(reviewInput({ diffFingerprint: "main..HEAD" }))).toThrow(ContractError);
+  });
+
+  test("findings must be explicit: absent throws, explicit empty list is accepted", () => {
+    const noFindings = envelope(review());
+    delete noFindings["findings"];
+    expect(() => parseReviewRecord(noFindings, "t")).toThrow(ContractError);
+    expect(parseReviewRecord(envelope(review({ findings: [] })), "t").findings).toEqual([]);
+    expect(parseReviewRecord(envelope(review({ findings: ["quality.ts leaks error text"] })), "t").findings).toEqual([
+      "quality.ts leaks error text",
+    ]);
+    expect(() =>
+      parseReviewRecord(envelope(review({ findings: [""] })), "t"),
+    ).toThrow(ContractError);
+  });
+
+  test("an empty or missing rationale fails closed", () => {
+    expect(() => parseReviewRecord(envelope(review({ summary: "" })), "t")).toThrow(ContractError);
+    const noSummary = envelope(review());
+    delete noSummary["summary"];
+    expect(() => parseReviewRecord(noSummary, "t")).toThrow(ContractError);
+    // A secret-shaped rationale is refused, not stored.
+    expect(() =>
+      parseReviewRecord(envelope(review({ summary: "key is sk-ant-api-key-123" })), "t"),
+    ).toThrow(ContractError);
+  });
+
+  test("degenerate repetitive rationales fail closed (documented heuristic)", () => {
+    // "APPROVED APPROVED ..." loop: 10 tokens, 1 distinct, 100% dominance.
+    const loop = evaluateReview(
+      reviewInput({ record: envelope(review({ summary: "APPROVED ".repeat(10) })) }),
+    );
+    expect(loop.passed).toBe(false);
+    expect(loop.reasons.join(" ")).toContain("degenerate");
+    // One-word sign-off: below the distinct-token floor.
+    const terse = evaluateReview(
+      reviewInput({ record: envelope(review({ summary: "Looks good." })) }),
+    );
+    expect(terse.passed).toBe(false);
+    // An ordinary sentence passes the heuristic.
+    const real = evaluateReview(reviewInput());
+    expect(real.passed).toBe(true);
+  });
+
   test("a valid independent approval passes a cross-boundary candidate", () => {
     const d = evaluateReview(reviewInput());
     expect(d.required).toBe(true);

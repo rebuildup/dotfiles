@@ -37,7 +37,7 @@ import {
   requireImmutableRef,
   requireIsoTime,
 } from "./attempts.ts";
-import type { TaskClass } from "./preflight.ts";
+import { TASK_CLASSES, type TaskClass } from "./preflight.ts";
 import { OS_VALUES, type MachineOS } from "./machines.ts";
 
 // ---------------------------------------------------------------------------
@@ -146,13 +146,6 @@ const LOW_RISK_KINDS: Record<TaskClass, readonly GateKind[]> = {
   "cross-boundary": GATE_KINDS,
   "judgment-heavy": GATE_KINDS,
 };
-
-const TASK_CLASSES: readonly TaskClass[] = [
-  "mechanical",
-  "localized",
-  "cross-boundary",
-  "judgment-heavy",
-];
 
 /**
  * Resolve the required gate matrix from the candidate SHA's change surface.
