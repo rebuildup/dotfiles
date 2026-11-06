@@ -9,8 +9,11 @@
  *     deterministically and prove NOTHING about real filesystem semantics.
  *
  *   - `describe("REAL: …")` blocks run FsAttemptStore/FsJournalStore against
- *     real temp directories with real O_EXCL semantics — including a
- *     two-process lease race spawned as separate `bun` processes.
+ *     real temp directories with real O_EXCL semantics — including
+ *     multi-process read-modify-write races (issue #120) spawned as separate
+ *     `bun` processes released from a barrier. These prove single-host,
+ *     single-filesystem serialization ONLY; no test claims cross-machine
+ *     linearizability. Hard (durable) checkpoints go through GitHub refs.
  *
  *   - GitHub-durable checkpoint restore is tested as a byte-exact fixture
  *     round-trip (the exact JSON the module emits is what recovery parses).
@@ -19,7 +22,15 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -46,6 +57,7 @@ import {
   recordResult,
   releaseLease,
   updateRecord,
+  withFileLock,
   type AttemptRecord,
   type AttemptStore,
   type Lease,
@@ -668,7 +680,7 @@ try {
     writeFileSync(workerPath, workerSource, "utf8");
     const procs = await Promise.all(
       [0, 1].map(() => {
-        const proc = Bun.spawn(["bun", workerPath, root, key], {
+        const proc = Bun.spawn([process.execPath, workerPath, root, key], {
           stdout: "pipe",
           stderr: "pipe",
         });
@@ -889,7 +901,7 @@ describe("MOCK: side-effect journal", () => {
     const attempts = new MemoryAttemptStore();
     const journal = new MemoryJournalStore();
     const key = attemptKey("journal-machine", "journal-1");
-    initAttempt(attempts, key, { now: NOW });
+    initAttempt(attempts, key, { now: Date.now() });
     const lease = acquire(attempts, key, "worker-1");
     return { attempts, journal, key, lease };
   }
@@ -1196,4 +1208,286 @@ describe("REAL: end-to-end recovery (crash, fence, checkpoint restore, journal)"
     expectContractError(() => pendingSideEffects(journal, key));
     rmSync(journalRoot, { recursive: true, force: true });
   });
+});
+
+// ---------------------------------------------------------------------------
+// REAL: file lock primitive (withFileLock) — single host, one filesystem
+// ---------------------------------------------------------------------------
+
+describe("REAL: withFileLock primitive", () => {
+  test("acquisition is exclusive; a contended lock fails closed and survives the failed acquirer", () => {
+    const dir = mkdtempSync(join(tmpdir(), "agent-lock-"));
+    const lockPath = join(dir, "x.lock");
+    withFileLock(lockPath, () => {
+      expect(existsSync(lockPath)).toBe(true);
+      // A second acquirer must time out (50ms), NOT steal a fresh lock, and
+      // must not delete the holder's lock file on its way out.
+      expectContractError(
+        () => withFileLock(lockPath, () => {}, { timeoutMs: 50 }),
+        "state",
+      );
+      expect(existsSync(lockPath)).toBe(true);
+    });
+    // The holder's release unlinks its own lock.
+    expect(existsSync(lockPath)).toBe(false);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("a stale lock (crashed holder) is stolen; hostile options fail closed", () => {
+    const dir = mkdtempSync(join(tmpdir(), "agent-lock-"));
+    const lockPath = join(dir, "stale.lock");
+    writeFileSync(
+      lockPath,
+      JSON.stringify({ pid: 999999, at: Date.now() - 60_000, token: "dead-holder" }),
+      "utf8",
+    );
+    let ran = false;
+    withFileLock(lockPath, () => {
+      ran = true;
+    }, { stalenessMs: 1_000 });
+    expect(ran).toBe(true);
+    expect(existsSync(lockPath)).toBe(false);
+    for (const bad of [NaN, Infinity, -1, 0, 1.5, "50", null]) {
+      expectContractError(() => withFileLock(lockPath, () => {}, { timeoutMs: bad as number }));
+      expectContractError(() => withFileLock(lockPath, () => {}, { stalenessMs: bad as number }));
+    }
+    expectContractError(() => withFileLock("", () => {}), "schema");
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// REAL: multi-process read-modify-write races (issue #120)
+//
+// Each test releases a barrier of REAL separate bun processes onto the same
+// durable state and asserts a linearizability invariant. These tests FAIL
+// against the pre-lock load-then-write implementation (verified against base
+// 943133a). Guarantee scope: ONE host, ONE local filesystem — never a
+// cross-machine claim; hard (durable) checkpoints go through GitHub refs.
+// ---------------------------------------------------------------------------
+
+/**
+ * Racer run by every spawned process. Parks on a per-job barrier file until
+ * the test releases all racers at once, so the racing operations genuinely
+ * overlap instead of being serialized by process startup time.
+ */
+const racerSource = `
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { FsAttemptStore, recordChild } from ${JSON.stringify(join(import.meta.dir, "agent", "attempts.ts"))};
+import {
+  FsJournalStore,
+  journalPostEffect,
+  journalPreEffect,
+  saveLocalCheckpoint,
+} from ${JSON.stringify(join(import.meta.dir, "agent", "checkpoint.ts"))};
+
+const jobPath = process.argv[2];
+const job = JSON.parse(readFileSync(jobPath, "utf8"));
+writeFileSync(jobPath + ".ready", "ready", "utf8");
+while (!existsSync(job.goPath)) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1);
+}
+try {
+  const lease = job.leasePath === undefined ? null : JSON.parse(readFileSync(job.leasePath, "utf8"));
+  if (job.op === "checkpoint") {
+    saveLocalCheckpoint(job.root, {
+      attemptKey: job.key,
+      generation: job.generation,
+      kind: "soft-local",
+      inputRef: ${JSON.stringify(SHA1)},
+      resultRef: null,
+      children: [],
+      notes: ["racer " + process.pid],
+      durable: null,
+      createdAt: "2026-11-06T12:00:00Z",
+    });
+  } else if (job.op === "record-child") {
+    recordChild(new FsAttemptStore(job.root), lease, job.childKey, Date.now());
+  } else if (job.op === "journal-pre") {
+    journalPreEffect(
+      new FsAttemptStore(job.root),
+      new FsJournalStore(job.journalRoot),
+      lease,
+      { effectId: job.effectId, kind: "git-push", target: "rebuildup/dotfiles:120" },
+      Date.now(),
+    );
+  } else if (job.op === "journal-post") {
+    journalPostEffect(
+      new FsAttemptStore(job.root),
+      new FsJournalStore(job.journalRoot),
+      lease,
+      { effectId: job.effectId, outcome: "succeeded", ref: ${JSON.stringify(SHA2)} },
+      Date.now(),
+    );
+  } else {
+    throw new Error("unknown op " + job.op);
+  }
+  process.exit(0);
+} catch (error) {
+  console.error(String(error));
+  process.exit(1);
+}
+`;
+
+/** Spawn one real process per job; park them all on the barrier, release, return exit codes. */
+async function runRacers(jobs: Array<Record<string, unknown>>): Promise<number[]> {
+  const dir = mkdtempSync(join(tmpdir(), "agent-racer-"));
+  const racerPath = join(dir, "racer.ts");
+  writeFileSync(racerPath, racerSource, "utf8");
+  const jobPaths = jobs.map((job, i) => {
+    const jobPath = join(dir, `job-${i}.json`);
+    writeFileSync(jobPath, JSON.stringify({ ...job, goPath: `${jobPath}.go` }), "utf8");
+    return jobPath;
+  });
+  const procs = jobPaths.map((jobPath) => Bun.spawn([process.execPath, racerPath, jobPath]));
+  // Wait until every racer is parked on the barrier, then release them at once.
+  const deadline = Date.now() + 30_000;
+  while (jobPaths.some((jobPath) => !existsSync(`${jobPath}.ready`))) {
+    if (Date.now() > deadline) throw new Error("racers never became ready");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  for (const jobPath of jobPaths) writeFileSync(`${jobPath}.go`, "go", "utf8");
+  const codes = await Promise.all(procs.map((proc) => proc.exited));
+  rmSync(dir, { recursive: true, force: true });
+  return codes;
+}
+
+describe("REAL: multi-process read-modify-write races (issue #120)", () => {
+  const ROUNDS = 8;
+
+  test(
+    "checkpoint: an older generation can NEVER win the concurrent save race",
+    async () => {
+      for (let round = 0; round < ROUNDS; round++) {
+        const root = mkdtempSync(join(tmpdir(), "agent-race-ckpt-"));
+        const key = attemptKey("race-machine", `ckpt-r${round}`);
+        // Four racers save generation 1, four save generation 2, all at once.
+        const codes = await runRacers(
+          [1, 1, 1, 1, 2, 2, 2, 2].map((generation) => ({
+            op: "checkpoint",
+            root,
+            key,
+            generation,
+          })),
+        );
+        const final = loadLocalCheckpoint(root, key);
+        expect(final, `round ${round}: checkpoint must parse`).not.toBeNull();
+        expect(final?.generation, `round ${round}: an older generation won the race`).toBe(2);
+        // No debris: the lock is released, the temp file renamed away.
+        expect(readdirSync(root).sort()).toEqual([`${attemptStateName(key)}.json`]);
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    120_000,
+  );
+
+  test(
+    "journal pre: duplicate effect declarations are impossible across processes",
+    async () => {
+      for (let round = 0; round < ROUNDS; round++) {
+        const attemptRoot = mkdtempSync(join(tmpdir(), "agent-race-att-"));
+        const journalRoot = mkdtempSync(join(tmpdir(), "agent-race-jrn-"));
+        const key = attemptKey("race-machine", `jrn-pre-r${round}`);
+        const attempts = new FsAttemptStore(attemptRoot);
+        initAttempt(attempts, key, { now: Date.now() });
+        const lease = acquireLease(attempts, key, "racer-parent", { now: Date.now(), leaseMs: LEASE_MS });
+        const leasePath = join(attemptRoot, "lease.json");
+        writeFileSync(leasePath, JSON.stringify(lease), "utf8");
+        const codes = await runRacers(
+          Array.from({ length: 12 }, () => ({
+            op: "journal-pre",
+            root: attemptRoot,
+            journalRoot,
+            key,
+            effectId: "effect-1",
+            leasePath,
+          })),
+        );
+        const successes = codes.filter((code) => code === 0).length;
+        const pres = readJournal(new FsJournalStore(journalRoot), key).filter(
+          (e) => e.effectId === "effect-1" && e.phase === "pre",
+        );
+        expect(pres, `round ${round}: duplicate pre entries`).toHaveLength(1);
+        expect(successes, `round ${round}: duplicate pre successes`).toBe(1);
+        expect(codes.filter((code) => code === 1).length).toBe(11);
+        rmSync(attemptRoot, { recursive: true, force: true });
+        rmSync(journalRoot, { recursive: true, force: true });
+      }
+    },
+    120_000,
+  );
+
+  test(
+    "journal post: duplicate outcome entries are impossible across processes",
+    async () => {
+      for (let round = 0; round < ROUNDS; round++) {
+        const attemptRoot = mkdtempSync(join(tmpdir(), "agent-race-att-"));
+        const journalRoot = mkdtempSync(join(tmpdir(), "agent-race-jrn-"));
+        const key = attemptKey("race-machine", `jrn-post-r${round}`);
+        const attempts = new FsAttemptStore(attemptRoot);
+        const journal = new FsJournalStore(journalRoot);
+        initAttempt(attempts, key, { now: Date.now() });
+        const lease = acquireLease(attempts, key, "racer-parent", { now: Date.now(), leaseMs: LEASE_MS });
+        journalPreEffect(attempts, journal, lease, {
+          effectId: "effect-1",
+          kind: "git-push",
+          target: "rebuildup/dotfiles:120",
+        }, Date.now());
+        const leasePath = join(attemptRoot, "lease.json");
+        writeFileSync(leasePath, JSON.stringify(lease), "utf8");
+        const codes = await runRacers(
+          Array.from({ length: 12 }, () => ({
+            op: "journal-post",
+            root: attemptRoot,
+            journalRoot,
+            key,
+            effectId: "effect-1",
+            leasePath,
+          })),
+        );
+        const successes = codes.filter((code) => code === 0).length;
+        const posts = readJournal(journal, key).filter(
+          (e) => e.effectId === "effect-1" && e.phase === "post",
+        );
+        expect(posts, `round ${round}: duplicate post entries`).toHaveLength(1);
+        expect(successes, `round ${round}: duplicate post successes`).toBe(1);
+        rmSync(attemptRoot, { recursive: true, force: true });
+        rmSync(journalRoot, { recursive: true, force: true });
+      }
+    },
+    120_000,
+  );
+
+  test(
+    "updateRecord: concurrent same-generation writers can never lose each other's update",
+    async () => {
+      for (let round = 0; round < 3; round++) {
+        const attemptRoot = mkdtempSync(join(tmpdir(), "agent-race-rec-"));
+        const key = attemptKey("race-machine", `rec-r${round}`);
+        const attempts = new FsAttemptStore(attemptRoot);
+        initAttempt(attempts, key, { now: Date.now() });
+        const lease = acquireLease(attempts, key, "racer-parent", { now: Date.now(), leaseMs: LEASE_MS });
+        const leasePath = join(attemptRoot, "lease.json");
+        writeFileSync(leasePath, JSON.stringify(lease), "utf8");
+        const childKeys = Array.from({ length: 12 }, (_u, i) =>
+          attemptKey("race-machine", `child-r${round}-${i}`));
+        const codes = await runRacers(
+          childKeys.map((childKey) => ({
+            op: "record-child",
+            root: attemptRoot,
+            key,
+            childKey,
+            leasePath,
+          })),
+        );
+        expect(codes.filter((code) => code === 0).length, `round ${round}: all racers must succeed`).toBe(12);
+        const record = readAttempt(attempts, key);
+        expect(record?.children.sort(), `round ${round}: lost update — a racer's child vanished`).toEqual(
+          childKeys.sort(),
+        );
+        rmSync(attemptRoot, { recursive: true, force: true });
+      }
+    },
+    120_000,
+  );
 });
