@@ -37,7 +37,7 @@
  * Run: bun test script/agent.attempts.test.ts
  */
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   closeSync,
   existsSync,
@@ -46,9 +46,11 @@ import {
   readFileSync,
   readdirSync,
   renameSync,
+  statSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   CONTRACT_VERSION,
   ContractError,
@@ -347,8 +349,179 @@ export function parseLease(raw: unknown, where: string): Lease {
 }
 
 // ---------------------------------------------------------------------------
+// Single-host file locking (the atomic primitive for read-modify-write races)
+// ---------------------------------------------------------------------------
+//
+// Scope, stated honestly: these locks serialize read-modify-write critical
+// sections across PROCESSES ON ONE HOST sharing one filesystem (local disk).
+// They make no cross-machine claim: a lock file on a host-local filesystem is
+// invisible to other machines, and even on shared/network filesystems lock
+// semantics are not linearizable. Anything that must be durable across
+// machines does not rely on these locks — hard checkpoints go through GitHub
+// refs (see checkpoint.ts), and GitHub refs are the multi-machine fence.
+
+/** Options for `withFileLock`; all values must be finite positive integers. */
+export interface FileLockOptions {
+  /** Fail closed (ContractError) after waiting this long, in ms. Default 10_000. */
+  timeoutMs?: number;
+  /** Steal a lock older than this many ms (recovery from a crashed holder). Default 30_000. */
+  stalenessMs?: number;
+}
+
+const LOCK_DEFAULT_TIMEOUT_MS = 10_000;
+const LOCK_DEFAULT_STALENESS_MS = 30_000;
+const LOCK_POLL_MS = 2;
+const LOCK_MAX_OPTION_MS = 24 * 60 * 60 * 1000;
+
+interface LockFileContents {
+  pid: number;
+  at: number;
+  token: string;
+}
+
+function lockOptionMs(value: unknown, name: string): number {
+  if (
+    typeof value !== "number" ||
+    !Number.isInteger(value) ||
+    value < 1 ||
+    value > LOCK_MAX_OPTION_MS
+  ) {
+    throw new ContractError(
+      "schema",
+      `lock option ${name} must be an integer in [1, ${LOCK_MAX_OPTION_MS}]`,
+    );
+  }
+  return value;
+}
+
+function sleepSync(ms: number): void {
+  // Standard synchronous sleep; works on a Bun/Node main thread.
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/** Parse a lock file; null when absent content is hostile or unreadable. */
+function readLockFile(path: string): LockFileContents | null {
+  let raw: unknown;
+  try {
+    raw = parseJson(readFileSync(path, "utf8"));
+  } catch {
+    return null;
+  }
+  if (!isPlainObject(raw)) return null;
+  const pid = raw["pid"];
+  const at = raw["at"];
+  const token = raw["token"];
+  if (typeof pid !== "number" || !Number.isInteger(pid) || pid < 0) return null;
+  if (typeof at !== "number" || !Number.isInteger(at) || at < 0 || at > MAX_EPOCH_MS) return null;
+  if (typeof token !== "string" || token.length === 0 || token.length > 128) return null;
+  return { pid, at, token };
+}
+
+/** True when the lock's holder is presumed dead (age exceeds stalenessMs). */
+function lockIsStale(path: string, stalenessMs: number): boolean {
+  let mtimeMs = 0;
+  try {
+    mtimeMs = statSync(path).mtimeMs;
+  } catch {
+    return false; // vanished; the next O_EXCL attempt decides
+  }
+  const entry = readLockFile(path);
+  // Unparseable content: judge by mtime (covers the create/write window and
+  // garbage written by a foreign process).
+  const at = entry === null ? Math.floor(mtimeMs) : entry.at;
+  return Date.now() - at > stalenessMs;
+}
+
+/**
+ * Release only if we still own the lock (token match). Never unlinks a
+ * foreign lock — after a staleness steal, the old holder's release must be a
+ * no-op, not a deletion of the new holder's lock.
+ */
+function releaseFileLock(path: string, token: string): void {
+  try {
+    const entry = readLockFile(path);
+    if (entry === null || entry.token !== token) return;
+    unlinkSync(path);
+  } catch {
+    // already gone
+  }
+}
+
+/**
+ * Run `fn()` while holding an exclusive lock file at `lockPath`.
+ *
+ * Atomic primitive: acquisition is `open(O_EXCL)` — the kernel decides the
+
+ * winner; there is no read-then-create window. Ownership is a random token
+ * written into the lock file; release unlinks only when the token still
+ * matches. A lock whose age exceeds `stalenessMs` (crashed holder) is stolen.
+ * Contention polls every LOCK_POLL_MS until `timeoutMs`, then fails closed
+ * with a ContractError — never a silent fallback.
+ *
+ * Guarantee scope: single host, one local filesystem. Do not use this as a
+ * cross-machine coordination mechanism.
+ */
+export function withFileLock<T>(lockPath: string, fn: () => T, options: FileLockOptions = {}): T {
+  if (typeof lockPath !== "string" || lockPath.length === 0) {
+    throw new ContractError("schema", "lock path must be a non-empty string");
+  }
+  if (!isPlainObject(options)) throw new ContractError("lock options must be an object");
+  const timeoutMs =
+    options.timeoutMs === undefined ? LOCK_DEFAULT_TIMEOUT_MS : lockOptionMs(options.timeoutMs, "timeoutMs");
+  const stalenessMs =
+    options.stalenessMs === undefined ? LOCK_DEFAULT_STALENESS_MS : lockOptionMs(options.stalenessMs, "stalenessMs");
+
+  mkdirSync(dirname(lockPath), { recursive: true });
+  const token = randomUUID();
+  const deadline = Date.now() + timeoutMs;
+
+  for (;;) {
+    let fd: number;
+    try {
+      fd = openSync(lockPath, "wx"); // O_EXCL — the atomic acquisition
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      if (lockIsStale(lockPath, stalenessMs)) {
+        try {
+          unlinkSync(lockPath); // steal; the next O_EXCL decides the new holder
+        } catch {
+          // another process stole/re-acquired it first; loop and retry
+        }
+      } else if (Date.now() >= deadline) {
+        throw new ContractError("state", `timed out after ${timeoutMs}ms waiting for lock ${lockPath}`);
+      } else {
+        sleepSync(LOCK_POLL_MS);
+      }
+      continue;
+    }
+    try {
+      try {
+        writeFileSync(fd, JSON.stringify({ pid: process.pid, at: Date.now(), token }), "utf8");
+      } finally {
+        closeSync(fd);
+      }
+    } catch (error) {
+      // Failed to stamp the lock we created: remove it so we don't leave an
+      // unparseable lock behind, then fail.
+      try {
+        unlinkSync(lockPath);
+      } catch {
+        // nothing more we can do
+      }
+      throw error;
+    }
+    try {
+      return fn();
+    } finally {
+      releaseFileLock(lockPath, token);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Storage (injected; the fencing logic below never touches the filesystem)
 // ---------------------------------------------------------------------------
+
 
 /**
  * Wrap a typed record/lease in the contract envelope for persistence. Used on
@@ -359,25 +532,32 @@ function withContract(value: object): Record<string, unknown> {
 }
 
 /**
- * Durable storage for attempt records and generation leases. Implementations
- * MUST make `createLease`/`createRecord` atomic exclusive creates — that is
- * the CAS on which the whole fencing model rests.
+ * Durable storage for attempt records and leases.
+ * `createLease`/`createRecord` MUST be atomic exclusive creates — that is the
+ * CAS on which the whole fencing model rests.
  */
 export interface AttemptStore {
   /** Existing generation numbers for an attempt, ascending; [] when none. */
   listGenerations(attemptKey: string): number[];
-  /** Atomic exclusive create. true = created; false = generation already exists. */
+  /** Atomic exclusive create. true = created; false when the generation already exists. */
   createLease(attemptKey: string, generation: number, lease: Lease): boolean;
   /** Raw lease JSON value, or null when absent. */
   readLease(attemptKey: string, generation: number): unknown;
   /** Atomically mark an existing lease released. Throws when absent. */
   markLeaseReleased(attemptKey: string, generation: number): void;
-  /** Atomic exclusive create. true = created; false = attempt already exists. */
+  /** Atomic exclusive create. true = created; false when the attempt already exists. */
   createRecord(attemptKey: string, record: AttemptRecord): boolean;
   /** Raw record JSON value, or null when absent. */
   readRecord(attemptKey: string): unknown;
   /** Atomic replace (temp file + rename; never a torn write). */
   writeRecord(attemptKey: string, record: AttemptRecord): void;
+  /**
+   * Optional. Runs `fn()` while holding an exclusive single-host lock scoped
+   * to this attempt's durable state. Real filesystem stores MUST provide it
+   * so read-modify-write paths (`updateRecord`) are serialized across
+   * processes; in-memory doubles may omit it (single-process only).
+   */
+  withRecordLock?<T>(attemptKey: string, fn: () => T): T;
 }
 
 /**
@@ -482,21 +662,24 @@ export class FsAttemptStore implements AttemptStore {
     this.writeAtomic(join(this.dir(attemptKey), "record.json"), redactJson(record));
   }
 
-  /** Atomic replace: write a temp sibling, then rename over the target. */
+  /** Per-attempt exclusive lock guarding the record's read-modify-write CAS. */
+  withRecordLock<T>(attemptKey: string, fn: () => T): T {
+    parseAttemptKey(attemptKey);
+    return withFileLock(join(this.dir(attemptKey), "record.lock"), fn);
+  }
+
+  /**
+   * Atomic replace: write a unique temp sibling, then rename(2) over the
+   * target. rename(2) atomically replaces the destination on POSIX — a
+   * reader sees either the old or the new complete file, never a tear. A
+   * failure is a real error and must surface, not be retried blind.
+   */
   private writeAtomic(path: string, contents: string): void {
     const dir = path.slice(0, path.lastIndexOf("/"));
     mkdirSync(dir, { recursive: true });
     const tmp = `${path}.tmp-${process.pid}-${Math.random().toString(36).slice(2, 10)}`;
     writeFileSync(tmp, contents, "utf8");
-    try {
-      renameSync(tmp, path);
-    } catch (error) {
-      try {
-        renameSync(tmp, path);
-      } catch {
-        throw error;
-      }
-    }
+    renameSync(tmp, path);
   }
 }
 
@@ -682,7 +865,11 @@ export function acquireLease(
 
 /**
  * CAS record update: refuses when the record's generation no longer matches
- * `expectedGeneration`. The generation never moves backwards.
+ * `expectedGeneration`. The generation never moves backwards. On a store that
+ * provides `withRecordLock` (the real filesystem store), the read → check →
+ * write sequence runs under an exclusive single-host lock, so concurrent
+ * same-generation writers serialize instead of silently dropping each other's
+ * mutation; without a lock (in-memory doubles) this is single-process only.
  */
 export function updateRecord(
   store: AttemptStore,
@@ -705,24 +892,32 @@ export function updateRecord(
     );
   }
   requireEpochMs(now, "updateRecord.now");
-  const raw = store.readRecord(attemptKey);
-  if (raw === null) {
-    throw new ContractError("state", `attempt '${attemptKey}' has no record`);
-  }
-  const record = parseAttemptRecord(raw, `attempt(${attemptKey})`);
-  if (record.generation !== expectedGeneration) {
-    throw new ContractError(
-      "evidence",
-      `attempt '${attemptKey}': generation moved from ${expectedGeneration} to ${record.generation}; refusing stale update`,
-    );
-  }
-  const next = mutate({ ...record, children: [...record.children] });
-  if (next.generation < record.generation) {
-    throw new ContractError("state", "attempt generation must never move backwards");
-  }
-  next.updatedAt = isoTime(now);
-  store.writeRecord(attemptKey, withContract(next));
-  return next;
+  // The read → generation-check → write sequence must be atomic across
+  // processes: comparing against an in-memory read is not a CAS — two
+  // same-generation writers can both pass the check and the last write wins,
+  // silently dropping the other's mutation. When the store provides a lock
+  // (the real filesystem store does), the whole CAS runs inside it.
+  const cas = (): AttemptRecord => {
+    const raw = store.readRecord(attemptKey);
+    if (raw === null) {
+      throw new ContractError("state", `attempt '${attemptKey}' has no record`);
+    }
+    const record = parseAttemptRecord(raw, `attempt(${attemptKey})`);
+    if (record.generation !== expectedGeneration) {
+      throw new ContractError(
+        "evidence",
+        `attempt '${attemptKey}': generation moved from ${expectedGeneration} to ${record.generation}; refusing stale update`,
+      );
+    }
+    const next = mutate({ ...record, children: [...record.children] });
+    if (next.generation < record.generation) {
+      throw new ContractError("state", "attempt generation must never move backwards");
+    }
+    next.updatedAt = isoTime(now);
+    store.writeRecord(attemptKey, withContract(next));
+    return next;
+  };
+  return store.withRecordLock ? store.withRecordLock(attemptKey, cas) : cas();
 }
 
 /**
