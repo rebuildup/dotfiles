@@ -33,6 +33,9 @@ import {
   type ReviewRecord,
 } from "./agent/review.ts";
 import { ContractError } from "./agent/contract.ts";
+import type { MachineOS } from "./agent/machines.ts";
+import type { RequiredGate } from "./agent/quality.ts";
+import type { TaskClass } from "./agent/preflight.ts";
 
 const NOW = Date.parse("2026-11-06T00:00:00Z");
 const FRESH_AT = "2026-11-05T23:00:00Z";
@@ -136,6 +139,10 @@ describe("resolveRequiredGates", () => {
 
   test("empty change surface fails closed", () => {
     expect(() => resolveRequiredGates(RULES, [], "cross-boundary")).toThrow(ContractError);
+  });
+
+  test("unknown taskClass throws ContractError, never a raw TypeError", () => {
+    expect(() => resolveRequiredGates(RULES, PATHS, "vibes" as TaskClass)).toThrow(ContractError);
   });
 
   test("duplicate gate names are ambiguous and throw", () => {
@@ -360,6 +367,15 @@ describe("evaluateQualityGate", () => {
       ),
     ).toThrow(ContractError);
     expect(() => evaluateQualityGate(gate({ records: "all-pass-i-promise" }))).toThrow(ContractError);
+    // An unknown os in a required gate is a schema violation, not a string.
+    expect(() =>
+      evaluateQualityGate({
+        ...gate(),
+        required: [
+          { kind: "unit", name: "g", os: "android", native: false } as unknown as RequiredGate,
+        ],
+      }),
+    ).toThrow(ContractError);
     // A malformed record never produces a decision (fail closed, not ignored).
     expect(() => evaluateQualityGate(gate({ records: [{ name: "junk" }] }))).toThrow(ContractError);
     expect(() => evaluateQualityGate(null)).toThrow(ContractError);

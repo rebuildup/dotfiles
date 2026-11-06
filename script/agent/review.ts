@@ -22,6 +22,14 @@
  *     reasoning;
  *   - task classes that do not require cold review (mechanical/localized,
  *     per `preflight.reviewRequirement`) are never over-reviewed.
+ *
+ * KNOWN LIMITATION: the review record's `reviewer` field is accepted on its
+ * face. DISTINCTNESS from the builder is enforced here; the AUTHENTICITY of
+ * the reviewer identity (that the record really was produced by that
+ * reviewer, not forged by the builder) is NOT verified in this module and
+ * MUST be established by the channel that delivers the record (e.g. a
+ * signed/attributed review surface). Until such a channel exists, a forged
+ * reviewer name defeats this gate.
  */
 
 import {
@@ -32,8 +40,6 @@ import {
   optionalStr,
   parseEnvelope,
   requireBool,
-  requireStr,
-  stringList,
 } from "./contract.ts";
 import {
   requireEpochMs,

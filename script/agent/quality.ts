@@ -26,20 +26,19 @@ import {
   ContractError,
   DEFAULT_MAX_EVIDENCE_AGE_MS,
   isPlainObject,
+  isStale,
   looksLikeSecretValue,
   optionalStr,
   parseEnvelope,
   requireBool,
-  requireStr,
 } from "./contract.ts";
 import {
-  MAX_EPOCH_MS,
   requireEpochMs,
   requireImmutableRef,
   requireIsoTime,
 } from "./attempts.ts";
 import type { TaskClass } from "./preflight.ts";
-import type { MachineOS } from "./machines.ts";
+import { OS_VALUES, type MachineOS } from "./machines.ts";
 
 // ---------------------------------------------------------------------------
 // Gate catalog
@@ -116,7 +115,7 @@ export function parseGateRule(raw: unknown, where: string): GateRule {
   }
   const name = parseGateName(raw["name"], `${where}.name`);
   const os = raw["os"];
-  if (os !== null && (typeof os !== "string" || !["linux", "macos", "windows"].includes(os))) {
+  if (os !== null && !OS_VALUES.includes(os as MachineOS)) {
     throw new ContractError("schema", `${where}.os: must be null or a MachineOS value`);
   }
   const native = requireBool(raw, "native", where);
@@ -148,17 +147,28 @@ const LOW_RISK_KINDS: Record<TaskClass, readonly GateKind[]> = {
   "judgment-heavy": GATE_KINDS,
 };
 
+const TASK_CLASSES: readonly TaskClass[] = [
+  "mechanical",
+  "localized",
+  "cross-boundary",
+  "judgment-heavy",
+];
+
 /**
  * Resolve the required gate matrix from the candidate SHA's change surface.
- * Throws on malformed rules, malformed paths, or two rules sharing a name
- * (ambiguous join key). Only REQUIRED gates are returned: a low-risk task
- * class is never over-verified, and untriggered optional gates are dropped.
+ * Throws on malformed rules, malformed paths, an unknown task class, or two
+ * rules sharing a name (ambiguous join key). Only REQUIRED gates are
+ * returned: a low-risk task class is never over-verified, and untriggered
+ * optional gates are dropped.
  */
 export function resolveRequiredGates(
   rules: readonly unknown[],
   paths: readonly string[],
   taskClass: TaskClass,
 ): RequiredGate[] {
+  if (!TASK_CLASSES.includes(taskClass)) {
+    throw new ContractError("schema", `resolveRequiredGates: unknown taskClass '${taskClass}'`);
+  }
   if (!Array.isArray(rules)) {
     throw new ContractError("schema", "resolveRequiredGates: rules must be an array");
   }
@@ -255,7 +265,7 @@ export function parseEnvironment(raw: unknown, where: string): ExecutionEnvironm
     throw new ContractError("schema", `${where}: must have exactly 'os' and 'wsl'`);
   }
   const os = raw["os"];
-  if (typeof os !== "string" || !["linux", "macos", "windows"].includes(os)) {
+  if (!OS_VALUES.includes(os as MachineOS)) {
     throw new ContractError("schema", `${where}.os: must be a MachineOS value`);
   }
   const wsl = requireBool(raw, "wsl", where);
@@ -342,17 +352,14 @@ export interface QualityDecision {
   failures: GateFailure[];
 }
 
-const FUTURE_SKEW_MS = 60 * 1000;
-
 /**
- * Staleness for a bare ISO timestamp (shared with `review.ts`): future-dated
- * evidence is invalid, never fresh; otherwise the usual age window applies.
- * Same semantics as `contract.isStale` without fabricating an Evidence.
+ * Staleness for a bare ISO timestamp (shared with `review.ts`): delegates to
+ * `contract.isStale` — future-dated evidence is invalid, never fresh — by
+ * wrapping the timestamp in an `Evidence` whose `source: "config"` marks it
+ * as record metadata, not a measurement claim.
  */
 export function isRecordStale(at: string, now: number, maxAgeMs: number): boolean {
-  const atMs = Date.parse(at);
-  if (atMs > now + FUTURE_SKEW_MS) return true;
-  return now - atMs > maxAgeMs;
+  return isStale({ at, source: "config" }, now, maxAgeMs);
 }
 
 /** True when the record's environment genuinely satisfies the gate's host requirement. */
@@ -403,7 +410,7 @@ export function evaluateQualityGate(input: unknown): QualityDecision {
       !GATE_KINDS.includes(gate["kind"] as GateKind) ||
       typeof gate["name"] !== "string" ||
       typeof gate["native"] !== "boolean" ||
-      (gate["os"] !== null && typeof gate["os"] !== "string")
+      (gate["os"] !== null && !OS_VALUES.includes(gate["os"] as MachineOS))
     ) {
       throw new ContractError("schema", "evaluateQualityGate.required[]: malformed gate");
     }
