@@ -13,8 +13,9 @@
  * Run: bun test script/agent.limits.test.ts
  */
 
-import { describe, test, expect, afterAll } from "bun:test";
-import { mkdtempSync, readdirSync, rmSync, existsSync, writeFileSync } from "node:fs";
+import { describe, test, expect, afterAll, mock } from "bun:test";
+import { mkdtempSync, readdirSync, rmSync, existsSync, writeFileSync, chmodSync, readFileSync, renameSync, unlinkSync, mkdirSync } from "node:fs";
+import * as nodeFsNamespace from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -568,6 +569,117 @@ describe("admission blocks", () => {
     expectContractError(() => checkAdmission(dir, "account:team-e", NOW), "state");
   });
 
+  test("unreadable block state (directory at the block path) fails closed", () => {
+    const dir = state();
+    recordBlock(
+      dir,
+      {
+        key: "account:team-f",
+        category: "rate-limit",
+        reason: "HTTP 429: rate limited",
+        resetAt: RESET,
+        observedBy: "claude.anthropic#wsl-desktop#a1#n0001",
+      },
+      NOW,
+    );
+    const blocks = join(dir, "blocks");
+    const file = join(blocks, readdirSync(blocks).find((f) => f.endsWith(".json"))!);
+    rmSync(file);
+    mkdirSync(file); // a directory where the block file belongs
+    // Admission must NEVER be silently granted because state is unreadable.
+    expectContractError(() => checkAdmission(dir, "account:team-f", NOW), "state");
+    expectContractError(() => clearBlock(dir, "account:team-f", { evidence: "x", observedAt: OBSERVED }), "state");
+  });
+
+  test("failed block write leaves no debris and no partial state", () => {
+    const dir = state();
+    const blocks = join(dir, "blocks");
+    // mkdir of an existing directory succeeds, so the write itself hits the
+    // read-only directory and fails with EACCES.
+    mkdirSync(blocks, { recursive: true });
+    chmodSync(blocks, 0o555);
+    try {
+      expectContractError(() =>
+        recordBlock(
+          dir,
+          {
+            key: "account:team-g",
+            category: "rate-limit",
+            reason: "HTTP 429: rate limited",
+            resetAt: RESET,
+            observedBy: "claude.anthropic#wsl-desktop#a1#n0001",
+          },
+          NOW,
+        ),
+      );
+    } finally {
+      chmodSync(blocks, 0o755);
+    }
+    const files = readdirSync(blocks);
+    expect(files.filter((f) => f.endsWith(".json"))).toHaveLength(0); // no partial block
+    expect(files.filter((f) => f.includes(".tmp-"))).toHaveLength(0); // no tmp debris
+    // After permissions are restored the same record succeeds.
+    recordBlock(
+      dir,
+      {
+        key: "account:team-g",
+        category: "rate-limit",
+        reason: "HTTP 429: rate limited",
+        resetAt: RESET,
+        observedBy: "claude.anthropic#wsl-desktop#a1#n0001",
+      },
+      NOW,
+    );
+    expect(checkAdmission(dir, "account:team-g", NOW).blocked).toBe(true);
+  });
+
+  test("a write failure AFTER the tmp file exists cleans it up (no debris)", () => {
+    const dir = state();
+    // Capture the real fs namespace BEFORE the module mock swaps bindings.
+    const realFs = { ...nodeFsNamespace };
+    const realWriteFileSync = nodeFsNamespace.writeFileSync;
+    let injected = 0;
+    try {
+      mock.module("node:fs", () => ({
+        ...realFs,
+        // Behave like the real write (the tmp file IS created), then fail —
+        // exactly the window where debris could be left behind.
+        writeFileSync: (path: string, data: string) => {
+          realWriteFileSync(path, data);
+          if (injected === 0) {
+            injected += 1;
+            throw new Error("injected ENOSPC");
+          }
+          // Self-disabling: a module mock outlives mock.restore() in this
+          // bun version, so later calls delegate to the real write.
+        },
+      }));
+      expectContractError(() =>
+        recordBlock(
+          dir,
+          {
+            key: "account:team-h",
+            category: "rate-limit",
+            reason: "HTTP 429: rate limited",
+            resetAt: RESET,
+            observedBy: "claude.anthropic#wsl-desktop#a1#n0001",
+          },
+          NOW,
+        ),
+      );
+      expect(injected).toBe(1);
+    } finally {
+      mock.restore();
+    }
+    const files = readdirSync(join(dir, "blocks"));
+    expect(files.filter((f) => f.endsWith(".json"))).toHaveLength(0);
+    expect(files.filter((f) => f.includes(".tmp-"))).toHaveLength(0);
+    // Canary: the mock disabled itself — real writes work again.
+    const canary = join(dir, "canary.txt");
+    writeFileSync(canary, "ok");
+    expect(readFileSync(canary, "utf8")).toBe("ok");
+  });
+
   test("REAL multi-process: concurrent recordBlock serializes, never weakens, leaves no debris", () => {
     const dir = state();
     const module = new URL("./agent/limits.ts", import.meta.url).pathname;
@@ -589,8 +701,13 @@ describe("admission blocks", () => {
         Date.parse("2026-11-06T12:00:00Z"),
       );
     `;
+    // process.execPath: an absolute bun path — a bare "bun" breaks under a
+    // stripped environment (env -i PATH=/usr/bin:/bin).
     const procs = resets.map((resetAt, i) =>
-      Bun.spawnSync(["bun", "-e", script, dir, resetAt, String(i)], { stdout: "pipe", stderr: "pipe" }),
+      Bun.spawnSync([process.execPath, "-e", script, dir, resetAt, String(i)], {
+        stdout: "pipe",
+        stderr: "pipe",
+      }),
     );
     for (const proc of procs) {
       expect(proc.exitCode).toBe(0);

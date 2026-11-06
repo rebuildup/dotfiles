@@ -894,8 +894,15 @@ function readBlockFile(path: string, key: string): AdmissionBlock | null {
   let raw: string;
   try {
     raw = readFileSync(path, "utf8");
-  } catch {
-    return null; // absent: no block recorded (the default state)
+  } catch (err) {
+    // Only ENOENT means "no block recorded". Every other read error
+    // (EACCES, EISDIR, ...) fails CLOSED — admission is never silently
+    // granted because state could not be read.
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw new ContractError(
+      "state",
+      `admission block for '${key}' unreadable (${path}): ${String(err)}`,
+    );
   }
   try {
     return parseBlock(JSON.parse(raw), `admission block '${key}'`);
@@ -912,8 +919,24 @@ function readBlockFile(path: string, key: string): AdmissionBlock | null {
 function writeBlockAtomic(path: string, block: AdmissionBlock): void {
   mkdirSync(path.slice(0, path.lastIndexOf("/")), { recursive: true });
   const tmp = `${path}.tmp-${randomUUID()}`;
-  writeFileSync(tmp, `${toJson({ contract_version: CONTRACT_VERSION, ...block })}\n`);
-  renameSync(tmp, path); // atomic under the lock; readers see old or new
+  try {
+    try {
+      writeFileSync(tmp, `${toJson({ contract_version: CONTRACT_VERSION, ...block })}\n`);
+      renameSync(tmp, path); // atomic under the lock; readers see old or new
+    } finally {
+      // A failed write or rename must never leave tmp debris: unlink always.
+      // ENOENT (rename already moved it) is the only acceptable outcome.
+      try {
+        unlinkSync(tmp);
+      } catch {
+        // swallowed: nothing to clean, or cleanup impossible (the original
+        // error propagates either way)
+      }
+    }
+  } catch (err) {
+    // State failures surface as ContractError, never as a raw fs error.
+    throw new ContractError("state", `admission block write failed (${path}): ${String(err)}`);
+  }
 }
 
 /**
@@ -987,8 +1010,17 @@ export function clearBlock(
     try {
       unlinkSync(path);
       cleared = true;
-    } catch {
-      cleared = false; // absent: already clear (idempotent)
+    } catch (err) {
+      // Only ENOENT means "already clear" (idempotent). Every other error
+      // (EACCES, EISDIR, EPERM, ...) fails closed — a block that cannot be
+      // removed must keep refusing admission, never vanish silently.
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw new ContractError(
+          "state",
+          `clearBlock: cannot remove admission block for '${key}' (${path}): ${String(err)}`,
+        );
+      }
+      cleared = false;
     }
     return { cleared };
   });
