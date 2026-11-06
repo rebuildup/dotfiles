@@ -285,7 +285,7 @@ describe("concurrent writers (real processes)", () => {
     const writers = 8;
     const perWriter = 20;
     const procs = Array.from({ length: writers }, (_, w) =>
-      Bun.spawn(["bun", writerPath, MODULE_PATH, dir, String(perWriter), String(w)], {
+      Bun.spawn([process.execPath, writerPath, MODULE_PATH, dir, String(perWriter), String(w)], {
         stdout: "ignore",
         stderr: "pipe",
       }),
@@ -366,7 +366,7 @@ describe("concurrent writers (real processes)", () => {
     `;
     const refresherPath = join(TMP_ROOT, "refresher.ts");
     writeFileSync(refresherPath, refresherSrc);
-    const refresher = Bun.spawn(["bun", refresherPath, lockPath], { stdout: "ignore", stderr: "pipe" });
+    const refresher = Bun.spawn([process.execPath, refresherPath, lockPath], { stdout: "ignore", stderr: "pipe" });
     // Deterministic readiness: wait for the real signal that the
     // refresher has touched the lock mtime (no guessed delay).
     const before = statSync(lockPath).mtimeMs;

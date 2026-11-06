@@ -668,7 +668,7 @@ try {
     writeFileSync(workerPath, workerSource, "utf8");
     const procs = await Promise.all(
       [0, 1].map(() => {
-        const proc = Bun.spawn(["bun", workerPath, root, key], {
+        const proc = Bun.spawn([process.execPath, workerPath, root, key], {
           stdout: "pipe",
           stderr: "pipe",
         });
