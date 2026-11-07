@@ -39,6 +39,7 @@ sources() {
   local name source relative first
   if [[ ${#unit_names[@]} -gt 0 ]]; then
     for name in "${unit_names[@]}"; do
+      is_platform_skipped "$name" && continue
       printf '%s\0' "$source_root/$name"
     done
   fi
@@ -47,6 +48,7 @@ sources() {
     first="${relative%%/*}"
     is_unit_name "$first" && continue
     is_composer_owned "$relative" && continue
+    is_platform_skipped "$relative" && continue
     printf '%s\0' "$source"
   done < <(find "$source_root" \( -type f -o -type l \) -print0)
 }
@@ -63,6 +65,24 @@ is_composer_owned() {
     .claude/settings.json) return 0 ;;
     .claude/*.bak) return 0 ;;
     .claude/*.pre-dotfiles-*) return 0 ;;
+  esac
+  return 1
+}
+
+# Platform-specific managed entries. home/ mirrors $HOME, but AppData/ is the
+# Windows %LOCALAPPDATA% layout: on macOS and WSL it means nothing, so it must
+# never be linked into a POSIX HOME (macOS machines have historically ended up
+# with a stray ~/AppData tree this way).
+#
+# A skipped source is never linked and never removed: a machine that linked
+# AppData/ with an older script/link keeps those symlinks exactly as they are
+# (linking stays non-destructive, see README "Principles"), and script/check
+# stops reporting them. Deleting user state is not link's job; there is no flag
+# that does it either.
+is_platform_skipped() {
+  local relative="$1"
+  case "$relative" in
+    AppData|AppData/*) return 0 ;;
   esac
   return 1
 }

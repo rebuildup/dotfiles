@@ -31,19 +31,27 @@ function git(cwd: string, ...args: string[]) {
 function makeRepo(root: string, { initSubmodule }: { initSubmodule: boolean }) {
   const repo = join(root, "repo");
   mkdirSync(join(repo, "home", ".config", "git"), { recursive: true });
+  mkdirSync(join(repo, "home", ".config", "nvim", "lua"), { recursive: true });
   mkdirSync(join(repo, "home", ".local", "bin"), { recursive: true });
   mkdirSync(join(repo, "home", ".claude"), { recursive: true });
+  mkdirSync(join(repo, "home", "AppData", "Local", "nvim"), { recursive: true });
   mkdirSync(join(repo, "agents", "dsh"), { recursive: true });
   git(repo, "init", "-q");
   git(repo, "config", "core.symlinks", "false");
   writeFileSync(join(repo, "home", ".gitconfig"), "[user]\n\tname = managed\n");
   writeFileSync(join(repo, "home", ".config", "git", "ignore"), "*.log\n");
+  writeFileSync(join(repo, "home", ".config", "nvim", "init.lua"), "-- POSIX Neovim entry point\n");
+  // Not in the $PosixOnly exact table: only the $PosixOnlyPrefixes branch can
+  // skip this file, so the fixture gives that branch real coverage.
+  writeFileSync(join(repo, "home", ".config", "nvim", "lua", "plugins.lua"), "-- prefix-skip fixture\n");
+  writeFileSync(join(repo, "home", ".vimrc"), '" POSIX Vim entry point\n');
   writeFileSync(join(repo, "home", ".local", "bin", "agent"), "#!/bin/sh\n");
   writeFileSync(join(repo, "home", ".claude", "statusline-command.sh"), "#!/bin/sh\n");
+  writeFileSync(join(repo, "home", "AppData", "Local", "nvim", "init.lua"), "-- Windows Neovim entry point\n");
   // core.symlinks=false checkout of a symlink: a plain file holding the link text.
   writeFileSync(join(repo, "home", ".dsh"), "../agents/dsh");
   if (initSubmodule) writeFileSync(join(repo, "agents", "dsh", "README"), "dsh\n");
-  git(repo, "add", "-A", "--", "home/.gitconfig", "home/.config", "home/.local", "home/.claude");
+  git(repo, "add", "-A", "--", "home/.gitconfig", "home/.config", "home/.vimrc", "home/.local", "home/.claude", "home/AppData");
   const blob = git(repo, "hash-object", "-w", join(repo, "home", ".dsh"));
   git(repo, "update-index", "--add", "--cacheinfo", `120000,${blob},home/.dsh`);
   return repo;
@@ -91,7 +99,8 @@ describeWin("link.ps1 (Windows adoption adapter)", () => {
       const repo = makeRepo(root, { initSubmodule: true });
       const home = join(root, "home");
       mkdirSync(home);
-      expect(link(repo, home, "-Apply").code).toBe(0);
+      const r = link(repo, home, "-Apply");
+      expect(r.code).toBe(0);
       expect(isLink(join(home, ".gitconfig"))).toBe(true);
       expect(realpathSync.native(join(home, ".gitconfig"))).toBe(realpathSync.native(join(repo, "home", ".gitconfig")));
       // a directory unit is linked to the resolved agents/dsh checkout
@@ -100,6 +109,19 @@ describeWin("link.ps1 (Windows adoption adapter)", () => {
       // POSIX-only entries are skipped, not linked
       expect(existsSync(join(home, ".local", "bin", "agent"))).toBe(false);
       expect(existsSync(join(home, ".claude", "statusline-command.sh"))).toBe(false);
+      expect(r.out).toContain("skip       .local/bin/agent");
+      // POSIX-only editor entry points: skipped with a printed reason, while
+      // the Windows-layout Neovim config is still linked on Windows.
+      expect(existsSync(join(home, ".vimrc"))).toBe(false);
+      expect(existsSync(join(home, ".config", "nvim", "init.lua"))).toBe(false);
+      expect(r.out).toContain("skip       .vimrc");
+      // exact-table branch ($PosixOnly) and prefix branch ($PosixOnlyPrefixes)
+      // both skip, and neither publishes anything under home/.config/nvim/
+      expect(r.out).toContain("skip       .config/nvim/init.lua");
+      expect(r.out).toContain("skip       .config/nvim/lua/plugins.lua");
+      expect(r.out).toContain("POSIX-only Neovim tree");
+      expect(existsSync(join(home, ".config", "nvim"))).toBe(false);
+      expect(isLink(join(home, "AppData", "Local", "nvim", "init.lua"))).toBe(true);
 
       const again = link(repo, home, "-Apply");
       expect(again.code).toBe(0);

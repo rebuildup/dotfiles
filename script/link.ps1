@@ -41,6 +41,16 @@ $PosixOnly = @{
     '.local/bin/devices'            = 'POSIX launcher; on Windows use script/devices.ps1'
     '.local/bin/agent'              = 'POSIX symlink to agent.ts; on Windows use script/agent.ps1 and `agent shortcuts create`'
     '.claude/statusline-command.sh' = 'bash status line renderer; not wired for Windows-native Claude Code'
+    '.vimrc'                        = 'POSIX Vim entry point; Windows Vim reads the install-dir _vimrc under home/AppData/Local/Programs/Vim/_vimrc'
+    '.config/nvim/init.lua'         = 'POSIX Neovim entry point; Windows Neovim reads %LOCALAPPDATA%\nvim\init.lua under home/AppData/Local/nvim/init.lua'
+}
+
+# Directory-scoped POSIX-only trees, prefix -> reason (same printed-reason
+# contract as $PosixOnly). The table above matches exact paths only, so without
+# this any other file under home/.config/nvim/ would slip through and land in a
+# Windows HOME that Neovim never reads. Longest prefix wins when rules nest.
+$PosixOnlyPrefixes = @{
+    '.config/nvim/' = 'POSIX-only Neovim tree; Windows Neovim reads %LOCALAPPDATA%\nvim\init.lua'
 }
 
 $SourceRoot = Join-Path $RepoRoot 'home'
@@ -91,6 +101,15 @@ foreach ($entry in $entries) {
 
     if ($PosixOnly.ContainsKey($relative)) {
         Add-Result -State 'skip' -Relative $relative -Detail $PosixOnly[$relative]
+        continue
+    }
+
+    $posixReason = ''
+    foreach ($prefix in ($PosixOnlyPrefixes.Keys | Sort-Object { -$_.Length })) {
+        if ($relative.StartsWith($prefix)) { $posixReason = $PosixOnlyPrefixes[$prefix]; break }
+    }
+    if ($posixReason -ne '') {
+        Add-Result -State 'skip' -Relative $relative -Detail $posixReason
         continue
     }
 
