@@ -9,6 +9,9 @@ export type Device = {id:string; label:string; os:'linux'|'macos'|'windows'; ins
 type Profile = {id:string; label:string; target:string; session:string; enabled:boolean};
 type Owned = Record<string,{profileId:string; node:Device}>;
 const marker='# Managed by dotfiles devices; source: Infisical /devices\n';
+// Generated files are compared as LF text. Windows editors and older writers can
+// leave CRLF endings behind; that is the same content, not a foreign file.
+function readGenerated(path:string){return readFileSync(path,'utf8').replaceAll('\r\n','\n');}
 const idPattern=/^[a-z][a-z0-9-]{0,47}$/;
 export function validateNode(value:unknown):Device {
  const n=value as Device;
@@ -117,7 +120,7 @@ function atomic(path:string,text:string){
  }
 }
 function generated(path:string,text:string){
- if(existsSync(path)){if(!readFileSync(path,'utf8').startsWith(marker))throw Error(`foreign file: ${path}`);if(readFileSync(path,'utf8')===text){secureFile(path);return;}}
+ if(existsSync(path)){if(!readGenerated(path).startsWith(marker))throw Error(`foreign file: ${path}`);if(readGenerated(path)===text){secureFile(path);return;}}
  atomic(path,text);
 }
 export function preflightSSH(home:string){
@@ -134,7 +137,7 @@ export function preflightSSH(home:string){
    }
   }catch(e:any){if(e.code!=='ENOENT')throw e;}
  }
- for(const name of ['devices.conf','devices_known_hosts']){const p=join(dir,name);if(existsSync(p)&&!readFileSync(p,'utf8').startsWith(marker))throw Error(`foreign ${name}`);}
+ for(const name of ['devices.conf','devices_known_hosts']){const p=join(dir,name);if(existsSync(p)&&!readGenerated(p).startsWith(marker))throw Error(`foreign ${name}`);}
  if(existsSync(config)){
   const old=readFileSync(config,'utf8');
   if(linkedConfig&&!old.startsWith(include))throw Error('SSH config symlink must already contain the managed Include; refusing to modify its target');
@@ -162,7 +165,7 @@ export function installSSH(nodes:Device[],home:string){
 export function assertSyncedTarget(n:Device,home:string){
  const config=join(home,'.ssh/devices.conf'),known=join(home,'.ssh/devices_known_hosts');
  const expected=renderSSH([n],home).slice(marker.length).replace(/\nHost \*\n$/, '');
- if(!existsSync(config)||!readFileSync(config,'utf8').includes(expected)||!existsSync(known)||!readFileSync(known,'utf8').split(/\r?\n/).includes(`device-${n.id} ${n.hostKey}`))throw Error(`${n.id}: SSH definition changed or missing; run devices sync explicitly`);
+ if(!existsSync(config)||!readGenerated(config).includes(expected)||!existsSync(known)||!readGenerated(known).split(/\r?\n/).includes(`device-${n.id} ${n.hostKey}`))throw Error(`${n.id}: SSH definition changed or missing; run devices sync explicitly`);
  const userConfig=join(home,'.ssh/config');
  if(!existsSync(userConfig)||!readFileSync(userConfig,'utf8').startsWith(`Include ${quotePath(config)}\n`))throw Error('managed SSH Include missing; run devices sync explicitly');
 }

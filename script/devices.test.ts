@@ -163,3 +163,15 @@ unixTest('backup conflicts fail before touching config or generated files',()=>{
   }finally{rmSync(dir,{recursive:true,force:true});}
  }
 });
+
+unixTest('CRLF endings in a generated file are still recognized as managed',()=>{
+  const dir=mkdtempSync(join(tmpdir(),'devices-crlf-'));
+  try{
+    mkdirSync(join(dir,'.ssh'));
+    const crlf='# Managed by dotfiles devices; source: Infisical /devices\r\n'+`device-wsl ${node.hostKey}\r\n`;
+    writeFileSync(join(dir,'.ssh/devices_known_hosts'),crlf);
+    expect(()=>preflightSSH(dir)).not.toThrow();
+    installSSH([validateNode(node)],dir);
+    expect(readFileSync(join(dir,'.ssh/devices_known_hosts'),'utf8').replaceAll('\r\n','\n')).toBe(`# Managed by dotfiles devices; source: Infisical /devices\ndevice-wsl ${node.hostKey}\n`);
+  }finally{rmSync(dir,{recursive:true,force:true});}
+});
