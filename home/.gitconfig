@@ -9,3 +9,14 @@
 
 [include]
 	path = ~/.gitconfig.local
+[credential "https://github.com"]
+	helper = 
+	helper = !/Users/rebui/.local/share/mise/installs/gh/2.103.3/gh_2.103.3_macOS_arm64/bin/gh auth git-credential
+[credential "https://gist.github.com"]
+	helper = 
+	helper = !/Users/rebui/.local/share/mise/installs/gh/2.103.3/gh_2.103.3_macOS_arm64/bin/gh auth git-credential
+[filter "lfs"]
+	clean = git-lfs clean -- %f
+	smudge = git-lfs smudge -- %f
+	process = git-lfs filter-process
+	required = true
