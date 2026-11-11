@@ -314,6 +314,11 @@ fi
 
 "$repo_root/script/link"
 
+# Sync VS Code snippets with dotfiles (single source of truth)
+if command -v python3 >/dev/null 2>&1; then
+  python3 "$repo_root/script/snippet-sync.py" link || true
+fi
+
 # Compose the effective Claude settings from the shared baseline plus the
 # machine-local overlay. Live-only values (e.g. the Herdr hook) are imported
 # first and the previous file is backed up; nothing is overwritten silently.

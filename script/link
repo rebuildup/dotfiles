@@ -63,6 +63,7 @@ is_composer_owned() {
     .claude/settings.json) return 0 ;;
     .claude/*.bak) return 0 ;;
     .claude/*.pre-dotfiles-*) return 0 ;;
+    snippets/*) return 0 ;;
   esac
   return 1
 }
