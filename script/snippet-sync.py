@@ -86,16 +86,19 @@ def verify_sync():
             if not os.path.lexists(dst_str):
                 print(f"Missing: {dst}")
                 ok = False
-            elif os.path.islink(dst_str):
-                try:
-                    real_dst = os.path.realpath(dst_str)
-                    real_src = os.path.realpath(src_str)
-                    if real_dst != real_src:
-                        print(f"Wrong target: {dst} -> {real_dst} (expected {real_src})")
+                elif os.path.islink(dst_str):
+                    try:
+                        # On Windows, realpath may fail for symlinks with absolute paths
+                        # Just verify the symlink target matches expected pattern
+                        target = os.readlink(dst_str)
+                        expected_target = str(src.resolve())
+                        # Normalize paths for comparison (handle forward/backward slashes)
+                        if os.path.normpath(target) != os.path.normpath(expected_target):
+                            print(f"Wrong target: {dst} -> {target} (expected {expected_target})")
+                            ok = False
+                    except OSError as e:
+                        print(f"Error reading symlink: {dst} ({e})")
                         ok = False
-                except OSError:
-                    print(f"Error resolving symlink: {dst}")
-                    ok = False
             else:
                 # Compare content
                 with open(src_str, encoding='utf-8') as f1, open(dst_str, encoding='utf-8') as f2:
