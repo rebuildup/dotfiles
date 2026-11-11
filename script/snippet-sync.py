@@ -19,6 +19,7 @@ from pathlib import Path
 
 DOTFILES_SNIPPETS = Path.home() / ".dotfiles" / "home" / "snippets"
 
+
 def get_vscode_snippets_dir():
     """Get VS Code snippets directory for current platform."""
     system = platform.system().lower()
@@ -33,10 +34,14 @@ def get_vscode_snippets_dir():
             return cursor_dir
         return Path.home() / ".config" / "Code" / "User" / "snippets"
 
+
 VSCODE_SNIPPETS = get_vscode_snippets_dir()
+
+
 def ensure_dirs():
     DOTFILES_SNIPPETS.mkdir(parents=True, exist_ok=True)
     VSCODE_SNIPPETS.mkdir(parents=True, exist_ok=True)
+
 
 def create_vscode_symlinks():
     """Create symlinks from VS Code snippets dir to dotfiles snippets."""
@@ -52,10 +57,10 @@ def create_vscode_symlinks():
         dst = VSCODE_SNIPPETS / src.name
         dst_str = str(dst)
         src_str = str(src)
-        
+
         # Check if destination exists
         dst_exists = os.path.lexists(dst_str) if is_windows else dst.exists()
-        
+
         if dst_exists:
             # Check if it's a symlink pointing to the correct target
             is_correct_symlink = False
@@ -69,13 +74,21 @@ def create_vscode_symlinks():
             else:
                 if dst.is_symlink() and dst.resolve() == src.resolve():
                     is_correct_symlink = True
-            
+
             if is_correct_symlink:
                 skipped += 1
                 continue
             else:
-                print(f"Conflict: {dst} exists and is not a symlink to {src}")
-                errors += 1
+                # Remove existing file/symlink and create new symlink
+                try:
+                    if os.path.lexists(dst_str):
+                        os.remove(dst_str)
+                    dst.symlink_to(src)
+                    print(f"Replaced: {dst} -> {src}")
+                    created += 1
+                except OSError as e:
+                    print(f"Error replacing {dst}: {e}")
+                    errors += 1
                 continue
         try:
             dst.symlink_to(src)
@@ -88,18 +101,20 @@ def create_vscode_symlinks():
     print(f"Created: {created}, Skipped: {skipped}, Errors: {errors}")
     return errors == 0
 
+
 def verify_sync():
     """Verify that VS Code snippets match dotfiles."""
     ensure_dirs()
     ok = True
     is_windows = platform.system().lower() == "windows"
-    
+
     for src in DOTFILES_SNIPPETS.glob("*.json"):
         if src.name == "package.json":
             continue
         dst = VSCODE_SNIPPETS / src.name
         dst_str = str(dst)
         src_str = str(src)
+
         if is_windows:
             # On Windows, use os.readlink() to detect symlinks (os.path.islink() is unreliable)
             try:
@@ -111,7 +126,7 @@ def verify_sync():
                 continue
             except OSError:
                 is_symlink = False
-            
+
             if is_symlink:
                 try:
                     # On Windows, realpath may fail for symlinks with absolute paths
@@ -146,11 +161,17 @@ def verify_sync():
                 with open(src, encoding='utf-8') as f1, open(dst, encoding='utf-8') as f2:
                     if f1.read() != f2.read():
                         print(f"Content differs: {dst}")
+                        ok = False
+
     if ok:
         print("All snippets in sync")
-        return ok
+    return ok
+
 
 def sync_vscode_to_dotfiles():
+    """Copy snippets from VS Code to dotfiles (for initial migration)."""
+    ensure_dirs()
+    copied = 0
     for src in VSCODE_SNIPPETS.glob("*.json"):
         dst = DOTFILES_SNIPPETS / src.name
         try:
@@ -168,6 +189,7 @@ def sync_vscode_to_dotfiles():
             print(f"Error copying {src}: {e}")
     print(f"Copied {copied} snippet files")
     return copied > 0
+
 
 def main():
     if len(sys.argv) < 2:
@@ -187,6 +209,7 @@ def main():
     else:
         print(f"Unknown command: {cmd}")
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()
