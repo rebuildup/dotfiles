@@ -80,25 +80,24 @@ def verify_sync():
         dst = VSCODE_SNIPPETS / src.name
         dst_str = str(dst)
         src_str = str(src)
-        
         if is_windows:
             # Use os.path for better symlink detection on Windows
             if not os.path.lexists(dst_str):
                 print(f"Missing: {dst}")
                 ok = False
-                elif os.path.islink(dst_str):
-                    try:
-                        # On Windows, realpath may fail for symlinks with absolute paths
-                        # Just verify the symlink target matches expected pattern
-                        target = os.readlink(dst_str)
-                        expected_target = str(src.resolve())
-                        # Normalize paths for comparison (handle forward/backward slashes)
-                        if os.path.normpath(target) != os.path.normpath(expected_target):
-                            print(f"Wrong target: {dst} -> {target} (expected {expected_target})")
-                            ok = False
-                    except OSError as e:
-                        print(f"Error reading symlink: {dst} ({e})")
+            elif os.path.islink(dst_str):
+                try:
+                    # On Windows, realpath may fail for symlinks with absolute paths
+                    # Just verify the symlink target matches expected pattern
+                    target = os.readlink(dst_str)
+                    expected_target = str(src.resolve())
+                    # Normalize paths for comparison (handle forward/backward slashes)
+                    if os.path.normpath(target) != os.path.normpath(expected_target):
+                        print(f"Wrong target: {dst} -> {target} (expected {expected_target})")
                         ok = False
+                except OSError as e:
+                    print(f"Error reading symlink: {dst} ({e})")
+                    ok = False
             else:
                 # Compare content
                 with open(src_str, encoding='utf-8') as f1, open(dst_str, encoding='utf-8') as f2:
@@ -106,22 +105,6 @@ def verify_sync():
                         print(f"Content differs: {dst}")
                         ok = False
         else:
-            # Unix-like: use pathlib
-            if not dst.exists():
-                print(f"Missing: {dst}")
-                ok = False
-            elif dst.is_symlink():
-                if dst.resolve() != src.resolve():
-                    print(f"Wrong target: {dst} -> {dst.resolve()} (expected {src})")
-                    ok = False
-            else:
-                with open(src, encoding='utf-8') as f1, open(dst, encoding='utf-8') as f2:
-                    if f1.read() != f2.read():
-                        print(f"Content differs: {dst}")
-                        ok = False
-    if ok:
-        print("All snippets in sync")
-    return ok
 
 def sync_vscode_to_dotfiles():
     """Copy snippets from VS Code to dotfiles (for initial migration)."""
