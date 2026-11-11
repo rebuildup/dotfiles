@@ -44,13 +44,33 @@ def create_vscode_symlinks():
     created = 0
     skipped = 0
     errors = 0
+    is_windows = platform.system().lower() == "windows"
 
     for src in DOTFILES_SNIPPETS.glob("*.json"):
         if src.name == "package.json":
             continue
         dst = VSCODE_SNIPPETS / src.name
-        if dst.exists() or dst.is_symlink():
-            if dst.is_symlink() and dst.resolve() == src.resolve():
+        dst_str = str(dst)
+        src_str = str(src)
+        
+        # Check if destination exists
+        dst_exists = os.path.lexists(dst_str) if is_windows else dst.exists()
+        
+        if dst_exists:
+            # Check if it's a symlink pointing to the correct target
+            is_correct_symlink = False
+            if is_windows:
+                try:
+                    target = os.readlink(dst_str)
+                    if os.path.normpath(target).replace('\\\\?\\', '') == os.path.normpath(src_str).replace('\\\\?\\', ''):
+                        is_correct_symlink = True
+                except OSError:
+                    pass
+            else:
+                if dst.is_symlink() and dst.resolve() == src.resolve():
+                    is_correct_symlink = True
+            
+            if is_correct_symlink:
                 skipped += 1
                 continue
             else:
