@@ -126,8 +126,9 @@ def verify_sync():
                 with open(src, encoding='utf-8') as f1, open(dst, encoding='utf-8') as f2:
                     if f1.read() != f2.read():
                         print(f"Content differs: {dst}")
-                        ok = False
     if ok:
+        print("All snippets in sync")
+        return ok
 
 def sync_vscode_to_dotfiles():
     for src in VSCODE_SNIPPETS.glob("*.json"):
