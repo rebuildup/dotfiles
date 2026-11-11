@@ -91,13 +91,15 @@ def verify_sync():
                     # Just verify the symlink target matches expected pattern
                     target = os.readlink(dst_str)
                     expected_target = str(src.resolve())
-                    # Normalize paths for comparison (handle forward/backward slashes)
-                    if os.path.normpath(target) != os.path.normpath(expected_target):
+                    # Normalize paths for comparison (handle forward/backward slashes, \\?\ prefix)
+                    target_norm = os.path.normpath(target).replace('\\\\?\\', '')
+                    expected_norm = os.path.normpath(expected_target).replace('\\\\?\\', '')
+                    if target_norm != expected_norm:
                         print(f"Wrong target: {dst} -> {target} (expected {expected_target})")
                         ok = False
                 except OSError as e:
                     print(f"Error reading symlink: {dst} ({e})")
-            else:
+                    ok = False
                 # Compare content
                 with open(src_str, encoding='utf-8') as f1, open(dst_str, encoding='utf-8') as f2:
                     if f1.read() != f2.read():
