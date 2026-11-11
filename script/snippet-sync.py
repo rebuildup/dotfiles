@@ -97,7 +97,6 @@ def verify_sync():
                         ok = False
                 except OSError as e:
                     print(f"Error reading symlink: {dst} ({e})")
-                    ok = False
             else:
                 # Compare content
                 with open(src_str, encoding='utf-8') as f1, open(dst_str, encoding='utf-8') as f2:
@@ -105,9 +104,20 @@ def verify_sync():
                         print(f"Content differs: {dst}")
                         ok = False
         else:
-
-def sync_vscode_to_dotfiles():
-    """Copy snippets from VS Code to dotfiles (for initial migration)."""
+            # Unix-like: use pathlib
+            if not dst.exists():
+                print(f"Missing: {dst}")
+                ok = False
+            elif dst.is_symlink():
+                if dst.resolve() != src.resolve():
+                    print(f"Wrong target: {dst} -> {dst.resolve()} (expected {src})")
+                    ok = False
+            else:
+                with open(src, encoding='utf-8') as f1, open(dst, encoding='utf-8') as f2:
+                    if f1.read() != f2.read():
+                        print(f"Content differs: {dst}")
+                        ok = False
+    if ok:
     ensure_dirs()
     copied = 0
     for src in VSCODE_SNIPPETS.glob("*.json"):
