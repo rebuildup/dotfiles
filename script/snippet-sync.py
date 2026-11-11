@@ -83,7 +83,7 @@ def verify_sync():
         
         if is_windows:
             # Use os.path for better symlink detection on Windows
-            if not os.path.exists(dst_str):
+            if not os.path.lexists(dst_str):
                 print(f"Missing: {dst}")
                 ok = False
             elif os.path.islink(dst_str):
