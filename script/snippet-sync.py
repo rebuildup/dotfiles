@@ -85,7 +85,7 @@ def verify_sync():
                 ok = False
         else:
             # Compare content
-            with open(src) as f1, open(dst) as f2:
+            with open(src, encoding='utf-8') as f1, open(dst, encoding='utf-8') as f2:
                 if f1.read() != f2.read():
                     print(f"Content differs: {dst}")
                     ok = False
@@ -100,11 +100,11 @@ def sync_vscode_to_dotfiles():
     for src in VSCODE_SNIPPETS.glob("*.json"):
         dst = DOTFILES_SNIPPETS / src.name
         try:
-            with open(src) as f:
+            with open(src, encoding='utf-8') as f:
                 content = f.read()
             # Validate JSON
             json.loads(content)
-            with open(dst, 'w') as f:
+            with open(dst, 'w', encoding='utf-8') as f:
                 f.write(content)
             print(f"Copied: {src} -> {dst}")
             copied += 1
