@@ -72,23 +72,50 @@ def verify_sync():
     """Verify that VS Code snippets match dotfiles."""
     ensure_dirs()
     ok = True
+    is_windows = platform.system().lower() == "windows"
+    
     for src in DOTFILES_SNIPPETS.glob("*.json"):
         if src.name == "package.json":
             continue
         dst = VSCODE_SNIPPETS / src.name
-        if not dst.exists():
-            print(f"Missing: {dst}")
-            ok = False
-        elif dst.is_symlink():
-            if dst.resolve() != src.resolve():
-                print(f"Wrong target: {dst} -> {dst.resolve()} (expected {src})")
+        dst_str = str(dst)
+        src_str = str(src)
+        
+        if is_windows:
+            # Use os.path for better symlink detection on Windows
+            if not os.path.exists(dst_str):
+                print(f"Missing: {dst}")
                 ok = False
-        else:
-            # Compare content
-            with open(src, encoding='utf-8') as f1, open(dst, encoding='utf-8') as f2:
-                if f1.read() != f2.read():
-                    print(f"Content differs: {dst}")
+            elif os.path.islink(dst_str):
+                try:
+                    real_dst = os.path.realpath(dst_str)
+                    real_src = os.path.realpath(src_str)
+                    if real_dst != real_src:
+                        print(f"Wrong target: {dst} -> {real_dst} (expected {real_src})")
+                        ok = False
+                except OSError:
+                    print(f"Error resolving symlink: {dst}")
                     ok = False
+            else:
+                # Compare content
+                with open(src_str, encoding='utf-8') as f1, open(dst_str, encoding='utf-8') as f2:
+                    if f1.read() != f2.read():
+                        print(f"Content differs: {dst}")
+                        ok = False
+        else:
+            # Unix-like: use pathlib
+            if not dst.exists():
+                print(f"Missing: {dst}")
+                ok = False
+            elif dst.is_symlink():
+                if dst.resolve() != src.resolve():
+                    print(f"Wrong target: {dst} -> {dst.resolve()} (expected {src})")
+                    ok = False
+            else:
+                with open(src, encoding='utf-8') as f1, open(dst, encoding='utf-8') as f2:
+                    if f1.read() != f2.read():
+                        print(f"Content differs: {dst}")
+                        ok = False
     if ok:
         print("All snippets in sync")
     return ok
