@@ -81,11 +81,18 @@ def verify_sync():
         dst_str = str(dst)
         src_str = str(src)
         if is_windows:
-            # Use os.path for better symlink detection on Windows
-            if not os.path.lexists(dst_str):
+            # On Windows, use os.readlink() to detect symlinks (os.path.islink() is unreliable)
+            try:
+                target = os.readlink(dst_str)
+                is_symlink = True
+            except FileNotFoundError:
                 print(f"Missing: {dst}")
                 ok = False
-            elif os.path.islink(dst_str):
+                continue
+            except OSError:
+                is_symlink = False
+            
+            if is_symlink:
                 try:
                     # On Windows, realpath may fail for symlinks with absolute paths
                     # Just verify the symlink target matches expected pattern
@@ -100,14 +107,13 @@ def verify_sync():
                 except OSError as e:
                     print(f"Error reading symlink: {dst} ({e})")
                     ok = False
-                # Compare content
+            else:
+                # Compare content for regular files
                 with open(src_str, encoding='utf-8') as f1, open(dst_str, encoding='utf-8') as f2:
                     if f1.read() != f2.read():
                         print(f"Content differs: {dst}")
                         ok = False
         else:
-            # Unix-like: use pathlib
-            if not dst.exists():
                 print(f"Missing: {dst}")
                 ok = False
             elif dst.is_symlink():
