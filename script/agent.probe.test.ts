@@ -131,6 +131,10 @@ function baseOptions(configPath: string, stateDir: string, extra: Partial<ProbeO
     configFile: configPath,
     stateDir,
     env: CREDENTIAL_ENV,
+    // Hermetic: inject fake PATH resolver so tests pass on any host
+    // regardless of what commands are installed. REAL harness-absent
+    // behavior is tested separately with which: () => null.
+    which: (cmd: string) => `/usr/bin/${cmd}`,
     ...extra,
   };
 }
