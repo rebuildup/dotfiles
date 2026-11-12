@@ -298,6 +298,16 @@ export interface ReviewDecision {
   passed: boolean;
   reviewer: string | null;
   reasons: string[];
+  /**
+   * Explicit guarantee level for reviewer authenticity (issue #124).
+   * - "distinct-only": reviewer is distinct from builder, but authenticity
+   *   (that the record was really produced by that reviewer) is NOT verified.
+   *   A forged reviewer name defeats this gate. Authenticity must be
+   *   established by the delivery channel (signed/attributed review surface).
+   * - "verified": authenticity confirmed by an external signed channel.
+   *   Never set by this module alone.
+   */
+  authenticityGuarantee: "distinct-only" | "verified";
 }
 
 /**
@@ -339,7 +349,7 @@ export function evaluateReview(input: unknown): ReviewDecision {
 
   const required = reviewRequirement(taskClass as TaskClass).coldReview;
   if (!required) {
-    return { required: false, passed: true, reviewer: null, reasons: [] };
+    return { required: false, passed: true, reviewer: null, reasons: [], authenticityGuarantee: "distinct-only" };
   }
 
   const rawRecord = input["record"];
@@ -348,6 +358,7 @@ export function evaluateReview(input: unknown): ReviewDecision {
       required: true,
       passed: false,
       reviewer: null,
+      authenticityGuarantee: "distinct-only",
       reasons: ["missing: no review record exists for this candidate"],
     };
   }
@@ -392,5 +403,6 @@ export function evaluateReview(input: unknown): ReviewDecision {
     passed: reasons.length === 0,
     reviewer: record.reviewer,
     reasons,
+    authenticityGuarantee: "distinct-only",
   };
 }
