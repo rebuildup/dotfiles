@@ -896,8 +896,8 @@ export function summarizeLedger(records: UsageRecord[]): LedgerSummary {
     // Provider errors (401/402/429): counted, but excluded from quality
     // stats (success rate, per-task failures) — provider state, not
     // model quality (issue #121).
-    const isProviderError = rec.error_kind !== null;
-    if (rec.error_kind !== null) providerErrors[rec.error_kind]++;
+    const isProviderError = rec.error_kind != null;
+    if (rec.error_kind != null) providerErrors[rec.error_kind]++;
     if (rec.outcome === "success") {
       if (rec.verification === "pass") verifiedSuccesses++;
       else unverifiedSuccesses++;

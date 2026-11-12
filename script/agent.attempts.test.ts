@@ -901,7 +901,7 @@ describe("MOCK: side-effect journal", () => {
     const attempts = new MemoryAttemptStore();
     const journal = new MemoryJournalStore();
     const key = attemptKey("journal-machine", "journal-1");
-    initAttempt(attempts, key, { now: Date.now() });
+    initAttempt(attempts, key, { now: NOW });
     const lease = acquire(attempts, key, "worker-1");
     return { attempts, journal, key, lease };
   }
@@ -1389,7 +1389,7 @@ describe("REAL: multi-process read-modify-write races (issue #120)", () => {
         const journalRoot = mkdtempSync(join(tmpdir(), "agent-race-jrn-"));
         const key = attemptKey("race-machine", `jrn-pre-r${round}`);
         const attempts = new FsAttemptStore(attemptRoot);
-        initAttempt(attempts, key, { now: Date.now() });
+        initAttempt(attempts, key, { now: NOW });
         const lease = acquireLease(attempts, key, "racer-parent", { now: Date.now(), leaseMs: LEASE_MS });
         const leasePath = join(attemptRoot, "lease.json");
         writeFileSync(leasePath, JSON.stringify(lease), "utf8");
@@ -1426,7 +1426,7 @@ describe("REAL: multi-process read-modify-write races (issue #120)", () => {
         const key = attemptKey("race-machine", `jrn-post-r${round}`);
         const attempts = new FsAttemptStore(attemptRoot);
         const journal = new FsJournalStore(journalRoot);
-        initAttempt(attempts, key, { now: Date.now() });
+        initAttempt(attempts, key, { now: NOW });
         const lease = acquireLease(attempts, key, "racer-parent", { now: Date.now(), leaseMs: LEASE_MS });
         journalPreEffect(attempts, journal, lease, {
           effectId: "effect-1",
@@ -1465,7 +1465,7 @@ describe("REAL: multi-process read-modify-write races (issue #120)", () => {
         const attemptRoot = mkdtempSync(join(tmpdir(), "agent-race-rec-"));
         const key = attemptKey("race-machine", `rec-r${round}`);
         const attempts = new FsAttemptStore(attemptRoot);
-        initAttempt(attempts, key, { now: Date.now() });
+        initAttempt(attempts, key, { now: NOW });
         const lease = acquireLease(attempts, key, "racer-parent", { now: Date.now(), leaseMs: LEASE_MS });
         const leasePath = join(attemptRoot, "lease.json");
         writeFileSync(leasePath, JSON.stringify(lease), "utf8");
