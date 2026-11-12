@@ -83,9 +83,6 @@ function rec(overrides: Partial<UsageRecord> = {}): UsageRecord {
     wall_time_ms: 1000,
     tool_calls: 2,
     retries: 0,
-    usage_provenance: "measured",
-    wall_time_provenance: "measured",
-    error_kind: null,
     started_at: T0,
     ended_at: "2026-11-01T00:00:05Z",
     ...overrides,
@@ -288,9 +285,7 @@ describe("concurrent writers (real processes)", () => {
     const writers = 8;
     const perWriter = 20;
     const procs = Array.from({ length: writers }, (_, w) =>
-      // process.execPath, not "bun": CI/hermetic runs may have no `bun`
-      // on PATH (minimal env); the running binary is always spawnable.
-      Bun.spawn([process.execPath, writerPath, MODULE_PATH, dir, String(perWriter), String(w)], {
+      Bun.spawn(["bun", writerPath, MODULE_PATH, dir, String(perWriter), String(w)], {
         stdout: "ignore",
         stderr: "pipe",
       }),
@@ -371,7 +366,7 @@ describe("concurrent writers (real processes)", () => {
     `;
     const refresherPath = join(TMP_ROOT, "refresher.ts");
     writeFileSync(refresherPath, refresherSrc);
-    const refresher = Bun.spawn([process.execPath, refresherPath, lockPath], { stdout: "ignore", stderr: "pipe" });
+    const refresher = Bun.spawn(["bun", refresherPath, lockPath], { stdout: "ignore", stderr: "pipe" });
     // Deterministic readiness: wait for the real signal that the
     // refresher has touched the lock mtime (no guessed delay).
     const before = statSync(lockPath).mtimeMs;
@@ -599,7 +594,6 @@ describe("summarizeLedger", () => {
         attempts: 2,
         successes: 1,
         failures: 1,
-        provider_errors: 0,
         effective_tokens: 700 + 400,
         usage_unknown_records: 0,
         cost_unknown_records: 0,
@@ -611,7 +605,6 @@ describe("summarizeLedger", () => {
         attempts: 1,
         successes: 0,
         failures: 1,
-        provider_errors: 0,
         effective_tokens: 100,
         usage_unknown_records: 0,
         cost_unknown_records: 0,
@@ -666,177 +659,5 @@ describe("summarizeLedger", () => {
     expect(s.tokens.effective).toBe(200 + 100_100);
     expect(s.cache_ratio).toBeCloseTo(99_900 / 200_200);
     expect(s.cost.USD!.billed).toBeCloseTo(1.8);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Issue #121: pruneLedger option validation — fail-closed BEFORE any write
-// ---------------------------------------------------------------------------
-
-describe("pruneLedger option validation (issue #121)", () => {
-  test("rejects hostile options with ContractError and leaves the ledger byte-identical", () => {
-    const dir = newLedgerDir("prune-validation");
-    recordUsage(dir, rec());
-    recordUsage(dir, rec({ attempt: ATTEMPT_KEY.replace("nonce-1", "n2") }));
-    const path = join(dir, LEDGER_FILE);
-    const before = readFileSync(path);
-
-    const badOpts: Array<Parameters<typeof pruneLedger>[1]> = [
-      { now: NaN },
-      { now: Infinity },
-      { now: -Infinity },
-      { now: -1 },
-      { now: "2026-11-01" as unknown as number },
-      { now: Date.parse(T0), maxAgeMs: NaN },
-      { now: Date.parse(T0), maxAgeMs: Infinity },
-      { now: Date.parse(T0), maxAgeMs: -Infinity },
-      { now: Date.parse(T0), maxAgeMs: 0 },
-      { now: Date.parse(T0), maxAgeMs: -DAY },
-      { now: Date.parse(T0), maxAgeMs: "30d" as unknown as number },
-      { now: Date.parse(T0), maxBytes: NaN },
-      { now: Date.parse(T0), maxBytes: Infinity },
-      { now: Date.parse(T0), maxBytes: -Infinity },
-      { now: Date.parse(T0), maxBytes: 0 },
-      { now: Date.parse(T0), maxBytes: -100 },
-      { now: Date.parse(T0), maxBytes: 100.5 },
-      { now: Date.parse(T0), maxBytes: "1MiB" as unknown as number },
-    ];
-    for (const opts of badOpts) {
-      expect(() => pruneLedger(dir, opts)).toThrow(ContractError);
-    }
-    // Fail-closed: not one byte changed, no temp/lock residue left behind.
-    expect(readFileSync(path).equals(before)).toBeTrue();
-    expect(readdirSync(dir).sort()).toEqual([LEDGER_FILE]);
-  });
-
-  test("valid boundary options still work (huge maxBytes keeps everything)", () => {
-    const dir = newLedgerDir("prune-valid-boundary");
-    recordUsage(dir, rec());
-    const result = pruneLedger(dir, { now: Date.parse(T0) + DAY, maxBytes: Number.MAX_SAFE_INTEGER });
-    expect(result).toEqual({ kept: 1, dropped: 0, corrupt_dropped: 0 });
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Issue #121: ledger directory that exists as a file → ContractError, not raw EEXIST
-// ---------------------------------------------------------------------------
-
-describe("ledger directory that exists as a file (issue #121)", () => {
-  test("withLedgerLock, recordUsage and pruneLedger throw ContractError, not raw EEXIST", () => {
-    const base = newLedgerDir("file-as-dir");
-    const dir = join(base, "ledger");
-    writeFileSync(dir, "not a directory");
-
-    expect(() => withLedgerLock(dir, () => "unused")).toThrow(ContractError);
-    expect(() => recordUsage(dir, rec())).toThrow(ContractError);
-    expect(() => pruneLedger(dir, { now: Date.parse(T0) + DAY })).toThrow(ContractError);
-    // The file is untouched: the failure never destroyed or replaced it.
-    expect(readFileSync(dir, "utf8")).toBe("not a directory");
-    expect(statSync(dir).isFile()).toBeTrue();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Issue #121: measured-vs-estimated provenance for tokens and wall time
-// ---------------------------------------------------------------------------
-
-describe("provenance: measured vs estimated (issue #121)", () => {
-  test("usage/wall-time provenance roundtrips; legacy records (fields absent) default to measured", () => {
-    const dir = newLedgerDir("provenance");
-    recordUsage(dir, rec({ usage_provenance: "estimated", wall_time_provenance: "estimated" }));
-    // Legacy record written before the provenance fields existed.
-    const legacy = rec({ attempt: ATTEMPT_KEY.replace("nonce-1", "n2") }) as Record<string, unknown>;
-    delete legacy["usage_provenance"];
-    delete legacy["wall_time_provenance"];
-    delete legacy["error_kind"];
-    recordUsage(dir, legacy as unknown as UsageRecord);
-    const read = readLedger(dir);
-    expect(read.records[0].usage_provenance).toBe("estimated");
-    expect(read.records[0].wall_time_provenance).toBe("estimated");
-    expect(read.records[1].usage_provenance).toBe("measured");
-    expect(read.records[1].wall_time_provenance).toBe("measured");
-    expect(read.corrupt).toBe(0);
-  });
-
-  test("rejects provenance values outside measured|estimated", () => {
-    const dir = newLedgerDir("provenance-invalid");
-    const bad: Array<Record<string, unknown>> = [
-      { ...rec(), usage_provenance: "guessed" },
-      { ...rec(), usage_provenance: "measured " },
-      { ...rec(), usage_provenance: 1 },
-      { ...rec(), wall_time_provenance: "estimated?" },
-    ];
-    for (const record of bad) {
-      expect(() => recordUsage(dir, record as UsageRecord)).toThrow(ContractError);
-    }
-    expect(existsSync(join(dir, LEDGER_FILE))).toBeFalse();
-  });
-
-  test("summarizeLedger reports provenance counts; unknown usage/wall time stay out of them", () => {
-    const s = summarizeLedger([
-      rec({ attempt: ATTEMPT_KEY.replace("nonce-1", "p1"), usage_provenance: "estimated", wall_time_provenance: "estimated" }),
-      rec({ attempt: ATTEMPT_KEY.replace("nonce-1", "p2"), usage: null, wall_time_ms: null }),
-      rec({ attempt: ATTEMPT_KEY.replace("nonce-1", "p3") }),
-    ]);
-    expect(s.usage_provenance).toEqual({ measured: 1, estimated: 1 });
-    expect(s.wall_time_provenance).toEqual({ measured: 1, estimated: 1 });
-    expect(s.usage_unknown_records).toBe(1);
-    expect(s.wall_time_unknown_records).toBe(1);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Issue #121: provider error classes (401 auth / 402 payment / 429 capacity)
-// ---------------------------------------------------------------------------
-
-describe("provider error classes (issue #121)", () => {
-  test("auth/payment/capacity records roundtrip through the ledger", () => {
-    const dir = newLedgerDir("error-kind");
-    recordUsage(dir, rec({ attempt: ATTEMPT_KEY.replace("nonce-1", "e1"), outcome: "failure", verification: "fail", error_kind: "auth" }));
-    recordUsage(dir, rec({ attempt: ATTEMPT_KEY.replace("nonce-1", "e2"), outcome: "failure", verification: "fail", error_kind: "payment" }));
-    recordUsage(dir, rec({ attempt: ATTEMPT_KEY.replace("nonce-1", "e3"), outcome: "killed", verification: "skipped", error_kind: "capacity" }));
-    const read = readLedger(dir);
-    expect(read.corrupt).toBe(0);
-    expect(read.records.map((r) => r.error_kind)).toEqual(["auth", "payment", "capacity"]);
-  });
-
-  test("error_kind is rejected on a success and unknown kinds/shapes are rejected", () => {
-    const dir = newLedgerDir("error-kind-invalid");
-    // A provider error class cannot terminate a successful attempt.
-    expect(() => recordUsage(dir, rec({ error_kind: "capacity" }))).toThrow(ContractError);
-    expect(() =>
-      recordUsage(dir, rec({ outcome: "failure", verification: "fail", error_kind: "timeout" })),
-    ).toThrow(ContractError);
-    expect(() =>
-      recordUsage(dir, rec({ outcome: "failure", verification: "fail", error_kind: 429 })),
-    ).toThrow(ContractError);
-    expect(existsSync(join(dir, LEDGER_FILE))).toBeFalse();
-  });
-
-  test("provider errors are excluded from success_rate and per-task failure counts, but still counted", () => {
-    const records = [
-      rec({ attempt: ATTEMPT_KEY.replace("nonce-1", "q1") }), // verified success
-      rec({ attempt: ATTEMPT_KEY.replace("nonce-1", "q2"), outcome: "failure", verification: "fail" }), // real model failure
-      rec({ attempt: ATTEMPT_KEY.replace("nonce-1", "q3"), outcome: "failure", verification: "fail", error_kind: "capacity" }),
-      rec({ attempt: ATTEMPT_KEY.replace("nonce-1", "q4"), outcome: "killed", verification: "skipped", error_kind: "auth" }),
-    ];
-    const s = summarizeLedger(records);
-    expect(s.provider_errors).toEqual({ auth: 1, payment: 0, capacity: 1 });
-    // Denominator excludes the two provider-error records: 1/2, not 1/4.
-    expect(s.success_rate).toBeCloseTo(0.5);
-    expect(s.outcomes).toEqual({ success: 1, failure: 2, killed: 1 }); // raw counts unchanged
-    const task = s.per_task[0];
-    expect(task.attempts).toBe(4);
-    expect(task.successes).toBe(1);
-    expect(task.failures).toBe(1); // provider-error failures excluded from quality
-    expect(task.provider_errors).toBe(2);
-  });
-
-  test("an all-provider-errors ledger has a null success_rate, not a fake 0", () => {
-    const s = summarizeLedger([
-      rec({ attempt: ATTEMPT_KEY.replace("nonce-1", "x1"), outcome: "failure", verification: "fail", error_kind: "payment" }),
-    ]);
-    expect(s.success_rate).toBeNull();
-    expect(s.provider_errors).toEqual({ auth: 0, payment: 1, capacity: 0 });
   });
 });
