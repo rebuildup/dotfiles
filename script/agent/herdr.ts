@@ -38,6 +38,33 @@ export async function checkHerdrAvailable(): Promise<{ available: boolean; versi
 }
 
 // ---------------------------------------------------------------------------
+// Safe spawn helper: returns null when herdr is unavailable
+// ---------------------------------------------------------------------------
+
+interface HerdrSpawnResult {
+  stdout: string;
+  stderr: string;
+  code: number;
+}
+
+async function herdrSpawn(args: string[], cwd?: string): Promise<HerdrSpawnResult | null> {
+  try {
+    const proc = await Bun.spawn([HERDR_CLI, ...args], {
+      stdout: "pipe",
+      stderr: "pipe",
+      cwd,
+    });
+    const stdout = await new TextDecoder().decode(await new Response(proc.stdout).arrayBuffer());
+    const stderr = await new TextDecoder().decode(await new Response(proc.stderr).arrayBuffer());
+    const code = await proc.exited;
+    return { stdout, stderr, code };
+  } catch (error) {
+    // "Executable not found in $PATH" — herdr not installed
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Workspace operations
 // ---------------------------------------------------------------------------
 
@@ -75,22 +102,15 @@ export async function createWorkspace(
   if (options.noFocus) args.push("--no-focus");
   args.push("--json");
 
-  const proc = await Bun.spawn([HERDR_CLI, ...args], {
-    stdout: "pipe",
-    stderr: "pipe",
-    cwd,
-  });
-  
-  const stdout = await new TextDecoder().decode(await new Response(proc.stdout).arrayBuffer());
-  const stderr = await new TextDecoder().decode(await new Response(proc.stderr).arrayBuffer());
-  const code = await proc.exited;
-  
-  if (code !== 0) {
-    throw new ContractError("state", `Herdr workspace create failed: ${stderr}`);
+  const result = await herdrSpawn(args, cwd);
+  if (result === null) {
+    throw new ContractError("state", "Herdr CLI not available");
   }
-  
+  if (result.code !== 0) {
+    throw new ContractError("state", `Herdr workspace create failed: ${result.stderr}`);
+  }
   try {
-    return JSON.parse(stdout.trim());
+    return JSON.parse(result.stdout.trim());
   } catch (error) {
     throw new ContractError("schema", `Failed to parse Herdr workspace create output: ${error}`);
   }
@@ -100,20 +120,10 @@ export async function createWorkspace(
  * List existing workspaces.
  */
 export async function listWorkspaces(): Promise<HerdrWorkspace[]> {
-  const proc = await Bun.spawn([HERDR_CLI, "workspace", "list", "--json"], {
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  
-  const stdout = await new TextDecoder().decode(await new Response(proc.stdout).arrayBuffer());
-  const code = await proc.exited;
-  
-  if (code !== 0) {
-    return [];
-  }
-  
+  const result = await herdrSpawn(["workspace", "list", "--json"]);
+  if (result === null || result.code !== 0) return [];
   try {
-    return JSON.parse(stdout.trim());
+    return JSON.parse(result.stdout.trim());
   } catch {
     return [];
   }
@@ -123,20 +133,10 @@ export async function listWorkspaces(): Promise<HerdrWorkspace[]> {
  * Get workspace by ID.
  */
 export async function getWorkspace(workspaceId: string): Promise<HerdrWorkspace | null> {
-  const proc = await Bun.spawn([HERDR_CLI, "workspace", "get", workspaceId, "--json"], {
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  
-  const stdout = await new TextDecoder().decode(await new Response(proc.stdout).arrayBuffer());
-  const code = await proc.exited;
-  
-  if (code !== 0) {
-    return null;
-  }
-  
+  const result = await herdrSpawn(["workspace", "get", workspaceId, "--json"]);
+  if (result === null || result.code !== 0) return null;
   try {
-    return JSON.parse(stdout.trim());
+    return JSON.parse(result.stdout.trim());
   } catch {
     return null;
   }
@@ -165,21 +165,15 @@ export async function createPane(options: CreatePaneOptions): Promise<{ paneId: 
   if (options.targetPaneId) args.push("--target", options.targetPaneId);
   args.push("--json");
 
-  const proc = await Bun.spawn([HERDR_CLI, ...args], {
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  
-  const stdout = await new TextDecoder().decode(await new Response(proc.stdout).arrayBuffer());
-  const stderr = await new TextDecoder().decode(await new Response(proc.stderr).arrayBuffer());
-  const code = await proc.exited;
-  
-  if (code !== 0) {
-    throw new ContractError("state", `Herdr pane create failed: ${stderr}`);
+  const result = await herdrSpawn(args);
+  if (result === null) {
+    throw new ContractError("state", "Herdr CLI not available");
   }
-  
+  if (result.code !== 0) {
+    throw new ContractError("state", `Herdr pane create failed: ${result.stderr}`);
+  }
   try {
-    return JSON.parse(stdout.trim());
+    return JSON.parse(result.stdout.trim());
   } catch (error) {
     throw new ContractError("schema", `Failed to parse Herdr pane create output: ${error}`);
   }
@@ -189,20 +183,10 @@ export async function createPane(options: CreatePaneOptions): Promise<{ paneId: 
  * Get pane status.
  */
 export async function getPaneStatus(paneId: string): Promise<{ status: string; agentName?: string; agentKind?: string } | null> {
-  const proc = await Bun.spawn([HERDR_CLI, "pane", "get", paneId, "--json"], {
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  
-  const stdout = await new TextDecoder().decode(await new Response(proc.stdout).arrayBuffer());
-  const code = await proc.exited;
-  
-  if (code !== 0) {
-    return null;
-  }
-  
+  const result = await herdrSpawn(["pane", "get", paneId, "--json"]);
+  if (result === null || result.code !== 0) return null;
   try {
-    return JSON.parse(stdout.trim());
+    return JSON.parse(result.stdout.trim());
   } catch {
     return null;
   }
@@ -212,15 +196,10 @@ export async function getPaneStatus(paneId: string): Promise<{ status: string; a
  * Close a pane.
  */
 export async function closePane(paneId: string): Promise<void> {
-  const proc = await Bun.spawn([HERDR_CLI, "pane", "close", paneId], {
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  
-  const code = await proc.exited;
-  if (code !== 0) {
-    const stderr = await new TextDecoder().decode(await new Response(proc.stderr).arrayBuffer());
-    throw new ContractError("state", `Herdr pane close failed: ${stderr}`);
+  const result = await herdrSpawn(["pane", "close", paneId]);
+  if (result === null) return; // herdr not available
+  if (result.code !== 0) {
+    throw new ContractError("state", `Herdr pane close failed: ${result.stderr}`);
   }
 }
 
@@ -245,21 +224,15 @@ export async function startAgent(options: StartAgentOptions): Promise<{ agentNam
   if (options.options) args.push(...options.options);
   args.push("--json");
 
-  const proc = await Bun.spawn([HERDR_CLI, ...args], {
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  
-  const stdout = await new TextDecoder().decode(await new Response(proc.stdout).arrayBuffer());
-  const stderr = await new TextDecoder().decode(await new Response(proc.stderr).arrayBuffer());
-  const code = await proc.exited;
-  
-  if (code !== 0) {
-    throw new ContractError("state", `Herdr agent start failed: ${stderr}`);
+  const result = await herdrSpawn(args);
+  if (result === null) {
+    throw new ContractError("state", "Herdr CLI not available");
   }
-  
+  if (result.code !== 0) {
+    throw new ContractError("state", `Herdr agent start failed: ${result.stderr}`);
+  }
   try {
-    return JSON.parse(stdout.trim());
+    return JSON.parse(result.stdout.trim());
   } catch (error) {
     throw new ContractError("schema", `Failed to parse Herdr agent start output: ${error}`);
   }
@@ -278,28 +251,21 @@ export async function promptAgent(
   if (options.timeoutMs) args.push("--timeout", String(options.timeoutMs));
   args.push("--json");
 
-  const proc = await Bun.spawn([HERDR_CLI, ...args], {
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  
-  const stdout = await new TextDecoder().decode(await new Response(proc.stdout).arrayBuffer());
-  const stderr = await new TextDecoder().decode(await new Response(proc.stderr).arrayBuffer());
-  const code = await proc.exited;
-  
-  if (code !== 0) {
-    // Non-zero exit may indicate blocked/timeout, not necessarily error
+  const result = await herdrSpawn(args);
+  if (result === null) {
+    return { blocked: true, response: "Herdr CLI not available" };
+  }
+  if (result.code !== 0) {
     try {
-      return JSON.parse(stdout.trim());
+      return JSON.parse(result.stdout.trim());
     } catch {
-      return { blocked: true, response: stderr || "Agent prompt failed" };
+      return { blocked: true, response: result.stderr || "Agent prompt failed" };
     }
   }
-  
   try {
-    return JSON.parse(stdout.trim());
+    return JSON.parse(result.stdout.trim());
   } catch {
-    return { response: stdout.trim() };
+    return { response: result.stdout.trim() };
   }
 }
 
@@ -315,22 +281,14 @@ export async function readAgent(
   if (options.lines) args.push("--lines", String(options.lines));
   args.push("--json");
 
-  const proc = await Bun.spawn([HERDR_CLI, ...args], {
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  
-  const stdout = await new TextDecoder().decode(await new Response(proc.stdout).arrayBuffer());
-  const code = await proc.exited;
-  
-  if (code !== 0) {
+  const result = await herdrSpawn(args);
+  if (result === null || result.code !== 0) {
     return { output: "", source: options.source || "recent" };
   }
-  
   try {
-    return JSON.parse(stdout.trim());
+    return JSON.parse(result.stdout.trim());
   } catch {
-    return { output: stdout.trim(), source: options.source || "recent" };
+    return { output: result.stdout.trim(), source: options.source || "recent" };
   }
 }
 
@@ -343,20 +301,12 @@ export async function waitAgent(
 ): Promise<{ completed: boolean; reason?: string }> {
   const args = ["agent", "wait", workerName, "--timeout", String(timeoutMs), "--json"];
   
-  const proc = await Bun.spawn([HERDR_CLI, ...args], {
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  
-  const stdout = await new TextDecoder().decode(await new Response(proc.stdout).arrayBuffer());
-  const code = await proc.exited;
-  
-  if (code !== 0) {
+  const result = await herdrSpawn(args);
+  if (result === null || result.code !== 0) {
     return { completed: false, reason: "timeout or error" };
   }
-  
   try {
-    return JSON.parse(stdout.trim());
+    return JSON.parse(result.stdout.trim());
   } catch {
     return { completed: false, reason: "parse error" };
   }
@@ -366,33 +316,26 @@ export async function waitAgent(
  * Attach to an agent (interactive).
  */
 export async function attachAgent(workerName: string): Promise<void> {
-  const proc = await Bun.spawn([HERDR_CLI, "agent", "attach", workerName], {
-    stdin: "inherit",
-    stdout: "inherit",
-    stderr: "inherit",
-  });
-  
-  await proc.exited;
+  try {
+    const proc = await Bun.spawn([HERDR_CLI, "agent", "attach", workerName], {
+      stdin: "inherit",
+      stdout: "inherit",
+      stderr: "inherit",
+    });
+    await proc.exited;
+  } catch {
+    // herdr not available
+  }
 }
 
 /**
  * List all agents.
  */
 export async function listAgents(): Promise<Array<{ name: string; kind: string; paneId: string; status: string }>> {
-  const proc = await Bun.spawn([HERDR_CLI, "agent", "list", "--json"], {
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  
-  const stdout = await new TextDecoder().decode(await new Response(proc.stdout).arrayBuffer());
-  const code = await proc.exited;
-  
-  if (code !== 0) {
-    return [];
-  }
-  
+  const result = await herdrSpawn(["agent", "list", "--json"]);
+  if (result === null || result.code !== 0) return [];
   try {
-    return JSON.parse(stdout.trim());
+    return JSON.parse(result.stdout.trim());
   } catch {
     return [];
   }
@@ -409,20 +352,10 @@ export async function getAgent(workerName: string): Promise<{
   workspaceId?: string;
   cwd?: string;
 } | null> {
-  const proc = await Bun.spawn([HERDR_CLI, "agent", "get", workerName, "--json"], {
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  
-  const stdout = await new TextDecoder().decode(await new Response(proc.stdout).arrayBuffer());
-  const code = await proc.exited;
-  
-  if (code !== 0) {
-    return null;
-  }
-  
+  const result = await herdrSpawn(["agent", "get", workerName, "--json"]);
+  if (result === null || result.code !== 0) return null;
   try {
-    return JSON.parse(stdout.trim());
+    return JSON.parse(result.stdout.trim());
   } catch {
     return null;
   }
