@@ -75,7 +75,7 @@ const GH_CLI = "gh";
 /**
  * Execute a gh CLI command and return parsed JSON.
  */
-async function ghCommand(args: string[], cwd?: string): Promise<any> {
+async function ghCommand(args: string[], cwd?: string): Promise<unknown> {
   const hasJson = args.length > 0 && args[args.length - 1] === "--json";
   const args_ = hasJson ? [GH_CLI, ...args] : [GH_CLI, ...args, "--json"];
   const proc = await Bun.spawn(["gh", ...args_], {
@@ -102,7 +102,7 @@ async function ghCommand(args: string[], cwd?: string): Promise<any> {
 /**
  * Get PR by number.
  */
-export async function getPR(number: number, repo?: string): Promise<any> {
+export async function getPR(number: number, repo?: string): Promise<unknown> {
   const args = ["pr", "view", String(number)];
   if (repo) args.push("--repo", repo);
   return ghCommand(args);
@@ -237,7 +237,7 @@ export async function getMergeBase(branch1: string, branch2: string): Promise<st
 export async function reconcileTicket(
   issueNumber: number,
   options: { baseBranch?: string; repo?: string } = {}
-): Promise<any> {
+): Promise<unknown> {
   const baseBranch = options.baseBranch || "release-0-4-0";
   const repo = options.repo;
   const ticketBranch = String(issueNumber);
@@ -257,16 +257,16 @@ export async function reconcileTicket(
   const baseStaleness = remoteHeadSha && baseSha && remoteHeadSha === baseSha;
 
   // Get PR details if exists
-  let prDetails: any = null;
+  let prDetails: Record<string, unknown> | null = null;
   if (pr) {
     prDetails = await getPR(pr.number, options.repo);
   }
 
   // Determine checks status
-  const checksGreen = prDetails?.statusCheckRollup?.every((c: any) => c.conclusion === "SUCCESS") ?? false;
+  const checksGreen = prDetails?.statusCheckRollup?.every((c: unknown) => typeof c === "object" && c !== null && "conclusion" in c && (c as Record<string, unknown>).conclusion === "SUCCESS") ?? false;
   
   // Check review status
-  const reviewApproved = prDetails?.reviews?.some((r: any) => r.state === "APPROVED") ?? false;
+  const reviewApproved = prDetails?.reviews?.some((r: unknown) => typeof r === "object" && r !== null && "state" in r && (r as Record<string, unknown>).state === "APPROVED") ?? false;
   
   // Check for stale readiness (green checks but stale SHA)
   const staleReadiness = checksGreen && isStale;
@@ -394,13 +394,13 @@ export async function landTicketPR(
   }
   
   // Check required checks
-  const checksGreen = pr.statusCheckRollup?.every((c: any) => c.conclusion === "SUCCESS") ?? false;
+  const checksGreen = pr.statusCheckRollup?.every((c: unknown) => typeof c === "object" && c !== null && "conclusion" in c && (c as Record<string, unknown>).conclusion === "SUCCESS") ?? false;
   if (!checksGreen) {
     throw new ContractError("state", "Required checks not green");
   }
   
   // Check review approval
-  const reviewApproved = pr.reviews?.some((r: any) => r.state === "APPROVED") ?? false;
+  const reviewApproved = pr.reviews?.some((r: unknown) => typeof r === "object" && r !== null && "state" in r && (r as Record<string, unknown>).state === "APPROVED") ?? false;
   if (options.requireApproval && !reviewApproved) {
     throw new ContractError("state", "No approving review");
   }

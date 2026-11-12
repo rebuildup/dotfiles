@@ -45,7 +45,7 @@ export interface TaskAttempt {
   startedAt: string;
   endedAt?: string;
   status: "running" | "completed" | "failed" | "fenced" | "fallback" | "blocked";
-  result?: any;
+  result?: unknown;
   error?: ClassifiedError;
   herdrPaneId?: string;
   herdrWorkspaceId?: string;
@@ -69,7 +69,7 @@ export interface CollectResult {
   taskId: string;
   attempt: TaskAttempt;
   success: boolean;
-  result?: any;
+  result?: unknown;
   error?: ClassifiedError;
 }
 
@@ -206,7 +206,7 @@ export async function startTaskAttempt(
   config: Config,
   attempt: TaskAttempt,
   prompt: string
-): Promise<{ success: boolean; error?: ClassifiedError; result?: any }> {
+): Promise<{ success: boolean; error?: ClassifiedError; result?: unknown }> {
   // Build the agent command for the route
   const route = config.routes[`${attempt.route.harness}.${attempt.route.provider}`];
   if (!route) {
@@ -232,7 +232,7 @@ export async function startTaskAttempt(
       return { success: true, result: { message: "Simulated single-route execution" } };
     }
   } catch (error) {
-    const signal: any = { message: error instanceof Error ? error.message : String(error) };
+    const signal: { message: string } = { message: error instanceof Error ? error.message : String(error) };
     const classified = classifyFailure(signal, new Date().toISOString());
     return { success: false, error: classified };
   }

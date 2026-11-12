@@ -100,8 +100,7 @@ export async function createWorkspace(
 ): Promise<HerdrWorkspace> {
   const args = ["workspace", "create", "--cwd", cwd, "--label", label];
   if (options.noFocus) args.push("--no-focus");
-  args.push("--json");
-
+  
   const result = await herdrSpawn(args, cwd);
   if (result === null) {
     throw new ContractError("state", "Herdr CLI not available");
@@ -110,7 +109,8 @@ export async function createWorkspace(
     throw new ContractError("state", `Herdr workspace create failed: ${result.stderr}`);
   }
   try {
-    return JSON.parse(result.stdout.trim());
+    const parsed = JSON.parse(result.stdout.trim());
+    return parsed?.result ?? parsed;
   } catch (error) {
     throw new ContractError("schema", `Failed to parse Herdr workspace create output: ${error}`);
   }
@@ -120,10 +120,11 @@ export async function createWorkspace(
  * List existing workspaces.
  */
 export async function listWorkspaces(): Promise<HerdrWorkspace[]> {
-  const result = await herdrSpawn(["workspace", "list", "--json"]);
+  const result = await herdrSpawn(["workspace", "list"]);
   if (result === null || result.code !== 0) return [];
   try {
-    return JSON.parse(result.stdout.trim());
+    const parsed = JSON.parse(result.stdout.trim());
+    return parsed?.result?.workspaces ?? [];
   } catch {
     return [];
   }
@@ -133,10 +134,11 @@ export async function listWorkspaces(): Promise<HerdrWorkspace[]> {
  * Get workspace by ID.
  */
 export async function getWorkspace(workspaceId: string): Promise<HerdrWorkspace | null> {
-  const result = await herdrSpawn(["workspace", "get", workspaceId, "--json"]);
+  const result = await herdrSpawn(["workspace", "get", workspaceId]);
   if (result === null || result.code !== 0) return null;
   try {
-    return JSON.parse(result.stdout.trim());
+    const parsed = JSON.parse(result.stdout.trim());
+    return parsed?.result ?? null;
   } catch {
     return null;
   }
@@ -163,8 +165,7 @@ export async function createPane(options: CreatePaneOptions): Promise<{ paneId: 
   if (options.cwd) args.push("--cwd", options.cwd);
   if (options.split) args.push("--split", options.split);
   if (options.targetPaneId) args.push("--target", options.targetPaneId);
-  args.push("--json");
-
+  
   const result = await herdrSpawn(args);
   if (result === null) {
     throw new ContractError("state", "Herdr CLI not available");
@@ -173,7 +174,8 @@ export async function createPane(options: CreatePaneOptions): Promise<{ paneId: 
     throw new ContractError("state", `Herdr pane create failed: ${result.stderr}`);
   }
   try {
-    return JSON.parse(result.stdout.trim());
+    const parsed = JSON.parse(result.stdout.trim());
+    return parsed?.result ?? parsed;
   } catch (error) {
     throw new ContractError("schema", `Failed to parse Herdr pane create output: ${error}`);
   }
@@ -183,10 +185,11 @@ export async function createPane(options: CreatePaneOptions): Promise<{ paneId: 
  * Get pane status.
  */
 export async function getPaneStatus(paneId: string): Promise<{ status: string; agentName?: string; agentKind?: string } | null> {
-  const result = await herdrSpawn(["pane", "get", paneId, "--json"]);
+  const result = await herdrSpawn(["pane", "get", paneId]);
   if (result === null || result.code !== 0) return null;
   try {
-    return JSON.parse(result.stdout.trim());
+    const parsed = JSON.parse(result.stdout.trim());
+    return parsed?.result ?? null;
   } catch {
     return null;
   }
@@ -222,8 +225,7 @@ export interface StartAgentOptions {
 export async function startAgent(options: StartAgentOptions): Promise<{ agentName: string }> {
   const args = ["agent", "start", options.workerName, "--kind", options.kind, "--pane", options.paneId];
   if (options.options) args.push(...options.options);
-  args.push("--json");
-
+  
   const result = await herdrSpawn(args);
   if (result === null) {
     throw new ContractError("state", "Herdr CLI not available");
@@ -232,7 +234,8 @@ export async function startAgent(options: StartAgentOptions): Promise<{ agentNam
     throw new ContractError("state", `Herdr agent start failed: ${result.stderr}`);
   }
   try {
-    return JSON.parse(result.stdout.trim());
+    const parsed = JSON.parse(result.stdout.trim());
+    return parsed?.result ?? parsed;
   } catch (error) {
     throw new ContractError("schema", `Failed to parse Herdr agent start output: ${error}`);
   }
@@ -249,21 +252,22 @@ export async function promptAgent(
   const args = ["agent", "prompt", workerName, prompt];
   if (options.wait) args.push("--wait");
   if (options.timeoutMs) args.push("--timeout", String(options.timeoutMs));
-  args.push("--json");
-
+  
   const result = await herdrSpawn(args);
   if (result === null) {
     return { blocked: true, response: "Herdr CLI not available" };
   }
   if (result.code !== 0) {
     try {
-      return JSON.parse(result.stdout.trim());
+      const parsed = JSON.parse(result.stdout.trim());
+      return parsed?.result ?? { blocked: true, response: result.stderr || "Agent prompt failed" };
     } catch {
       return { blocked: true, response: result.stderr || "Agent prompt failed" };
     }
   }
   try {
-    return JSON.parse(result.stdout.trim());
+    const parsed = JSON.parse(result.stdout.trim());
+    return parsed?.result ?? { response: result.stdout.trim() };
   } catch {
     return { response: result.stdout.trim() };
   }
@@ -279,14 +283,14 @@ export async function readAgent(
   const args = ["agent", "read", workerName];
   if (options.source) args.push("--source", options.source);
   if (options.lines) args.push("--lines", String(options.lines));
-  args.push("--json");
-
+  
   const result = await herdrSpawn(args);
   if (result === null || result.code !== 0) {
     return { output: "", source: options.source || "recent" };
   }
   try {
-    return JSON.parse(result.stdout.trim());
+    const parsed = JSON.parse(result.stdout.trim());
+    return parsed?.result ?? { output: "", source: options.source || "recent" };
   } catch {
     return { output: result.stdout.trim(), source: options.source || "recent" };
   }
@@ -299,14 +303,17 @@ export async function waitAgent(
   workerName: string,
   timeoutMs: number = 120000
 ): Promise<{ completed: boolean; reason?: string }> {
-  const args = ["agent", "wait", workerName, "--timeout", String(timeoutMs), "--json"];
+  const args = ["agent", "wait", workerName, "--timeout", String(timeoutMs)];
   
   const result = await herdrSpawn(args);
   if (result === null || result.code !== 0) {
     return { completed: false, reason: "timeout or error" };
   }
   try {
-    return JSON.parse(result.stdout.trim());
+    const parsed = JSON.parse(result.stdout.trim());
+    const r = parsed?.result;
+    if (r && typeof r.completed === "boolean") return r;
+    return { completed: r?.status === "done" || r?.status === "idle", reason: r?.status };
   } catch {
     return { completed: false, reason: "parse error" };
   }
@@ -332,10 +339,24 @@ export async function attachAgent(workerName: string): Promise<void> {
  * List all agents.
  */
 export async function listAgents(): Promise<Array<{ name: string; kind: string; paneId: string; status: string }>> {
-  const result = await herdrSpawn(["agent", "list", "--json"]);
+  const result = await herdrSpawn(["agent", "list"]);
   if (result === null || result.code !== 0) return [];
   try {
-    return JSON.parse(result.stdout.trim());
+    const parsed: unknown = JSON.parse(result.stdout.trim());
+    if (!parsed || typeof parsed !== "object") return [];
+    const obj = parsed as { result?: { agents?: unknown } };
+    const agents = obj.result?.agents;
+    if (!Array.isArray(agents)) return [];
+    return agents.map((raw: unknown) => {
+      if (!raw || typeof raw !== "object") return { name: "", kind: "", paneId: "", status: "unknown" };
+      const a = raw as Record<string, unknown>;
+      return {
+        name: typeof a.name === "string" ? a.name : typeof a.agent === "string" ? a.agent : "",
+        kind: typeof a.agent === "string" ? a.agent : "",
+        paneId: typeof a.pane_id === "string" ? a.pane_id : "",
+        status: typeof a.agent_status === "string" ? a.agent_status : typeof a.status === "string" ? a.status : "unknown",
+      };
+    });
   } catch {
     return [];
   }
@@ -352,10 +373,11 @@ export async function getAgent(workerName: string): Promise<{
   workspaceId?: string;
   cwd?: string;
 } | null> {
-  const result = await herdrSpawn(["agent", "get", workerName, "--json"]);
+  const result = await herdrSpawn(["agent", "get", workerName]);
   if (result === null || result.code !== 0) return null;
   try {
-    return JSON.parse(result.stdout.trim());
+    const parsed = JSON.parse(result.stdout.trim());
+    return parsed?.result ?? null;
   } catch {
     return null;
   }
