@@ -433,6 +433,17 @@ terms = "Pay-as-you-go API credits. The free-tier allowance (openrouter-free) is
 scope = "account"
 id = "openrouter"
 
+[catalog.providers.openrouter.restriction]
+status = "restricted"
+provenance = "measured"
+note = "opencode's default request (max_tokens 131072) was rejected: 'requires more credits, or fewer max_tokens', naming key a5d3c513… as weekly-limited (~18k tokens affordable). The key stored in opencode auth.json (label ce1…f0d) independently probes at a $50/week budget with $49.9999982 remaining. Which key the client actually resolves is unresolved; run a real completion probe on the intended key before routing traffic. No implicit fallback."
+
+[catalog.providers.openrouter.restriction.evidence]
+at = "2026-11-12T02:55:00Z"
+source = "probe"
+sha = "c618691ccfb307fbfaa7221a1b56a6c7958d1989"
+note = "opencode run failure 2026-11-12 11:03 JST + GET openrouter.ai/api/v1/key on the auth.json key 11:55 JST: limit 50 USD/week, remaining 49.9999982, resets 2026-11-16T00:00:00Z, weekly spend 0.0000018 USD."
+
 [catalog.providers.openrouter-free]
 billing = "free"
 terms = "Account-scoped free tier. The paid openrouter route is the explicit path beyond these limits; it is never a fallback target here."
@@ -504,6 +515,17 @@ terms = "MiniMax M Plan subscription; usage draws on the plan allowance. Token P
 [catalog.providers.minimax.quota]
 scope = "plan"
 id = "minimax-m-plan"
+
+[catalog.providers.minimax.restriction]
+status = "restricted"
+provenance = "measured"
+note = "M Plan weekly window exhausted (session 0%, weekly 100%); resets 2026-11-13T12:30:01Z. An independent runtime report (Muse, 2026-11-12 11:45 JST) agrees the weekly allowance is used up and puts recovery at 11/13 20:50 JST. Routes stay off until a post-reset probe succeeds. No fallback."
+
+[catalog.providers.minimax.restriction.evidence]
+at = "2026-11-12T02:10:15Z"
+source = "probe"
+sha = "c618691ccfb307fbfaa7221a1b56a6c7958d1989"
+note = "Orca `account list` rateLimits.minimax: weekly.usedPercent=100, weekly.resetsAt=2026-11-13T12:30:01Z, session.usedPercent=0, status=ok (auth only), source=web."
 
 [catalog.providers.zen]
 billing = "free"
