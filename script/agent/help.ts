@@ -16,7 +16,11 @@
  * Run: tested by script/agent.help.test.ts
  */
 
-import { type Attested } from "./contract";
+import {
+  looksLikeSecretValue,
+  REDACTED,
+  type Attested,
+} from "./contract";
 import {
   effectiveQuotaKey,
   modelEntry,
@@ -219,6 +223,24 @@ export function buildRoutesData(config: RoutesInput, catalog: Catalog): RoutesDa
 
 const UNKNOWN = "unknown";
 
+/** Longest echo of any untrusted string in human-readable output (#122). */
+const MAX_ECHO = 200;
+
+const CLIP_SUFFIX = "…[clipped]";
+
+/**
+ * THE one redaction/clipping boundary for human-readable text (issue #122).
+ * Every string a human renderer interpolates passes through here, so human
+ * output can never carry a value the JSON path would have redacted:
+ * secret-shaped values (Bearer/sk-/ghp_/AKIA/xox-/JWT) become `REDACTED`
+ * via the same `looksLikeSecretValue` predicate `redact()` uses, and every
+ * other string is clipped to a bounded echo.
+ */
+function boundaryText(value: string): string {
+  if (looksLikeSecretValue(value)) return REDACTED;
+  return value.length <= MAX_ECHO ? value : `${value.slice(0, MAX_ECHO)}${CLIP_SUFFIX}`;
+}
+
 /** Compact one-line rendering of an attestation; null attestation = unknown.
  * A `restricted` attestation is its own fact even when the value is null
  * (e.g. an observed HTTP 402/403/429 block), so it is never "unknown". */
@@ -228,13 +250,13 @@ function attestedText<T>(
 ): string {
   if (!att) return UNKNOWN;
   const evidence = att.evidence
-    ? ` (${att.provenance}, ${att.evidence.source} ${att.evidence.at.slice(0, 10)})`
-    : ` (${att.provenance})`;
+    ? ` (${boundaryText(att.provenance)}, ${boundaryText(att.evidence.source)} ${att.evidence.at.slice(0, 10)})`
+    : ` (${boundaryText(att.provenance)})`;
   if (att.status === "restricted") {
-    return `RESTRICTED: ${att.note ?? ""}${evidence}`.trimEnd();
+    return `RESTRICTED: ${boundaryText(att.note ?? "")}${evidence}`.trimEnd();
   }
   if (att.value === null) return UNKNOWN;
-  return `${formatValue(att.value)}${evidence}`;
+  return `${boundaryText(formatValue(att.value))}${evidence}`;
 }
 
 function rateLimitsText(limits: RateLimits): string {
@@ -252,12 +274,12 @@ function rateLimitsText(limits: RateLimits): string {
 
 function e2eText(observations: E2eObservation[]): string {
   return observations
-    .map((obs) => `${obs.model}: tool_call=${obs.tool_call}`)
+    .map((obs) => `${boundaryText(obs.model)}: tool_call=${obs.tool_call}`)
     .join("; ");
 }
 
 function pricingValue(pricing: NonNullable<ModelFactsData["pricing"]>): string {
-  const parts: string[] = [pricing.kind];
+  const parts: string[] = [boundaryText(pricing.kind)];
   if (pricing.input_per_mtok?.value !== null && pricing.input_per_mtok) {
     parts.push(`in $${pricing.input_per_mtok.value}/MTok`);
   }
@@ -270,34 +292,36 @@ function pricingValue(pricing: NonNullable<ModelFactsData["pricing"]>): string {
 export function renderRoutesText(data: RoutesData): string {
   const lines: string[] = [];
   lines.push(
-    `routes (catalog facts from ${data.config}; absent facts are ${UNKNOWN}, never guessed)`
+    `routes (catalog facts from ${boundaryText(data.config)}; absent facts are ${UNKNOWN}, never guessed)`
   );
   lines.push("");
   for (const route of data.routes) {
     lines.push(
-      `${route.id} [${route.harness}/${route.adapter}]  shortcut: ${route.shortcut}`
+      `${boundaryText(route.id)} [${boundaryText(route.harness)}/${boundaryText(route.adapter)}]  shortcut: ${boundaryText(route.shortcut)}`
     );
     lines.push(
-      `  default model: ${route.default_model ?? "(none configured; --model required)"}`
+      `  default model: ${route.default_model === null ? "(none configured; --model required)" : boundaryText(route.default_model)}`
     );
-    lines.push(`  models: ${route.models.length > 0 ? route.models.join(", ") : UNKNOWN}`);
+    lines.push(
+      `  models: ${route.models.length > 0 ? route.models.map(boundaryText).join(", ") : UNKNOWN}`
+    );
     lines.push(
       route.cred
-        ? `  credential: env ${route.cred.env}` +
+        ? `  credential: env ${boundaryText(route.cred.env)}` +
           (route.cred.infisical_required ? " (Infisical-required)" : " (Infisical)")
         : "  credential: harness-native login"
     );
     if (route.note) {
-      lines.push(`  note: ${route.note}`);
+      lines.push(`  note: ${boundaryText(route.note)}`);
     }
-    lines.push(`  billing: ${route.catalog.billing ?? UNKNOWN}`);
-    lines.push(`  quota scope: ${route.catalog.quota_scope ?? UNKNOWN}`);
+    lines.push(`  billing: ${route.catalog.billing === null ? UNKNOWN : boundaryText(route.catalog.billing)}`);
+    lines.push(`  quota scope: ${route.catalog.quota_scope === null ? UNKNOWN : boundaryText(route.catalog.quota_scope)}`);
     lines.push(`  rate limits: ${attestedText(route.catalog.rate_limits, rateLimitsText)}`);
     lines.push(`  concurrency: ${attestedText(route.catalog.concurrency, (n) => String(n))}`);
     lines.push(`  restriction: ${attestedText(route.catalog.restriction, () => "")}`);
     lines.push(`  e2e: ${attestedText(route.catalog.e2e, e2eText)}`);
     if (route.catalog.terms) {
-      lines.push(`  terms: ${route.catalog.terms}`);
+      lines.push(`  terms: ${boundaryText(route.catalog.terms)}`);
     }
     const modelIds = Object.keys(route.catalog.models);
     if (modelIds.length > 0) {
@@ -307,7 +331,7 @@ export function renderRoutesText(data: RoutesData): string {
         const tool = attestedText(facts.tool_call, (v) => String(v));
         const ctx = attestedText(facts.context_window, (v) => `${v} tokens`);
         const price = facts.pricing ? pricingValue(facts.pricing) : UNKNOWN;
-        lines.push(`    ${model}: tool_call=${tool}, context=${ctx}, pricing=${price}`);
+        lines.push(`    ${boundaryText(model)}: tool_call=${tool}, context=${ctx}, pricing=${price}`);
       }
     } else {
       lines.push(`  model facts: ${UNKNOWN}`);
@@ -527,8 +551,9 @@ export function buildGuideData(topic: string | null): GuideData {
   const entry = GUIDE_TOPICS.find((t) => t.id === topic);
   if (!entry) {
     // Unknown stays unknown: name the valid topics, invent nothing.
+    // The untrusted argv echo is secret-redacted and length-bounded (#122).
     throw new UnknownGuideTopicError(
-      `unknown guide topic '${topic}'; valid topics: ${GUIDE_TOPICS.map((t) => t.id).join(", ")}`,
+      `unknown guide topic '${boundaryText(topic)}'; valid topics: ${GUIDE_TOPICS.map((t) => t.id).join(", ")}`,
     );
   }
   return {
@@ -548,16 +573,18 @@ export function renderGuideText(data: GuideData): string {
     lines.push("agent guide — progressive disclosure; read one topic at a time:");
     lines.push("");
     for (const topic of data.topics) {
-      lines.push(`  agent guide ${topic.id.padEnd(12)} ${topic.summary}`);
+      lines.push(`  agent guide ${boundaryText(topic.id).padEnd(12)} ${boundaryText(topic.summary)}`);
     }
     lines.push("");
     lines.push(notYetAvailableFooter());
   } else {
-    lines.push(`agent guide ${data.topic} — ${data.title}`);
+    lines.push(`agent guide ${boundaryText(data.topic)} — ${boundaryText(data.title)}`);
     lines.push("");
-    lines.push(...data.details);
+    lines.push(...data.details.map(boundaryText));
     lines.push("");
-    lines.push(`related topics: agent guide ${data.related.join(" | agent guide ")}`);
+    lines.push(
+      `related topics: agent guide ${data.related.map(boundaryText).join(" | agent guide ")}`
+    );
     lines.push(notYetAvailableFooter());
   }
   return lines.join("\n");

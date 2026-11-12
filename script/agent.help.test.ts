@@ -148,9 +148,12 @@ function run(args: string[]): { exitCode: number; stdout: string; stderr: string
     env: { ...process.env, AGENT_CONFIG: REAL_CONFIG },
     stdout: "pipe",
     stderr: "pipe",
+    // Real timeout (issue #122): a hung launcher is killed, never blocks CI.
+    timeout: 30_000,
+    killSignal: "SIGKILL",
   });
   return {
-    exitCode: result.exitCode,
+    exitCode: result.exitCode ?? 128 + (result.signalCode === "SIGKILL" ? 9 : 0),
     stdout: result.stdout.toString(),
     stderr: result.stderr.toString(),
   };
@@ -272,6 +275,178 @@ describe("routes data", () => {
         expect(text).toContain(`credential: env ${route.cred.env}`);
       }
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Human output redaction boundary (issue #122)
+// ---------------------------------------------------------------------------
+
+/** Secret-shaped values spanning every SECRET_VALUE predicate (incl. JWT). */
+const SECRETS = [
+  "sk-inject1234567890",
+  `ghp_${"A".repeat(36)}`,
+  "AKIAIOSFODNN7EXAMPLE",
+  "eyJhbGciOiJub25lIn0.eyJzZWNyZXQiOiJ2YWx1ZTEyMzQ1Njc4OTAifQ.c2lnbmF0dXJlLXZhbHVl",
+  "Bearer abcdefgh12345678",
+  "xoxb-inject1234567890",
+] as const;
+
+/** Hostile strings bypass EvidenceSource typing on purpose (issue #122). */
+function hostileEvidence(source: string) {
+  return { at: "2026-11-01T00:00:00Z", source } as unknown as Attested<never>["evidence"];
+}
+
+/** RoutesData with a secret-shaped value in EVERY string slot the human
+ * renderer interpolates. `poison()` cycles SECRETS so each value lands on
+ * at least one slot; the assertions below then prove none of them leaks.
+ * `poisonModelIds=false` leaves `catalog.models` keys alone: contract's
+ * `redact()` redacts values, never object KEYS, so the JSON-parity test
+ * compares value positions only (model ids are repo config identifiers). */
+function poisonedRoutesData(poisonModelIds = true): RoutesData {
+  const data = JSON.parse(
+    JSON.stringify(buildRoutesData(FIXTURE, fixtureCatalog)),
+  ) as RoutesData;
+  let i = 0;
+  const poison = () => SECRETS[i++ % SECRETS.length];
+  data.config = poison();
+  for (const route of data.routes) {
+    route.id = poison();
+    route.harness = poison();
+    route.adapter = poison();
+    route.shortcut = poison();
+    route.default_model = poison();
+    route.models = [poison(), poison()];
+    if (route.cred) route.cred.env = poison();
+    route.note = poison();
+    route.catalog.billing = poison();
+    route.catalog.quota_scope = poison();
+    route.catalog.terms = poison();
+    if (route.catalog.rate_limits) {
+      route.catalog.rate_limits.provenance = poison() as never;
+      route.catalog.rate_limits.evidence = hostileEvidence(poison());
+    }
+    if (route.catalog.restriction) {
+      route.catalog.restriction.provenance = poison() as never;
+      route.catalog.restriction.note = poison();
+      route.catalog.restriction.evidence = hostileEvidence(poison());
+    }
+    if (route.catalog.e2e) {
+      route.catalog.e2e.value = [{ model: poison(), tool_call: true }] as never;
+      route.catalog.e2e.provenance = poison() as never;
+      route.catalog.e2e.evidence = hostileEvidence(poison());
+    }
+    const id1 = poisonModelIds ? poison() : "m1";
+    const id2 = poisonModelIds ? poison() : "m2";
+    route.catalog.models = Object.fromEntries(
+      [id1, id2].map((m) => [
+        m,
+        {
+          tool_call: {
+            value: true,
+            status: "verified-live",
+            provenance: poison(),
+            evidence: hostileEvidence(poison()),
+          } as never,
+          context_window: null,
+          pricing: null,
+        },
+      ]),
+    );
+  }
+  return data;
+}
+
+describe("human output redaction boundary (#122)", () => {
+  test("no secret-shaped value reaches renderRoutesText, from any slot", () => {
+    const data = poisonedRoutesData();
+    const text = renderRoutesText(data);
+    for (const secret of SECRETS) {
+      expect(text).not.toContain(secret);
+    }
+    // The boundary engaged (redacted, not silently dropped).
+    expect(text).toContain("[redacted]");
+    expect(text).toContain("note: [redacted]");
+    expect(text).toContain("RESTRICTED: [redacted]");
+  });
+
+  test("renderRoutesText and redactJson agree on a poisoned note", () => {
+    // Value positions only: contract's redact() never renames object keys.
+    const data = poisonedRoutesData(false);
+    const json = JSON.parse(redactJson(data)) as RoutesData;
+    for (const route of json.routes) {
+      expect(route.note).toBe("[redacted]");
+    }
+    const text = renderRoutesText(data);
+    for (const secret of SECRETS) {
+      expect(text).not.toContain(secret);
+      expect(redactJson(data)).not.toContain(secret);
+    }
+  });
+
+  test("JWT is secret-shaped on BOTH paths (one shared boundary)", () => {
+    const jwt = SECRETS[3];
+    expect(redactJson({ note: jwt })).toContain("[redacted]");
+    const data = poisonedRoutesData();
+    expect(renderRoutesText(data)).not.toContain(jwt);
+  });
+
+  test("no secret-shaped value reaches renderGuideText (detail + overview)", () => {
+    const detail = renderGuideText({
+      command: "guide",
+      topic: SECRETS[0],
+      title: SECRETS[1],
+      summary: SECRETS[2],
+      details: [SECRETS[3], SECRETS[4]],
+      related: [SECRETS[5]],
+      not_yet_available: {},
+    });
+    const overview = renderGuideText({
+      command: "guide",
+      topic: null,
+      topics: SECRETS.map((s) => ({ id: s, title: s, summary: s })),
+      not_yet_available: {},
+    });
+    for (const secret of SECRETS) {
+      expect(detail).not.toContain(secret);
+      expect(overview).not.toContain(secret);
+    }
+    expect(detail).toContain("[redacted]");
+  });
+
+  test("unknown guide topic echo is length-bounded and secret-redacted", () => {
+    const long = "x".repeat(5000);
+    let message = "";
+    try {
+      buildGuideData(long);
+      throw new Error("expected UnknownGuideTopicError");
+    } catch (error) {
+      if (!(error instanceof UnknownGuideTopicError)) throw error;
+      message = error.message;
+    }
+    // Bounded: the 5000-char run is clipped, the valid topics still named.
+    expect(message.length).toBeLessThan(400);
+    expect(message).not.toContain("xxxxx".repeat(50));
+    expect(message).toContain("valid topics: routes");
+    // Secret-shaped argv is redacted, never echoed.
+    let secretMessage = "";
+    try {
+      buildGuideData(`sk-inject1234567890${"y".repeat(30)}`);
+      throw new Error("expected UnknownGuideTopicError");
+    } catch (error) {
+      if (!(error instanceof UnknownGuideTopicError)) throw error;
+      secretMessage = error.message;
+    }
+    expect(secretMessage).not.toContain("sk-inject1234567890");
+    expect(secretMessage).toContain("[redacted]");
+  });
+
+  test("long non-secret note is clipped, not echoed in full", () => {
+    const data = poisonedRoutesData();
+    data.routes[0]!.note = "a".repeat(500);
+    const text = renderRoutesText(data);
+    expect(text).toContain("…[clipped]");
+    expect(text).not.toContain("a".repeat(300));
   });
 });
 
