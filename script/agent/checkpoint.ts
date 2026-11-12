@@ -59,6 +59,7 @@ import {
   requireGeneration,
   requireImmutableRef,
   requireIsoTime,
+  withFileLock,
   type AttemptStore,
   type Lease,
 } from "./attempts.ts";
@@ -260,23 +261,36 @@ export function checkpointPath(root: string, attemptKey: string): string {
 }
 
 /**
- * Persist a checkpoint locally (atomic temp+rename). Refuses to overwrite a
- * NEWER generation with an older one (regression guard); same-generation
- * overwrite is allowed (idempotent re-save with evolved notes).
+ * Persist a checkpoint locally (atomic temp+rename under an exclusive
+ * single-host lock file). The generation guard runs inside the lock, so
+ * concurrent processes cannot interleave load-then-write and let an older
+ * generation win.
+ *
+ * Guarantee scope, stated honestly: this protects the LOCAL copy on ONE host
+ * sharing one filesystem. It is not a cross-machine guarantee — a lock file
+ * on one host's disk is invisible to other machines. Hard checkpoints get
+ * their multi-machine durability and fencing from their GitHub `durable` ref,
+ * not from this file. Same-generation overwrite remains allowed (idempotent
+ * re-save with evolved notes).
  */
 export function saveLocalCheckpoint(root: string, record: CheckpointRecord): void {
   const path = checkpointPath(root, record.attemptKey);
-  const existing = loadLocalCheckpoint(root, record.attemptKey);
-  if (existing !== null && existing.generation > record.generation) {
-    throw new ContractError(
-      "state",
-      `refusing to overwrite checkpoint of generation ${existing.generation} with generation ${record.generation}`,
-    );
-  }
   mkdirSync(root, { recursive: true });
-  const tmp = `${path}.tmp-${process.pid}`;
-  writeFileSync(tmp, toCheckpointJson(record), "utf8");
-  renameSync(tmp, path);
+  withFileLock(`${path}.lock`, () => {
+    // Re-check the guard INSIDE the lock: the load-then-write sequence is
+    // only a regression guard if no other process can write between the
+    // load and the rename.
+    const existing = loadLocalCheckpoint(root, record.attemptKey);
+    if (existing !== null && existing.generation > record.generation) {
+      throw new ContractError(
+        "state",
+        `refusing to overwrite checkpoint of generation ${existing.generation} with generation ${record.generation}`,
+      );
+    }
+    const tmp = `${path}.tmp-${process.pid}-${Math.random().toString(36).slice(2, 10)}`;
+    writeFileSync(tmp, toCheckpointJson(record), "utf8");
+    renameSync(tmp, path);
+  });
 }
 
 /** Load the local checkpoint for an attempt; null when none was saved. */
@@ -318,6 +332,13 @@ export interface SideEffectPending {
 export interface JournalStore {
   append(attemptKey: string, line: string): void;
   readAll(attemptKey: string): string[];
+  /**
+   * Filesystem path of the journal's backing file for one attempt. Optional:
+   * filesystem-backed journals provide it so duplicate detection and append
+   * can run as one lock-protected section across processes; in-memory doubles
+   * omit it (single-process only).
+   */
+  filePath?(attemptKey: string): string;
 }
 
 /**
@@ -337,6 +358,10 @@ export class FsJournalStore implements JournalStore {
 
   private path(attemptKey: string): string {
     return join(this.root, `${attemptStateName(attemptKey)}.jsonl`);
+  }
+
+  filePath(attemptKey: string): string {
+    return this.path(attemptKey);
   }
 
   append(attemptKey: string, line: string): void {
@@ -440,9 +465,25 @@ export function readJournal(journal: JournalStore, attemptKey: string): SideEffe
 }
 
 /**
+ * Run `fn()` under an exclusive single-host lock on the journal's backing
+ * file, so duplicate detection + append is one atomic section across
+ * processes. In-memory journals have no backing file and are single-process
+ * by construction; they run unlocked.
+ */
+function withJournalLock<T>(journal: JournalStore, attemptKey: string, fn: () => T): T {
+  const filePath = journal.filePath?.(attemptKey);
+  if (filePath === undefined) return fn();
+  return withFileLock(`${filePath}.lock`, fn);
+}
+
+/**
  * Record the INTENT to perform an external side effect, BEFORE it happens.
  * The lease must still be current: a fenced, expired or released generation
- * cannot declare new external writes. Duplicate effect ids fail closed.
+ * cannot declare new external writes. Duplicate effect ids fail closed —
+ * duplicate detection and the append run under an exclusive single-host lock
+ * on the journal file, so two processes racing the same effect cannot both
+ * pass the check and double-append. In-memory journals (no backing file) are
+ * single-process by construction and need no lock.
  */
 export function journalPreEffect(
   attempts: AttemptStore,
@@ -467,16 +508,18 @@ export function journalPreEffect(
     },
     `journalPreEffect(${effect.effectId})`,
   );
-  if (readJournal(journal, lease.attemptKey).some((e) => e.effectId === effect.effectId)) {
-    throw new ContractError(
-      "state",
-      `effect '${effect.effectId}' already has a journal entry for '${lease.attemptKey}'`,
+  withJournalLock(journal, lease.attemptKey, () => {
+    if (readJournal(journal, lease.attemptKey).some((e) => e.effectId === effect.effectId)) {
+      throw new ContractError(
+        "state",
+        `effect '${effect.effectId}' already has a journal entry for '${lease.attemptKey}'`,
+      );
+    }
+    journal.append(
+      lease.attemptKey,
+      JSON.stringify({ contract_version: CONTRACT_VERSION, ...parsed }),
     );
-  }
-  journal.append(
-    lease.attemptKey,
-    JSON.stringify({ contract_version: CONTRACT_VERSION, ...parsed }),
-  );
+  });
   return parsed;
 }
 
@@ -486,8 +529,10 @@ export function journalPreEffect(
  * declared under a NEWER generation (the caller is stale — a current
  * generation holder may confirm effects declared under older generations,
  * which is the recovery path after a worker died), or when the effect
- * already has a post entry. Fencing itself is enforced by
- * `assertLeaseCurrent`: a stale worker cannot post at all.
+ * already has a post entry. The pre lookup, duplicate-post check and append
+ * run under an exclusive single-host lock on the journal file, so two
+ * processes racing the same post cannot both append. Fencing itself is
+ * enforced by `assertLeaseCurrent`: a stale worker cannot post at all.
  */
 export function journalPostEffect(
   attempts: AttemptStore,
@@ -497,44 +542,46 @@ export function journalPostEffect(
   now: number,
 ): SideEffectEntry {
   assertLeaseCurrent(attempts, lease, now);
-  const entries = readJournal(journal, lease.attemptKey);
-  const pre = entries.find((e) => e.effectId === effect.effectId && e.phase === "pre");
-  if (pre === undefined) {
-    throw new ContractError(
-      "state",
-      `no 'pre' journal entry for effect '${effect.effectId}' of '${lease.attemptKey}'`,
-    );
-  }
-  if (pre.generation > lease.generation) {
-    throw new ContractError(
-      "evidence",
-      `effect '${effect.effectId}' was declared under generation ${pre.generation}, newer than ${lease.generation}`,
-    );
-  }
-  if (entries.some((e) => e.effectId === effect.effectId && e.phase === "post")) {
-    throw new ContractError("state", `effect '${effect.effectId}' already has a post entry`);
-  }
   if (effect.ref !== null) requireImmutableRef(effect.ref, "journalPostEffect.ref");
-  const parsed = parseSideEffectEntry(
-    {
-      contract_version: CONTRACT_VERSION,
-      effectId: effect.effectId,
-      attemptKey: lease.attemptKey,
-      generation: lease.generation,
-      phase: "post",
-      kind: pre.kind,
-      target: pre.target,
-      outcome: effect.outcome,
-      ref: effect.ref,
-      at: isoTime(now),
-    },
-    `journalPostEffect(${effect.effectId})`,
-  );
-  journal.append(
-    lease.attemptKey,
-    JSON.stringify({ contract_version: CONTRACT_VERSION, ...parsed }),
-  );
-  return parsed;
+  return withJournalLock(journal, lease.attemptKey, () => {
+    const entries = readJournal(journal, lease.attemptKey);
+    const pre = entries.find((e) => e.effectId === effect.effectId && e.phase === "pre");
+    if (pre === undefined) {
+      throw new ContractError(
+        "state",
+        `no 'pre' journal entry for effect '${effect.effectId}' of '${lease.attemptKey}'`,
+      );
+    }
+    if (pre.generation > lease.generation) {
+      throw new ContractError(
+        "evidence",
+        `effect '${effect.effectId}' was declared under generation ${pre.generation}, newer than ${lease.generation}`,
+      );
+    }
+    if (entries.some((e) => e.effectId === effect.effectId && e.phase === "post")) {
+      throw new ContractError("state", `effect '${effect.effectId}' already has a post entry`);
+    }
+    const parsed = parseSideEffectEntry(
+      {
+        contract_version: CONTRACT_VERSION,
+        effectId: effect.effectId,
+        attemptKey: lease.attemptKey,
+        generation: lease.generation,
+        phase: "post",
+        kind: pre.kind,
+        target: pre.target,
+        outcome: effect.outcome,
+        ref: effect.ref,
+        at: isoTime(now),
+      },
+      `journalPostEffect(${effect.effectId})`,
+    );
+    journal.append(
+      lease.attemptKey,
+      JSON.stringify({ contract_version: CONTRACT_VERSION, ...parsed }),
+    );
+    return parsed;
+  });
 }
 
 /**
