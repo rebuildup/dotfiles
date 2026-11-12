@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { readFileSync } from "node:fs";
 import {
   conservativeCapacity,
+  displayId,
   detectWsl,
   evaluate,
   getInventory,
@@ -320,5 +321,45 @@ describe("cold review round 4: fail-closed regressions", () => {
       "a",
     );
     expect(m.resources.value).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Display id sanitization (issue #123)
+// ---------------------------------------------------------------------------
+
+describe("displayId sanitization", () => {
+  it("path-like ids are hashed, not emitted verbatim", () => {
+    const hostile = ["m/../../etc", "host:22", "user@host", "..\\windows"];
+    for (const id of hostile) {
+      const d = displayId(id);
+      expect(d).not.toBe(id);
+      expect(d).toMatch(/^id-[0-9a-f]{8}$/);
+    }
+  });
+
+  it("safe ids pass through unchanged", () => {
+    const safe = ["wsl-desktop", "macbook-pro", "workstation-1"];
+    for (const id of safe) {
+      expect(displayId(id)).toBe(id);
+    }
+  });
+
+  it("REDACTED passes through", () => {
+    expect(displayId(REDACTED)).toBe(REDACTED);
+  });
+
+  it("hostile id hashing is stable (same input → same output)", () => {
+    expect(displayId("m/../../etc")).toBe(displayId("m/../../etc"));
+    expect(displayId("m/../../etc")).not.toBe(displayId("m/../../tmp"));
+  });
+
+  it("N4/N6: path-like ids are not emitted verbatim in output", () => {
+    const p = profile("m/../../etc", "t1");
+    const r = inv([p], [st("m/../../etc", "reachable")]);
+    for (const m of r.machines) {
+      expect(displayId(m.id)).not.toContain("/");
+      expect(displayId(m.id)).not.toContain("..");
+    }
   });
 });

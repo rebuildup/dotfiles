@@ -171,7 +171,8 @@ function declaredFact<T>(value: T | undefined, evidence: Evidence): Attested<T> 
   return attest({ value, status: "configured", provenance: "estimated", evidence });
 }
 
-const OS_VALUES: readonly MachineOS[] = ["linux", "macos", "windows"];
+/** The MachineOS value set; single authority for OS enum validation. */
+export const OS_VALUES: readonly MachineOS[] = ["linux", "macos", "windows"];
 
 /**
  * Type-validate declared facts: JSON config is untrusted input, so any field
@@ -269,6 +270,26 @@ function safeId(raw: unknown): string | null {
   if (typeof raw !== "string" || raw.length === 0 || raw.length > TEXT_CAP) return null;
   if (/[\u0000-\u001f\u007f]/.test(raw)) return null;
   return looksLikeSecretValue(raw) ? REDACTED : raw;
+}
+
+/**
+ * Display-safe form of an id: path-like, hostname-like, or connection-like
+ * strings are hashed to a short stable prefix so the raw value is never
+ * emitted verbatim in human or JSON output. Safe ids pass through unchanged.
+ * Internal map keys keep the raw id; only display/JSON output uses this.
+ */
+export function displayId(id: string): string {
+  if (id === REDACTED) return id;
+  const hostile =
+    id.includes("/") ||
+    id.includes("\\") ||
+    id.includes("..") ||
+    id.includes(":") ||
+    id.includes("@") ||
+    /^[a-z0-9-]+$/i.test(id) === false && /[0-9]{2,5}$/.test(id);
+  if (!hostile) return id;
+  const hash = createHash("sha256").update(id).digest("hex").slice(0, 8);
+  return `id-${hash}`;
 }
 
 export function loadDeclared(path?: string): Record<string, Declared> {
@@ -624,19 +645,33 @@ export function main(args: string[] = process.argv.slice(2)): void {
   }
   const inv = getInventory({ declared });
   if (cmd === "list") {
-    if (rest.includes("--json")) console.log(toJson(inv));
-    else {
+    if (rest.includes("--json")) {
+      // Sanitize ids in JSON output: hostile ids are hashed, not emitted verbatim
+      const sanitized = {
+        ...inv,
+        machines: inv.machines.map((m) => ({ ...m, id: displayId(m.id), label: displayId(m.label) })),
+      };
+      console.log(toJson(sanitized));
+    } else {
       for (const m of inv.machines) {
-        console.log(`${m.id} ${m.label} local=${m.isLocal} availability=${m.availability} os=${m.os.value ?? "unknown"} arch=${m.arch.value ?? "unknown"}`);
+        console.log(`${displayId(m.id)} ${displayId(m.label)} local=${m.isLocal} availability=${m.availability} os=${m.os.value ?? "unknown"} arch=${m.arch.value ?? "unknown"}`);
       }
       for (const e of inv.errors) console.log(`inventory error: ${e}`);
     }
   } else if (cmd === "get") {
     const m = inv.machines.find((x) => x.id === rest[0]);
     if (!m) throw new Error(`machine ${rest[0] ?? ""} not found`);
-    console.log(toJson(m));
+    console.log(toJson({ ...m, id: displayId(m.id), label: displayId(m.label) }));
   } else if (cmd === "hosts") {
-    console.log(toJson(groupHosts(inv.machines)));
+    const hosts = groupHosts(inv.machines);
+    const sanitized = {
+      ...hosts,
+      groups: hosts.groups?.map((g: Record<string, unknown>) => ({
+        ...g,
+        machineIds: Array.isArray(g.machineIds) ? (g.machineIds as string[]).map(displayId) : g.machineIds,
+      })),
+    };
+    console.log(toJson(sanitized));
   } else if (cmd === "probe") {
     console.log(toJson(getLocalMachine(declared.local)));
   } else {

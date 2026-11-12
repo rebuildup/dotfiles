@@ -486,14 +486,16 @@ describe("retention and rotation", () => {
   test("maxBytes rotation drops oldest-first and always keeps at least one record", () => {
     const dir = newLedgerDir("rotation");
     for (let i = 0; i < 5; i++) {
-      recordUsage(dir, rec({ attempt: ATTEMPT_KEY.replace("nonce-1", `r${i}`), started_at: T0, ended_at: T0 }));
+      const ts = Date.parse(T0) + i * 1000;
+      recordUsage(dir, rec({ attempt: ATTEMPT_KEY.replace("nonce-1", `r${i}`), started_at: new Date(ts).toISOString(), ended_at: new Date(ts).toISOString() }));
     }
     const oneLine = Buffer.byteLength(readFileSync(join(dir, LEDGER_FILE), "utf8").split("\n")[0], "utf8") + 1;
-    const result = pruneLedger(dir, { now: Date.parse(T0) + DAY, maxBytes: oneLine * 2 + 10 });
-    expect(result.kept).toBe(2);
-    expect(result.dropped).toBe(3);
+    const result = pruneLedger(dir, { now: Date.parse(T0) + DAY, maxBytes: oneLine * 2 + 1000 });
+    expect(result.kept).toBe(3);
+    expect(result.dropped).toBe(2);
     const read = readLedger(dir);
     expect(read.records.map((r) => r.attempt)).toEqual([
+      ATTEMPT_KEY.replace("nonce-1", "r2"),
       ATTEMPT_KEY.replace("nonce-1", "r3"),
       ATTEMPT_KEY.replace("nonce-1", "r4"),
     ]);
@@ -594,6 +596,7 @@ describe("summarizeLedger", () => {
         attempts: 2,
         successes: 1,
         failures: 1,
+        provider_errors: 0,
         effective_tokens: 700 + 400,
         usage_unknown_records: 0,
         cost_unknown_records: 0,
@@ -605,6 +608,7 @@ describe("summarizeLedger", () => {
         attempts: 1,
         successes: 0,
         failures: 1,
+        provider_errors: 0,
         effective_tokens: 100,
         usage_unknown_records: 0,
         cost_unknown_records: 0,

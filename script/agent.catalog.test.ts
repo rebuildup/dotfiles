@@ -365,7 +365,7 @@ id = "test-plan"
 
 describe("launcher compatibility", () => {
   test("agent check still passes with the additive catalog tables", () => {
-    const proc = Bun.spawnSync(["bun", join(REPO, "script", "agent.ts"), "check"], {
+    const proc = Bun.spawnSync([process.execPath, join(REPO, "script", "agent.ts"), "check"], {
       cwd: REPO,
       stdout: "pipe",
       stderr: "pipe",
