@@ -44,7 +44,15 @@
  *     (temp file + rename) under the lock, dropping records older than
  *     `maxAgeMs` (default `DEFAULT_RETENTION_MS`) and, when `maxBytes`
  *     is set, oldest-first until the file fits; corrupt lines dropped
- *     by the rewrite are reported (`corrupt_dropped`).
+ *     by the rewrite are reported (`corrupt_dropped`). Options are
+ *     validated BEFORE the lock or any write: a rejected prune leaves
+ *     the ledger byte-identical (never fail-destructive, issue #121).
+ *   - Provenance and provider errors (issue #121): each record carries
+ *     `usage_provenance` / `wall_time_provenance` ("measured" |
+ *     "estimated"; legacy records without the fields read as
+ *     "measured") and `error_kind` ("auth" = 401, "payment" = 402,
+ *     "capacity" = 429, or null). Provider-error records are excluded
+ *     from success-rate and per-task failure stats.
  *   - Summaries never fold missing data into zero: records without
  *     usage/cost/wall time are counted (`usage_unknown_records` /
  *     `cost_unknown_records` / `wall_time_unknown_records`), never
@@ -80,6 +88,19 @@ export type UsageOutcome = "success" | "failure" | "killed";
 
 /** Outcome of post-run verification of the attempt's work. */
 export type VerificationOutcome = "pass" | "fail" | "skipped";
+
+/** Provider-side terminal error class (issue #121): HTTP 401 → "auth",
+ * 402 → "payment", 429 → "capacity". These failures measure provider
+ * capacity/auth state, NOT model quality, so summaries exclude them
+ * from success-rate and per-task failure counts. */
+export type ProviderErrorKind = "auth" | "payment" | "capacity";
+
+/** Provenance of a measured quantity (issue #121): "measured" is an
+ * actually observed value (provider counters, a clock), "estimated" is
+ * derived. Legacy records written before this field existed are
+ * "measured" (their counters were provider-reported, their wall time
+ * clock-measured). */
+export type ProvenanceBasis = "measured" | "estimated";
 
 /** Token counters for one attempt. All four fields are explicit; a
  * provider that does not report a counter records 0, never a guess. */
@@ -120,6 +141,18 @@ export interface UsageRecord {
   tool_calls: number | null;
   /** Retries performed WITHIN this attempt (internal retry loop). */
   retries: number | null;
+  /** Provenance of `usage` (issue #121): "measured" = provider-reported
+   * counters, "estimated" = derived. Absent on legacy records →
+   * "measured". */
+  usage_provenance: ProvenanceBasis;
+  /** Provenance of `wall_time_ms` (issue #121): "measured" = clock, or
+   * "estimated" = derived (e.g. from coarse timestamps). Absent on
+   * legacy records → "measured". */
+  wall_time_provenance: ProvenanceBasis;
+  /** Provider-side terminal error class (401/402/429, issue #121).
+   * Null unless the attempt ended in a provider capacity/auth failure;
+   * NEVER set on a success. Excluded from quality stats in summaries. */
+  error_kind: ProviderErrorKind | null;
   /** ISO 8601 UTC, real calendar date. */
   started_at: string;
   /** ISO 8601 UTC; null while the attempt is still running. When set,
@@ -158,6 +191,19 @@ export interface LedgerSummary {
   verified_successes: number;
   /** outcome success but verification fail/skipped: unproven success. */
   unverified_successes: number;
+  /** Provider-side terminal errors by class (401/402/429, issue #121).
+   * These records are EXCLUDED from `success_rate` and from per-task
+   * `failures`: they measure provider capacity/auth state, not model
+   * quality. They still count in `outcomes` and token/cost sums. */
+  provider_errors: Record<ProviderErrorKind, number>;
+  /** Record counts by usage provenance, over records that CARRY usage
+   * (issue #121). Records with `usage: null` are in
+   * `usage_unknown_records`, never here. */
+  usage_provenance: Record<ProvenanceBasis, number>;
+  /** Record counts by wall-time provenance, over records that CARRY
+   * wall time (issue #121). Records with `wall_time_ms: null` are in
+   * `wall_time_unknown_records`, never here. */
+  wall_time_provenance: Record<ProvenanceBasis, number>;
   /** Records that are themselves retries of another attempt. */
   retry_observations: number;
   /** successes-with-passing-verification / decided outcomes; null when
@@ -185,12 +231,15 @@ export interface LedgerSummary {
   wall_time_unknown_records: number;
   wall_time_ms: number;
   cost: CostTotals;
-  /** Per-task rollup (records with a task id only), sorted by task id. */
+  /** Per-task rollup (records with a task id only), sorted by task id.
+   * `failures` EXCLUDES provider-error records (see `provider_errors`);
+   * `attempts` still counts them. */
   per_task: Array<{
     task: string;
     attempts: number;
     successes: number;
     failures: number;
+    provider_errors: number;
     effective_tokens: number;
     usage_unknown_records: number;
     cost_unknown_records: number;
@@ -236,6 +285,9 @@ const PAYLOAD_FIELDS = [
   "wall_time_ms",
   "tool_calls",
   "retries",
+  "usage_provenance",
+  "wall_time_provenance",
+  "error_kind",
   "started_at",
   "ended_at",
 ] as const;
@@ -243,6 +295,8 @@ const PAYLOAD_FIELDS = [
 const OUTCOMES: Record<UsageOutcome, true> = { success: true, failure: true, killed: true };
 const VERIFICATIONS: Record<VerificationOutcome, true> = { pass: true, fail: true, skipped: true };
 const COST_BASES: Record<"billed" | "estimated", true> = { billed: true, estimated: true };
+const PROVIDER_ERROR_KINDS: Record<ProviderErrorKind, true> = { auth: true, payment: true, capacity: true };
+const PROVENANCE_BASES: Record<ProvenanceBasis, true> = { measured: true, estimated: true };
 
 /** Same ISO-8601 UTC shape the contract enforces on Evidence timestamps. */
 const ISO_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/;
@@ -407,6 +461,33 @@ export function parseUsageRecord(raw: unknown, where: string): UsageRecord {
   const toolCalls = p["tool_calls"];
   const retries = p["retries"];
 
+  // Provenance (issue #121): absent on legacy records → "measured".
+  const provenanceOf = (field: string): ProvenanceBasis => {
+    const raw = p[field];
+    if (raw === undefined || raw === null) return "measured";
+    if (typeof raw !== "string" || !(raw in PROVENANCE_BASES)) {
+      throw new ContractError("schema", `${where}: '${field}' must be 'measured' or 'estimated'`);
+    }
+    return raw as ProvenanceBasis;
+  };
+  const usageProvenance = provenanceOf("usage_provenance");
+  const wallTimeProvenance = provenanceOf("wall_time_provenance");
+
+  // Provider error class (issue #121): absent/null → none; never on a
+  // success (a provider error class cannot terminate a successful
+  // attempt — that record would corrupt quality stats).
+  const errorKindRaw = p["error_kind"];
+  let errorKind: ProviderErrorKind | null = null;
+  if (errorKindRaw !== undefined && errorKindRaw !== null) {
+    if (typeof errorKindRaw !== "string" || !(errorKindRaw in PROVIDER_ERROR_KINDS)) {
+      throw new ContractError("schema", `${where}: 'error_kind' must be 'auth'|'payment'|'capacity'`);
+    }
+    if (outcome === "success") {
+      throw new ContractError("schema", `${where}: 'error_kind' must not be set on a success`);
+    }
+    errorKind = errorKindRaw as ProviderErrorKind;
+  }
+
   return {
     attempt: attemptKey,
     task,
@@ -418,6 +499,9 @@ export function parseUsageRecord(raw: unknown, where: string): UsageRecord {
     wall_time_ms: wallTime === undefined || wallTime === null ? null : nonNegInt(wallTime, where, "wall_time_ms"),
     tool_calls: toolCalls === undefined || toolCalls === null ? null : nonNegInt(toolCalls, where, "tool_calls"),
     retries: retries === undefined || retries === null ? null : nonNegInt(retries, where, "retries"),
+    usage_provenance: usageProvenance,
+    wall_time_provenance: wallTimeProvenance,
+    error_kind: errorKind,
     started_at: startedAt,
     ended_at: endedAt,
   };
@@ -470,7 +554,14 @@ export function withLedgerLock<T>(
 ): T {
   const timeoutMs = opts.timeoutMs ?? LEDGER_LOCK_TIMEOUT_MS;
   const staleMs = opts.staleMs ?? LEDGER_LOCK_STALE_MS;
-  mkdirSync(dir, { recursive: true });
+  try {
+    mkdirSync(dir, { recursive: true });
+  } catch (err) {
+    // EEXIST (the path exists as a FILE), EACCES, …: a raw errno is not
+    // a contract surface — every lock-acquisition failure is a state
+    // ContractError (issue #121).
+    throw new ContractError("state", `ledger directory unavailable: ${String(err)}`);
+  }
   const lockPath = join(dir, LEDGER_LOCK_DIR);
   const ownerPath = join(lockPath, LEDGER_LOCK_TOKEN);
   const token = randomUUID() + "\n";
@@ -695,12 +786,31 @@ function costOf(rec: UsageRecord): number {
  * ledger. Corrupt lines never survive a rewrite; the number dropped is
  * reported as `corrupt_dropped`. Records without any timestamp are
  * treated as oldest.
+ *
+ * Options are validated BEFORE the lock is taken or anything is touched
+ * (issue #121): `now` must be a finite non-negative epoch-ms number,
+ * `maxAgeMs` a finite positive number, `maxBytes` a positive safe
+ * integer. A rejected prune leaves the ledger byte-identical — pruning
+ * must never fail destructive (NaN/`-1` options formerly rewrote the
+ * ledger to empty).
  */
 export function pruneLedger(
   dir: string,
   opts: { now: number; maxAgeMs?: number; maxBytes?: number },
 ): PruneResult {
+  if (typeof opts.now !== "number" || !Number.isFinite(opts.now) || opts.now < 0) {
+    throw new ContractError("schema", "pruneLedger: 'now' must be a finite non-negative epoch-ms number");
+  }
   const maxAgeMs = opts.maxAgeMs ?? DEFAULT_RETENTION_MS;
+  if (typeof maxAgeMs !== "number" || !Number.isFinite(maxAgeMs) || maxAgeMs <= 0) {
+    throw new ContractError("schema", "pruneLedger: 'maxAgeMs' must be a finite positive number of milliseconds");
+  }
+  if (
+    opts.maxBytes !== undefined &&
+    (typeof opts.maxBytes !== "number" || !Number.isSafeInteger(opts.maxBytes) || opts.maxBytes <= 0)
+  ) {
+    throw new ContractError("schema", "pruneLedger: 'maxBytes' must be a positive safe integer");
+  }
   const cutoff = opts.now - maxAgeMs;
   return withLedgerLock(dir, () => {
     const path = ledgerPath(dir);
@@ -757,12 +867,16 @@ function effectiveTokens(usage: TokenUsage): number {
 export function summarizeLedger(records: UsageRecord[]): LedgerSummary {
   const outcomes: Record<UsageOutcome, number> = { success: 0, failure: 0, killed: 0 };
   const verifications: Record<VerificationOutcome, number> = { pass: 0, fail: 0, skipped: 0 };
+  const providerErrors: Record<ProviderErrorKind, number> = { auth: 0, payment: 0, capacity: 0 };
+  const usageProvenance: Record<ProvenanceBasis, number> = { measured: 0, estimated: 0 };
+  const wallTimeProvenance: Record<ProvenanceBasis, number> = { measured: 0, estimated: 0 };
   const tokens = { prompt: 0, output: 0, cache_read: 0, cache_write: 0, effective: 0 };
   const cost: CostTotals = {};
   const tasks = new Map<string, {
     attempts: number;
     successes: number;
     failures: number;
+    providerErrors: number;
     effective: number;
     usageUnknown: number;
     costUnknown: number;
@@ -779,6 +893,11 @@ export function summarizeLedger(records: UsageRecord[]): LedgerSummary {
   for (const rec of records) {
     outcomes[rec.outcome]++;
     verifications[rec.verification]++;
+    // Provider errors (401/402/429): counted, but excluded from quality
+    // stats (success rate, per-task failures) — provider state, not
+    // model quality (issue #121).
+    const isProviderError = rec.error_kind !== null;
+    if (rec.error_kind !== null) providerErrors[rec.error_kind]++;
     if (rec.outcome === "success") {
       if (rec.verification === "pass") verifiedSuccesses++;
       else unverifiedSuccesses++;
@@ -790,18 +909,24 @@ export function summarizeLedger(records: UsageRecord[]): LedgerSummary {
       tokens.cache_read += rec.usage.cache_read;
       tokens.cache_write += rec.usage.cache_write;
       tokens.effective += effectiveTokens(rec.usage);
+      usageProvenance[rec.usage_provenance]++;
     } else {
       usageUnknown++;
     }
     if (!rec.cost) costUnknown++;
-    if (rec.wall_time_ms !== null) wallTime += rec.wall_time_ms;
-    else wallTimeUnknown++;
+    if (rec.wall_time_ms !== null) {
+      wallTime += rec.wall_time_ms;
+      wallTimeProvenance[rec.wall_time_provenance]++;
+    } else {
+      wallTimeUnknown++;
+    }
     addCost(cost, rec);
     if (rec.task !== null) {
       const bucket = tasks.get(rec.task) ?? {
         attempts: 0,
         successes: 0,
         failures: 0,
+        providerErrors: 0,
         effective: 0,
         usageUnknown: 0,
         costUnknown: 0,
@@ -810,7 +935,8 @@ export function summarizeLedger(records: UsageRecord[]): LedgerSummary {
       };
       bucket.attempts++;
       if (rec.outcome === "success") bucket.successes++;
-      if (rec.outcome === "failure" || rec.outcome === "killed") bucket.failures++;
+      if (!isProviderError && (rec.outcome === "failure" || rec.outcome === "killed")) bucket.failures++;
+      if (isProviderError) bucket.providerErrors++;
       if (rec.usage) bucket.effective += effectiveTokens(rec.usage);
       else bucket.usageUnknown++;
       if (!rec.cost) bucket.costUnknown++;
@@ -820,7 +946,9 @@ export function summarizeLedger(records: UsageRecord[]): LedgerSummary {
     }
   }
 
-  const decided = outcomes.success + outcomes.failure + outcomes.killed;
+  // Quality denominator excludes provider-error records (issue #121:
+  // 401/402/429 must not depress model quality stats).
+  const decided = outcomes.success + outcomes.failure + outcomes.killed - (providerErrors.auth + providerErrors.payment + providerErrors.capacity);
   const perTask = [...tasks.entries()]
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
     .map(([task, bucket]) => ({
@@ -828,6 +956,7 @@ export function summarizeLedger(records: UsageRecord[]): LedgerSummary {
       attempts: bucket.attempts,
       successes: bucket.successes,
       failures: bucket.failures,
+      provider_errors: bucket.providerErrors,
       effective_tokens: bucket.effective,
       usage_unknown_records: bucket.usageUnknown,
       cost_unknown_records: bucket.costUnknown,
@@ -844,6 +973,9 @@ export function summarizeLedger(records: UsageRecord[]): LedgerSummary {
     verifications,
     verified_successes: verifiedSuccesses,
     unverified_successes: unverifiedSuccesses,
+    provider_errors: providerErrors,
+    usage_provenance: usageProvenance,
+    wall_time_provenance: wallTimeProvenance,
     retry_observations: retryObservations,
     success_rate: decided === 0 ? null : verifiedSuccesses / decided,
     tokens,
