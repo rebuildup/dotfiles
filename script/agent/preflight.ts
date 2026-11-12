@@ -131,7 +131,11 @@ export interface PreflightDecision {
   reasons: string[];
 }
 
-const TASK_CLASSES: readonly TaskClass[] = [
+/**
+ * The canonical TaskClass value set; the single authority for task-class
+ * enum validation (shared with quality.ts / review.ts).
+ */
+export const TASK_CLASSES: readonly TaskClass[] = [
   "mechanical",
   "localized",
   "cross-boundary",

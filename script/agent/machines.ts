@@ -171,7 +171,8 @@ function declaredFact<T>(value: T | undefined, evidence: Evidence): Attested<T> 
   return attest({ value, status: "configured", provenance: "estimated", evidence });
 }
 
-const OS_VALUES: readonly MachineOS[] = ["linux", "macos", "windows"];
+/** The MachineOS value set; single authority for OS enum validation. */
+export const OS_VALUES: readonly MachineOS[] = ["linux", "macos", "windows"];
 
 /**
  * Type-validate declared facts: JSON config is untrusted input, so any field
