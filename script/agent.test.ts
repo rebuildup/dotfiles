@@ -2877,6 +2877,30 @@ test("test_kilo_adapter_endpoints", withFixture((fixture) => {
   check(block?.models?.["reflection/beam-free"]?.limit?.context === 1048576, JSON.stringify(block));
   check(!JSON.stringify(parsed).includes("secret-kilo"), "secret leaked into config content");
   check(ocEnv["KILO_API_KEY"] === "secret-kilo", JSON.stringify(ocEnv["KILO_API_KEY"]));
+
+  // `agent models` must show BOTH endpoint spellings when they differ, so an
+  // operator can see why the adapters disagree; showing only base_url would
+  // hide the /v1 the OpenCode block actually uses.
+  const models = fixture.run(["models", "kilo"], { config: REAL_CONFIG });
+  check(models.exitCode === 0, models.stderr.toString());
+  const modelsOut = models.stdout.toString();
+  check(
+    modelsOut.includes("opencode endpoint: https://api.kilo.ai/api/gateway/v1"),
+    modelsOut,
+  );
+  check(
+    modelsOut.includes(
+      "anthropic endpoint: https://api.kilo.ai/api/gateway (base_url; /v1/messages appended)",
+    ),
+    modelsOut,
+  );
+  // A provider whose spellings agree must not print the second line.
+  const logfareModels = fixture.run(["models", "logfare"], { config: REAL_CONFIG });
+  check(logfareModels.exitCode === 0, logfareModels.stderr.toString());
+  check(
+    !logfareModels.stdout.toString().includes("anthropic endpoint:"),
+    logfareModels.stdout.toString(),
+  );
 }));
 
 test("test_free_routes_require_infisical", withFixture((fixture) => {

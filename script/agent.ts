@@ -2437,11 +2437,18 @@ function cmdModels(config: Config, providerKey: string): number {
   }
   console.log(`provider: ${provider.key} (${provider.label})`);
   if (provider.base_url) {
-    console.log(
-      provider.opencode_npm
-        ? `opencode endpoint: ${provider.base_url} (OpenAI-compatible custom provider)`
-        : `anthropic endpoint: ${provider.base_url}`
-    );
+    if (provider.opencode_npm) {
+      // Both spellings matter when they differ: the Anthropic adapter appends
+      // /v1/messages itself, while the OpenCode block uses opencode_base_url.
+      const anthropicSpelling = provider.base_url;
+      const opencodeSpelling = provider.opencode_base_url ?? provider.base_url;
+      console.log(`opencode endpoint: ${opencodeSpelling} (OpenAI-compatible custom provider)`);
+      if (opencodeSpelling !== anthropicSpelling) {
+        console.log(`anthropic endpoint: ${anthropicSpelling} (base_url; /v1/messages appended)`);
+      }
+    } else {
+      console.log(`anthropic endpoint: ${provider.base_url}`);
+    }
   }
   if (provider.opencode_npm) {
     console.log(`opencode custom provider: ${provider.opencode_npm} (id ${provider.opencode_id})`);
