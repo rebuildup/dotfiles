@@ -63,6 +63,7 @@ import {
 import { effectiveQuotaKey, loadCatalog, type Catalog } from "./agent/catalog";
 import {
   buildFallbackCatalog,
+  listFallbackProfiles,
   mergeAttestations,
   parseFallbackProfile,
   resolveFallbackProfile,
@@ -2518,11 +2519,28 @@ function cmdModels(config: Config, providerKey: string): number {
 }
 
 function cmdCheck(config: Config): number {
+  // Validate every declared fallback profile, not just the provider/route
+  // tables: a malformed profile (bad primary_route, bad cap, bad billing) must
+  // fail CI here rather than at `agent fallback` time with a stack trace.
+  let profileCount = 0;
+  try {
+    const parsedToml = Bun.TOML.parse(readFileSync(config.path, "utf8")) as Record<string, unknown>;
+    for (const id of listFallbackProfiles(parsedToml)) {
+      parseFallbackProfile(parsedToml, id);
+      profileCount++;
+    }
+  } catch (error) {
+    if (error instanceof ContractError) {
+      throw new AgentError(error.message, EXIT_USAGE);
+    }
+    throw error;
+  }
   console.log(
     `config OK: ${config.path} ` +
       `(${Object.keys(config.providers).length} providers, ` +
       `${Object.keys(config.harnesses).length} harnesses, ` +
-      `${Object.keys(config.routes).length} routes)`
+      `${Object.keys(config.routes).length} routes, ` +
+      `${profileCount} fallback profiles)`
   );
   return 0;
 }
@@ -2596,7 +2614,18 @@ function cmdFallback(config: Config, profileId: string, json: boolean): number {
   const tomlText = readFileSync(config.path, "utf-8");
   const parsedToml = Bun.TOML.parse(tomlText) as Record<string, unknown>;
 
-  const profile = parseFallbackProfile(parsedToml, profileId);
+  // A malformed profile must surface as a normal launcher error, not a raw
+  // ContractError stack trace (parseFallbackProfile throws on bad identity,
+  // billing, scope or cap).
+  let profile;
+  try {
+    profile = parseFallbackProfile(parsedToml, profileId);
+  } catch (error) {
+    if (error instanceof ContractError) {
+      throw new AgentError(error.message, EXIT_RUNTIME);
+    }
+    throw error;
+  }
   if (!profile) {
     throw new AgentError(`fallback profile not found: ${profileId}`);
   }

@@ -1480,3 +1480,87 @@ describe("parseFallbackProfile validates primary_route", () => {
     expect(() => parseFallbackProfile(bad, "bad")).toThrow(ContractError);
   });
 });
+
+// ---------------------------------------------------------------------------
+// End-to-end through the REAL parser. The earlier positive-budget cap test
+// built a hand-written profile with `maxSpend` omitted (undefined), while
+// `parseFallbackProfile` normalises an absent cap to `null` — so the check
+// never fired on the only real input path. These tests parse real TOML.
+// ---------------------------------------------------------------------------
+
+describe("positive-budget cap enforcement via the real parser", () => {
+  const catalogFor = (billing: string): CatalogLike =>
+    buildFallbackCatalog(
+      {
+        routes: { "omp.paid": { provider: "paid", models: null, require_model: false, default_model: null } },
+        providers: { paid: { models: ["m1"], require_model: false, default_model: null, require_infisical: true } },
+        harnesses: { omp: { adapter: "omp" } },
+      },
+      {
+        providers: { paid: { billing, quota: { kind: "account", id: "paid" }, restriction: null } },
+        routes: { "omp.paid": {} },
+      },
+    );
+
+  const fresh = (): any =>
+    new Map([
+      [
+        "omp.paid#m1",
+        attest({
+          value: {
+            status: "verified-live" as const,
+            provenance: "measured" as const,
+            evidence: { at: new Date().toISOString(), source: "live-e2e" as const, sha: "a".repeat(40) },
+          },
+          status: "verified-live" as const,
+          provenance: "measured" as const,
+          evidence: { at: new Date().toISOString(), source: "live-e2e" as const, sha: "a".repeat(40) },
+        }),
+      ],
+    ]);
+
+  const parsedProfile = (
+    globalMaxSpend: number,
+    candidate: string,
+    billing: string,
+  ): FallbackProfile => {
+    const toml = {
+      fallback_profile: {
+        p: {
+          id: "p",
+          version: 1,
+          description: "d",
+          primary_route: "omp.paid",
+          authorized_at: "2026-11-13T00:00:00Z",
+          authorized_by: "test",
+          global_max_spend: globalMaxSpend,
+          candidates: [
+            { route: "omp.paid", model: "m1", billing, credential: "infisical", scope: "local-writes", ...(candidate === "cap" ? { max_spend: 30 } : {}) },
+          ],
+        },
+      },
+    };
+    return parseFallbackProfile(toml, "p")!;
+  };
+
+  it("rejects an uncapped metered candidate under a positive budget (parsed)", () => {
+    const profile = parsedProfile(50, "nocap", "metered");
+    // The parser yields null, not undefined: the check must handle both.
+    expect(profile.candidates[0].maxSpend).toBeNull();
+    const res = resolveFallbackProfile(profile, catalogFor("metered"), fresh(), "account:primary");
+    expect(res.hasUsable).toBe(false);
+    expect(res.rejected[0].reason).toBe("spend-cap-invalid");
+  });
+
+  it("admits an in-budget capped metered candidate (parsed)", () => {
+    const profile = parsedProfile(50, "cap", "metered");
+    const res = resolveFallbackProfile(profile, catalogFor("metered"), fresh(), "account:primary");
+    expect(res.hasUsable).toBe(true);
+  });
+
+  it("still admits a free candidate under a positive budget (parsed)", () => {
+    const profile = parsedProfile(50, "nocap", "free");
+    const res = resolveFallbackProfile(profile, catalogFor("free"), fresh(), "account:primary");
+    expect(res.hasUsable).toBe(true);
+  });
+});

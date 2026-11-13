@@ -773,11 +773,14 @@ export function resolveFallbackProfile(
       rejected.push({ candidate: cand, routeRef, reason: "billing-boundary-crossed" });
       continue;
     }
-    if (profileBudget !== null && cand.billing !== "free" && cand.maxSpend === undefined) {
+    // Note `== null` covers BOTH `null` (what parseFallbackProfile yields for an
+    // absent key) and `undefined` (a programmatic caller): `=== undefined`
+    // silently never matched a parsed profile, which is the only real input.
+    if (profileBudget !== null && cand.billing !== "free" && cand.maxSpend == null) {
       rejected.push({ candidate: cand, routeRef, reason: "spend-cap-invalid" });
       continue;
     }
-    if (cand.maxSpend !== undefined && cand.maxSpend < 0) {
+    if (cand.maxSpend != null && cand.maxSpend < 0) {
       rejected.push({ candidate: cand, routeRef, reason: "spend-cap-exceeded" });
       continue;
     }

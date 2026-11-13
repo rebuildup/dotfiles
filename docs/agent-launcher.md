@@ -124,7 +124,9 @@ opencode_base_url = "https://api.kilo.ai/api/gateway/v1"
 
 `agent check` validates both, plus that a provider declaring `opencode_npm`
 is reachable from at least one `opencode` route (otherwise the custom-provider
-block would sit silently inert).
+block would sit silently inert). It also validates every declared
+`[fallback_profile.*]` (identity, `primary_route`, billing, scope and caps), so
+a malformed profile fails CI here rather than at `agent fallback` time.
 
 ### Data handling
 

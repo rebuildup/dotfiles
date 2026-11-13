@@ -417,6 +417,83 @@ test(
         result.stdout.toString().includes("config OK"),
       result.stdout.toString(),
     );
+    // `agent check` must validate fallback profiles too, so a malformed profile
+    // fails CI rather than `agent fallback` time.
+    check(
+      result.stdout.toString().includes("fallback profiles"),
+      `check must report fallback profiles: ${result.stdout.toString()}`,
+    );
+  }),
+);
+
+test(
+  "test_check_validates_fallback_profiles",
+  withFixture((fixture) => {
+    const header = `
+[providers.p1]
+label = "P1"
+base_url = "https://api.example.com"
+secret = "DEEPSEEK_API_KEY"
+env = "DEEPSEEK_API_KEY"
+default_model = "m1"
+models = ["m1"]
+
+[harnesses.omp]
+label = "OMP"
+command = "omp"
+adapter = "omp"
+
+[routes."omp.p1"]
+`;
+    const cases: Array<[string, string, string]> = [
+      [
+        "malformed primary_route",
+        'primary_route = "not-a-route-id"',
+        "primary_route",
+      ],
+      [
+        "negative global budget",
+        'primary_route = "omp.p1"\nglobal_max_spend = -1',
+        "global_max_spend",
+      ],
+    ];
+    cases.forEach(([label, primaryAndBudget, needle], index) => {
+      const config = join(fixture.tmp, `fallback-check-${index}.toml`);
+      writeFileSync(
+        config,
+        `${header}
+[fallback_profile.bad]
+id = "bad"
+version = 1
+description = "d"
+${primaryAndBudget}
+authorized_at = "2026-11-13T00:00:00Z"
+authorized_by = "test"
+candidates = [
+  { route = "omp.p1", model = "m1", billing = "free", credential = "infisical", max_spend = 0, scope = "read-only" },
+]
+`,
+      );
+      const result = fixture.run(["check"], { config });
+      check(result.exitCode === 2, `${label}: expected exit 2, got ${result.exitCode}`);
+      check(
+        result.stderr.toString().includes(needle),
+        `${label}: ${result.stderr.toString()}`,
+      );
+
+      // The same malformed profile must not produce a raw stack trace from
+      // `agent fallback` either.
+      const fb = fixture.run(["fallback", "bad"], { config });
+      check(fb.exitCode !== 0, `${label}: fallback should fail`);
+      check(
+        !fb.stderr.toString().includes("at <anonymous>") && !fb.stderr.toString().includes("Bun v"),
+        `${label}: raw stack trace leaked: ${fb.stderr.toString()}`,
+      );
+      check(
+        fb.stderr.toString().includes("agent:"),
+        `${label}: expected a formatted launcher error: ${fb.stderr.toString()}`,
+      );
+    });
   }),
 );
 
