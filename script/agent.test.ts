@@ -3078,3 +3078,44 @@ config_content = "OPENCODE_CONFIG_CONTENT"
   });
 }));
 });
+
+test("test_fallback_reads_catalog_state", withFixture((fixture) => {
+  // Regression: loadAttestations used readdirSync without importing it, so
+  // `agent fallback` died with a raw ReferenceError the moment ANY catalog
+  // state existed — the exact state the durable/local merge is written for.
+  // No state dir existed on the dev machine, which is why the suite was green.
+  const stateDir = join(fixture.tmp, "state");
+  const catalogDir = join(stateDir, "catalog");
+  mkdirSync(catalogDir, { recursive: true });
+  const now = new Date().toISOString();
+  // A contract-legal restriction whose value is null (the restriction IS the
+  // fact): parsing and merging this must not throw either.
+  writeFileSync(
+    join(catalogDir, "probe.json"),
+    JSON.stringify({
+      attestations: {
+        "omp.kilo#nvidia/nemotron-3-ultra-550b-a55b:free": {
+          value: null,
+          status: "restricted",
+          provenance: "measured",
+          evidence: { at: now, source: "probe", sha: "a".repeat(40) },
+          note: "429 observed just now",
+        },
+      },
+    }),
+  );
+
+  const result = fixture.run(["fallback", "free-go-to-kilo"], {
+    config: REAL_CONFIG,
+    env: { AGENT_STATE_DIR: stateDir },
+  });
+  const stderr = result.stderr.toString();
+  check(!stderr.includes("ReferenceError"), `must not crash with ReferenceError: ${stderr}`);
+  check(!stderr.includes("readdirSync"), `must not crash on readdirSync: ${stderr}`);
+  check(result.exitCode === 0, `exit ${result.exitCode}: ${stderr}`);
+  const stdout = result.stdout.toString();
+  // The local restriction now supersedes the committed verified record, so the
+  // kilο candidate is rejected and only the remaining one is usable.
+  check(stdout.includes("attestation-restricted"), stdout);
+  check(!stdout.includes("STATUS: USABLE\n\nUsable candidates (in priority order):\n  1. omp.kilo"), stdout);
+}));

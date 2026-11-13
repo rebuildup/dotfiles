@@ -198,11 +198,18 @@ rejects a candidate when:
 - the provider's catalogued `billing` does not match the declared boundary
   (`billing-boundary-crossed`), or is not catalogued at all (`billing-unknown`
   — unknown billing is never treated as free);
-- the provider itself carries a `[catalog.providers.<id>.restriction]`
-  (`provider-restricted`) — route-level evidence cannot unlock a provider
-  whose allowance is unusable;
-- a `free` candidate declares a positive `max_spend` (`spend-cap-invalid`),
-  or any cap would exceed the profile/global cap;
+- the provider or the route itself carries an observed
+  `[catalog.*.restriction]` (`provider-restricted` / `attestation-restricted`) —
+  route-level evidence cannot unlock a provider whose allowance is unusable;
+- the candidate is on a different harness than the primary
+  (`harness-mismatch`) — the executor drives one harness;
+- the credential source is `unset`, or not Infisical on a `require_infisical`
+  provider (`credential-mismatch`);
+- a `free` candidate declares a positive `max_spend`, a billable candidate
+  declares none under a declared budget, or any cap would exceed the
+  profile/global cap (`spend-cap-invalid` / `spend-cap-exceeded`). A
+  `global_max_spend = 0` profile admits only candidates that cannot bill at
+  all;
 - the candidate's *effective* scope equals the primary's
   (`quota-exhausted-scope`) — e.g. two models on the *same* Kilo account are
   not fresh capacity — or its scope is not catalogued (`quota-scope-unknown`).

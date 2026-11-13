@@ -1330,3 +1330,153 @@ describe("parseFallbackProfile: a present spend cap cannot be ignored", () => {
     expect(profile?.candidates[0].maxSpend ?? null).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Third-round review findings. Two were live crashes/leaks (value:null
+// attestations), the rest were admission holes on paths the CLI does not
+// currently reach but the executor does.
+// ---------------------------------------------------------------------------
+
+describe("attestation shapes with a null value", () => {
+  const ev = (at: string): Evidence => ({ at, source: "probe", sha: "b".repeat(40) });
+
+  it("mergeAttestations tolerates a contract-legal restricted entry (value: null)", () => {
+    // `contract.ts` allows value:null for a restriction — the restriction IS
+    // the fact — and that is what a probe writes. Reading value.status threw.
+    const restrictedNullValue = {
+      value: null,
+      status: "restricted" as const,
+      provenance: "measured" as const,
+      evidence: ev("2026-11-13T00:00:00Z"),
+      note: "429",
+    };
+    const durable = new Map([["r#m", attest(restrictedNullValue)]]);
+    const local = new Map([["r#m", attest(restrictedNullValue)]]);
+    expect(() => mergeAttestations(durable, local)).not.toThrow();
+    expect(mergeAttestations(durable, local).get("r#m")?.status).toBe("restricted");
+  });
+
+  it("a newer unrestricted local entry does not displace a null-value restriction", () => {
+    const durable = new Map([
+      ["r#m", attest({ value: null, status: "restricted" as const, provenance: "measured" as const, evidence: ev("2026-11-13T00:00:00Z"), note: "429" })],
+    ]);
+    const local = new Map([
+      ["r#m", attest({ value: { status: "verified-live" as const, provenance: "measured" as const, evidence: ev("2026-11-14T00:00:00Z") }, status: "verified-live" as const, provenance: "measured" as const, evidence: ev("2026-11-14T00:00:00Z") })],
+    ]);
+    expect(mergeAttestations(durable, local).get("r#m")?.status).toBe("restricted");
+  });
+
+  it("the resolver reports a null-value restriction instead of throwing", () => {
+    const attestations = new Map(MOCK_ATTESTATIONS);
+    attestations.set(
+      "omp.kilo#nvidia/nemotron-3-ultra-550b-a55b:free",
+      attest({
+        value: null,
+        status: "restricted" as const,
+        provenance: "measured" as const,
+        evidence: ev(new Date().toISOString()),
+        note: "429 just now",
+      }),
+    );
+    const profile: FallbackProfile = {
+      ...BASE_PROFILE,
+      globalMaxSpend: 0,
+      candidates: [{
+        route: "omp.kilo", model: "nvidia/nemotron-3-ultra-550b-a55b:free",
+        billing: "free", credential: "infisical", maxSpend: 0, scope: "read-only",
+      }],
+    };
+    let resolution;
+    expect(() => {
+      resolution = resolveFallbackProfile(profile, MOCK_CATALOG, attestations, MOCK_PRIMARY_SCOPE);
+    }).not.toThrow();
+    expect(resolution!.hasUsable).toBe(false);
+    expect(resolution!.rejected[0].reason).toBe("attestation-restricted");
+  });
+});
+
+describe("same-harness binding", () => {
+  it("rejects a candidate on a different harness than the primary", () => {
+    // executeWithFallback drives ONE harness; a cross-harness candidate would
+    // be handed to the wrong process.
+    const attestations = new Map(MOCK_ATTESTATIONS);
+    attestations.set("opencode.kilo#nvidia/nemotron-3-ultra-550b-a55b:free", makeAttestation("verified-live", "measured"));
+    const catalog: CatalogLike = {
+      ...MOCK_CATALOG,
+      routes: {
+        ...MOCK_CATALOG.routes,
+        "opencode.kilo": { provider: "kilo", models: ["nvidia/nemotron-3-ultra-550b-a55b:free"] },
+      },
+      harnesses: { omp: { adapter: "omp" }, opencode: { adapter: "opencode" } },
+    };
+    const profile: FallbackProfile = {
+      ...BASE_PROFILE,
+      primaryRoute: "omp.mistral",
+      globalMaxSpend: 0,
+      candidates: [{
+        route: "opencode.kilo", model: "nvidia/nemotron-3-ultra-550b-a55b:free",
+        billing: "free", credential: "infisical", maxSpend: 0, scope: "read-only",
+      }],
+    };
+    const resolution = resolveFallbackProfile(profile, catalog, attestations, MOCK_PRIMARY_SCOPE);
+    expect(resolution.hasUsable).toBe(false);
+    expect(resolution.rejected[0].reason).toBe("harness-mismatch");
+  });
+});
+
+describe("credential source authorization", () => {
+  it('rejects credential "unset" (the schema default for "not authorized")', () => {
+    const attestations = new Map(MOCK_ATTESTATIONS);
+    attestations.set("omp.kilo#nvidia/nemotron-3-ultra-550b-a55b:free", makeAttestation("verified-live", "measured"));
+    const profile: FallbackProfile = {
+      ...BASE_PROFILE,
+      globalMaxSpend: 0,
+      candidates: [{
+        route: "omp.kilo", model: "nvidia/nemotron-3-ultra-550b-a55b:free",
+        billing: "free", credential: "unset", maxSpend: 0, scope: "read-only",
+      }],
+    };
+    const resolution = resolveFallbackProfile(profile, MOCK_CATALOG, attestations, MOCK_PRIMARY_SCOPE);
+    expect(resolution.hasUsable).toBe(false);
+    expect(resolution.rejected[0].reason).toBe("credential-mismatch");
+  });
+});
+
+describe("a positive budget still bounds undeclared spend", () => {
+  it("rejects a billable candidate that declares NO cap under a positive budget", () => {
+    // Otherwise totalSpend counts it as 0 and any budget admits it, so the cap
+    // would only bound spend someone remembered to declare.
+    const profile: FallbackProfile = {
+      ...BASE_PROFILE,
+      globalMaxSpend: 50,
+      candidates: [{
+        route: "omp.openrouter", model: "z-ai/glm-5.3-flash",
+        billing: "metered", credential: "infisical", scope: "local-writes",
+      }],
+    };
+    const resolution = resolveFallbackProfile(profile, MOCK_CATALOG, MOCK_ATTESTATIONS, MOCK_PRIMARY_SCOPE);
+    expect(resolution.hasUsable).toBe(false);
+    expect(resolution.rejected[0].reason).toBe("spend-cap-invalid");
+  });
+
+  it("admits a billable candidate that declares a within-budget cap", () => {
+    const profile: FallbackProfile = {
+      ...BASE_PROFILE,
+      globalMaxSpend: 50,
+      candidates: [{
+        route: "omp.openrouter", model: "z-ai/glm-5.3-flash",
+        billing: "metered", credential: "infisical", maxSpend: 30, scope: "local-writes",
+      }],
+    };
+    const resolution = resolveFallbackProfile(profile, MOCK_CATALOG, MOCK_ATTESTATIONS, MOCK_PRIMARY_SCOPE);
+    expect(resolution.hasUsable).toBe(true);
+  });
+});
+
+describe("parseFallbackProfile validates primary_route", () => {
+  it("rejects a primary_route that is not harness.provider", () => {
+    const base = MOCK_TOML.fallback_profile["test-profile"];
+    const bad = { fallback_profile: { bad: { ...base, id: "bad", primary_route: "not-a-route-id" } } };
+    expect(() => parseFallbackProfile(bad, "bad")).toThrow(ContractError);
+  });
+});

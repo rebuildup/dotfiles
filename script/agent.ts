@@ -2624,8 +2624,23 @@ function cmdFallback(config: Config, profileId: string, json: boolean): number {
   // Get primary quota scope for cross-candidate validation
   const primaryQuotaScope = getPrimaryQuotaScope(catalogFacts, profile.primaryRoute);
 
-  // Resolve profile
-  const resolution = resolveFallbackProfile(profile, catalogLike, attestationMap, primaryQuotaScope);
+  // Resolve profile. A ContractError here (malformed profile identity, or a
+  // caller-supplied crafted profile) must surface as a normal launcher error
+  // rather than a raw stack trace.
+  let resolution;
+  try {
+    resolution = resolveFallbackProfile(
+      profile,
+      catalogLike,
+      attestationMap,
+      primaryQuotaScope,
+    );
+  } catch (error) {
+    if (error instanceof ContractError) {
+      throw new AgentError(error.message, EXIT_RUNTIME);
+    }
+    throw error;
+  }
 
   if (json) {
     console.log(redactJson(resolution));

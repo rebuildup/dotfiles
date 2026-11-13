@@ -124,7 +124,8 @@ export type FallbackRejectionReason =
   | "billing-unknown"             // provider billing model is not catalogued
   | "provider-restricted"         // the provider itself is observed restricted
   | "primary-quota-unknown"       // the primary's allowance cannot be identified
-  | "spend-cap-invalid"           // a free candidate declared a positive spend cap
+  | "harness-mismatch"            // candidate is a different harness than the primary
+  | "spend-cap-invalid"           // a free candidate declared a positive spend cap, or a billable candidate declared none
   | "spend-cap-exceeded"          // candidate or global maxSpend exceeded
   | "scope-escalation"            // candidate scope exceeds profile allowance
   | "expired"                     // profile or candidate expired
@@ -151,34 +152,17 @@ function optionalStr(data: Record<string, unknown>, key: string, where: string):
   return typeof v === "string" ? v : null;
 }
 
-function requireBool(data: Record<string, unknown>, key: string, where: string): boolean {
-  const v = data[key];
-  if (typeof v !== "boolean") throw new ContractError(`schema`, `${where}.${key}: expected boolean`);
-  return v;
-}
-
 function optionalBool(data: Record<string, unknown>, key: string, where: string): boolean | null {
   const v = data[key];
   return typeof v === "boolean" ? v : null;
 }
 
-function requireInt(data: Record<string, unknown>, key: string, where: string): number {
-  const v = data[key];
-  if (typeof v !== "number" || !Number.isInteger(v) || v < 0)
-    throw new ContractError(`schema`, `${where}.${key}: expected non-negative integer`);
-  return v;
-}
-
-function optionalInt(data: Record<string, unknown>, key: string, where: string): number | null {
-  const v = data[key];
-  return typeof v === "number" && Number.isInteger(v) && v >= 0 ? v : null;
-}
-
 /**
- * A spend cap that is PRESENT must be valid. `optionalInt` silently maps any
- * invalid value to null (absent), which for `max_spend` means "uncapped" — so
- * `max_spend = -1` (an operator writing "deny") would authorise unlimited
- * spend. Absence stays absent; a present-but-invalid value throws.
+ * A spend cap that is PRESENT must be valid. The former `optionalInt` helper
+ * silently mapped any invalid value to null (absent), which for a cap means
+ * "uncapped" — so `max_spend = -1` (an operator writing "deny") would have
+ * authorised unlimited spend. Absence stays absent; a present-but-invalid
+ * value throws. (That helper has been removed so the trap cannot come back.)
  */
 function optionalSpendCap(
   data: Record<string, unknown>,
@@ -193,13 +177,6 @@ function optionalSpendCap(
       `${where}.${key}: must be a non-negative integer (a present cap cannot be ignored)`,
     );
   }
-  return v;
-}
-
-function stringArray(data: Record<string, unknown>, key: string, where: string): string[] {
-  const v = data[key];
-  if (!Array.isArray(v) || !v.every((x) => typeof x === "string"))
-    throw new ContractError(`schema`, `${where}.${key}: expected string[]`);
   return v;
 }
 
@@ -231,9 +208,16 @@ function validateScope(v: unknown, where: string): FallbackScope {
 
 /**
  * A candidate's declared billing boundary must be satisfiable by the
- * provider's real charging model. `free` is deliberately strict (a free
- * candidate needs a free provider); a `subscription` candidate may consume a
- * `plan`, because both are prepaid allowances rather than metered spend.
+ * provider's real charging model.
+ *
+ *   - `free` is strictly free: a free declaration may never consume a paying
+ *     endpoint.
+ *   - `metered` requires a metered provider.
+ *   - `plan` is the flexible prepaid case: it accepts a `plan` provider and
+ *     also a `subscription` one (a bundled allowance is a prepaid plan too).
+ *   - `subscription` is strict: it requires an actual subscription provider.
+ *
+ * Unknown billing never matches anything.
  */
 export function billingMatches(
   declared: BillingBoundary,
@@ -284,6 +268,13 @@ export function parseFallbackProfile(
   const version = validateProfileVersion(t.version, `${key}.version`);
   const description = requireStr(t, "description", key);
   const primaryRoute = requireStr(t, "primary_route", key);
+  // Validate the identity eagerly so `agent check` rejects a malformed profile
+  // and `agent fallback` cannot die with a raw ContractError stack trace.
+  try {
+    parseRouteId(primaryRoute);
+  } catch {
+    throw new ContractError("identity", `${key}.primary_route: not a '<harness>.<provider>' route id`);
+  }
   const authorizedAt = requireStr(t, "authorized_at", key);
   validateISO8601(authorizedAt, `${key}.authorized_at`);
   const authorizedBy = requireStr(t, "authorized_by", key);
@@ -573,8 +564,8 @@ export function mergeAttestations(
       merged.set(key, localEntry);
       continue;
     }
-    const committedRestricted = committed.value.status === "restricted";
-    const localRestricted = localEntry.value.status === "restricted";
+    const committedRestricted = isRestricted(committed);
+    const localRestricted = isRestricted(localEntry);
     // A newly observed block always applies; a block is never cleared by
     // recency alone (clearing requires deleting the committed record).
     if (localRestricted && !committedRestricted) {
@@ -591,6 +582,35 @@ export function mergeAttestations(
     }
   }
   return merged;
+}
+
+/**
+ * Effective status of an attestation, tolerating the contract-legal `value:
+ * null` shape used for restrictions.
+ */
+function attestationStatus(
+  entry: Attested<{ status: VerificationStatus; provenance: Provenance; evidence: Evidence }>,
+): VerificationStatus {
+  const value = entry.value;
+  if (typeof value === "object" && value !== null && typeof value.status === "string") {
+    return value.status;
+  }
+  return entry.status;
+}
+
+/**
+ * Is this attestation an observed restriction?
+ *
+ * The contract allows `value` to be **null** when the status is `restricted`
+ * (the restriction itself is the fact, `contract.ts`), so reading
+ * `value.status` blindly throws a TypeError on a perfectly legal entry — and
+ * that is the shape a probe would write. Read the top-level status first and
+ * only fall back to `value` when it is an object.
+ */
+function isRestricted(
+  entry: Attested<{ status: VerificationStatus; provenance: Provenance; evidence: Evidence }>,
+): boolean {
+  return attestationStatus(entry) === "restricted";
 }
 
 /**
@@ -660,6 +680,16 @@ export function resolveFallbackProfile(
       continue;
     }
 
+    // Same-harness binding. `executeWithFallback` drives ONE harness, so a
+    // candidate from a different harness would be handed to the wrong
+    // process (or silently ignored). ADR-0018 promises candidates are bound to
+    // the primary's harness; enforce it rather than relying on profile
+    // authors, which is the whole point of resolver-side checks.
+    if (routeRef.harness !== primaryRouteRef.harness) {
+      rejected.push({ candidate: cand, routeRef, reason: "harness-mismatch" });
+      continue;
+    }
+
     // Model must be allowed by route or provider
     const allowedModels = routeConfig.models ?? catalog.providers[routeConfig.provider]?.models ?? [];
     if (!allowedModels.includes(cand.model)) {
@@ -694,8 +724,12 @@ export function resolveFallbackProfile(
       rejected.push({ candidate: cand, routeRef, reason: "credential-mismatch" });
       continue;
     }
-    if (!requiresInfisical && cand.credential === "infisical") {
-      // Allow infisical for non-require_infisical routes (explicit opt-in)
+    // `unset` is the schema's own "not authorized (default)". It must never be
+    // admitted for any provider: a candidate that names no credential source
+    // is not evidence that a credential exists.
+    if (cand.credential === "unset") {
+      rejected.push({ candidate: cand, routeRef, reason: "credential-mismatch" });
+      continue;
     }
 
     // Billing boundary check. The candidate declares which boundary it is
@@ -710,13 +744,10 @@ export function resolveFallbackProfile(
       continue;
     }
     if (!billingMatches(cand.billing, providerBilling)) {
-      rejected.push({ candidate: cand, routeRef, reason: "billing-boundary-crossed" });
-      continue;
-    }
-    // A `free` candidate must actually be free: `metered` or `subscription`
-    // may never be reached from a free profile, and a free candidate may not
-    // silently point at a paying endpoint.
-    if (cand.billing === "free" && providerBilling !== "free") {
+      // This also covers the `free`-labelled-paid case: billingMatches returns
+      // true for `free` only when the provider is actually `free`, so no
+      // separate re-check is needed (nor kept, so no reader mistakes a dead
+      // branch for defence in depth).
       rejected.push({ candidate: cand, routeRef, reason: "billing-boundary-crossed" });
       continue;
     }
@@ -730,6 +761,9 @@ export function resolveFallbackProfile(
     //     candidate with an omitted or zero `max_spend` contributes 0 to the
     //     running total and slips under a 0 budget — the cap would authorise
     //     spend it does not model.
+    //   - Under a POSITIVE budget, a billable candidate MUST declare a cap.
+    //     Otherwise `totalSpend` counts it as 0 and any budget admits it, so
+    //     the "cap" would only bound spend someone remembered to declare.
     if (cand.billing === "free" && (cand.maxSpend ?? 0) > 0) {
       rejected.push({ candidate: cand, routeRef, reason: "spend-cap-invalid" });
       continue;
@@ -737,6 +771,10 @@ export function resolveFallbackProfile(
     const profileBudget = profile.globalMaxSpend ?? null;
     if (profileBudget === 0 && cand.billing !== "free") {
       rejected.push({ candidate: cand, routeRef, reason: "billing-boundary-crossed" });
+      continue;
+    }
+    if (profileBudget !== null && cand.billing !== "free" && cand.maxSpend === undefined) {
+      rejected.push({ candidate: cand, routeRef, reason: "spend-cap-invalid" });
       continue;
     }
     if (cand.maxSpend !== undefined && cand.maxSpend < 0) {
@@ -770,12 +808,15 @@ export function resolveFallbackProfile(
       continue;
     }
 
-    // Check attestation status
-    if (parsedAttestation.value.status === "restricted") {
+    // Check attestation status. The contract permits `value: null` when the
+    // status is `restricted` (the restriction is the fact), so read the
+    // top-level status rather than assuming `value` is an object.
+    const attStatus = attestationStatus(parsedAttestation);
+    if (attStatus === "restricted") {
       rejected.push({ candidate: cand, routeRef, reason: "attestation-restricted" });
       continue;
     }
-    if (parsedAttestation.value.status === "unknown") {
+    if (attStatus === "unknown") {
       rejected.push({ candidate: cand, routeRef, reason: "attestation-unknown" });
       continue;
     }
@@ -838,7 +879,9 @@ export function renderFallbackResolution(resolution: FallbackResolution): string
       const c = uc.candidate;
       lines.push(`  ${i + 1}. ${formatRouteId(uc.routeRef)} / ${c.model}`);
       lines.push(`     billing: ${c.billing}, credential: ${c.credential}, scope: ${c.scope}`);
-      lines.push(`     attestation: ${uc.attestation.value.status} (${uc.attestation.value.provenance})`);
+      lines.push(
+        `     attestation: ${attestationStatus(uc.attestation)} (${uc.attestation.provenance})`,
+      );
       if (c.note) lines.push(`     note: ${c.note}`);
     }
   }
