@@ -186,10 +186,16 @@ agent fallback opencode-requesty-quota  # Requesty exhausted -> Kilo (OpenCode)
 agent fallback <id> --json              # redacted machine-readable form
 ```
 
-Each profile declares `global_max_spend = 0`, so the resolver's spend checks
-can never authorise paid usage. Candidates are `billing = "free"` and are
+Each profile declares `global_max_spend = 0`, so the resolver admits only
+candidates that cannot bill at all. Candidates are `billing = "free"` and are
 bound to the harness of their primary route (OMP has no native Requesty or
 OVHcloud provider, so those cannot appear in an `omp` profile).
+
+`global_max_spend = 0` is the **only** value that is a hard stop. A positive
+`max_spend`/budget is an admission-time check, **not** an enforced billing
+ceiling: the launcher never observes the provider's actual spend and cannot
+attribute cost after a candidate is handed to a harness. An account-side hard
+stop (a spend limit, or pay-as-you-go off) remains the only guaranteed ceiling.
 
 The resolver is the enforcement point, not the profile author's intent. It
 rejects a candidate when:
