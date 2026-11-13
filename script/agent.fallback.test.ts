@@ -254,6 +254,9 @@ describe("parseFallbackProfile", () => {
       fallback_profile: {
         bad: {
           ...baseProfile,
+          // The id must match the table key, otherwise parseFallbackProfile
+          // throws on identity and the field under test is never reached.
+          id: "bad",
           candidates: [{ ...baseProfile.candidates[0], billing: "invalid" }],
         },
       },
@@ -267,6 +270,7 @@ describe("parseFallbackProfile", () => {
       fallback_profile: {
         bad: {
           ...baseProfile,
+          id: "bad",
           candidates: [{ ...baseProfile.candidates[0], credential: "invalid" }],
         },
       },
@@ -280,6 +284,7 @@ describe("parseFallbackProfile", () => {
       fallback_profile: {
         bad: {
           ...baseProfile,
+          id: "bad",
           candidates: [{ ...baseProfile.candidates[0], scope: "invalid" }],
         },
       },
@@ -291,7 +296,7 @@ describe("parseFallbackProfile", () => {
     const baseProfile = MOCK_TOML.fallback_profile["test-profile"];
     const badToml = {
       fallback_profile: {
-        bad: { ...baseProfile, candidates: [] },
+        bad: { ...baseProfile, id: "bad", candidates: [] },
       },
     };
     expect(() => parseFallbackProfile(badToml, "bad")).toThrow(ContractError);
@@ -303,6 +308,7 @@ describe("parseFallbackProfile", () => {
       fallback_profile: {
         bad: {
           ...baseProfile,
+          id: "bad",
           candidates: [{ ...baseProfile.candidates[0], max_spend: -1 }],
         },
       },
@@ -1031,8 +1037,10 @@ describe("buildFallbackCatalog", () => {
 
 describe("FallbackRejectionReason contract", () => {
   it("covers exactly the documented safety verdicts", () => {
-    // Typed as a total Record so adding a union member without updating this
-    // list is a compile error, not a silent documentation gap.
+    // This repo has no `tsc` step and Bun does not typecheck, so the
+    // `Record<FallbackRejectionReason, true>` annotation is documentation, NOT
+    // a compile-time guarantee. The runtime assertion below is what actually
+    // catches an added/removed verdict.
     const documented: Record<FallbackRejectionReason, true> = {
       "route-not-configured": true,
       "model-not-allowed": true,
@@ -1075,5 +1083,250 @@ describe("FallbackRejectionReason contract", () => {
         "validation-error",
       ].sort(),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Second-round review findings. Each of these was a way a candidate could be
+// admitted without the evidence supporting it.
+// ---------------------------------------------------------------------------
+
+describe("resolveFallbackProfile: second-round safety", () => {
+  const withCandidate = (overrides: Partial<FallbackCandidate>): FallbackProfile => ({
+    ...BASE_PROFILE,
+    globalMaxSpend: 0,
+    candidates: [{ ...BASE_PROFILE.candidates[0], ...overrides }],
+  });
+
+  it("a zero-budget profile rejects a metered candidate with NO explicit cap", () => {
+    // Without this rule `max_spend` is absent -> counts as 0 -> slips under a
+    // 0 budget, so `global_max_spend = 0` would not actually mean "$0".
+    const resolution = resolveFallbackProfile(
+      withCandidate({
+        route: "omp.openrouter",
+        model: "z-ai/glm-5.3-flash",
+        billing: "metered",
+        maxSpend: undefined,
+      }),
+      MOCK_CATALOG,
+      MOCK_ATTESTATIONS,
+      MOCK_PRIMARY_SCOPE,
+    );
+    expect(resolution.hasUsable).toBe(false);
+    expect(resolution.rejected[0].reason).toBe("billing-boundary-crossed");
+  });
+
+  it("a zero-budget profile rejects a plan candidate with a zero cap", () => {
+    const resolution = resolveFallbackProfile(
+      withCandidate({
+        route: "omp.opencode-go",
+        model: "mimo-v2.6-flash",
+        billing: "plan",
+        credential: "infisical",
+        maxSpend: 0,
+      }),
+      MOCK_CATALOG,
+      MOCK_ATTESTATIONS,
+      MOCK_PRIMARY_SCOPE,
+    );
+    expect(resolution.hasUsable).toBe(false);
+    expect(resolution.rejected[0].reason).toBe("billing-boundary-crossed");
+  });
+
+  it("a zero-budget profile still admits a free candidate", () => {
+    const attestations = new Map(MOCK_ATTESTATIONS);
+    attestations.set(
+      "omp.kilo#nvidia/nemotron-3-ultra-550b-a55b:free",
+      makeAttestation("verified-live", "measured"),
+    );
+    const resolution = resolveFallbackProfile(
+      withCandidate({
+        route: "omp.kilo",
+        model: "nvidia/nemotron-3-ultra-550b-a55b:free",
+        billing: "free",
+        maxSpend: 0,
+      }),
+      MOCK_CATALOG,
+      attestations,
+      MOCK_PRIMARY_SCOPE,
+    );
+    expect(resolution.hasUsable).toBe(true);
+  });
+
+  it("rejects a candidate on a route with a route-level restriction", () => {
+    // Mirrors the real `omp.deepseek`: a committed 402 restriction and NO e2e,
+    // so seeding produces no entry for it. The candidate's OWN attestation is
+    // fresh, which is why only the resolver-level route check can reject it.
+    const catalog: CatalogLike = {
+      ...MOCK_CATALOG,
+      routes: {
+        ...MOCK_CATALOG.routes,
+        "omp.deepseek": { ...MOCK_CATALOG.routes["omp.deepseek"], restricted: true },
+      },
+    };
+    const attestations = new Map(MOCK_ATTESTATIONS);
+    attestations.set(
+      "omp.deepseek#deepseek-flash",
+      makeAttestation("verified-live", "measured"),
+    );
+    const resolution = resolveFallbackProfile(
+      {
+        ...withCandidate({ route: "omp.deepseek", model: "deepseek-flash", billing: "metered" }),
+        // Real budget so the metered/billing check does not fire first; the
+        // route restriction is the rule under test.
+        globalMaxSpend: 100,
+      },
+      catalog,
+      attestations,
+      MOCK_PRIMARY_SCOPE,
+    );
+    expect(resolution.hasUsable).toBe(false);
+    expect(resolution.rejected[0].reason).toBe("attestation-restricted");
+  });
+
+  it("does NOT reject a route whose restriction is explicitly unknown", () => {
+    // `unknown` is the one status that must not block: it means "no fact".
+    const built = buildFallbackCatalog(
+      {
+        routes: { "h.p": { provider: "p", models: null, require_model: false, default_model: null } },
+        providers: { p: { models: ["m"], require_model: false, default_model: null, require_infisical: false } },
+        harnesses: { h: { adapter: "omp" } },
+      },
+      {
+        providers: { p: { billing: "free", quota: null, restriction: null } },
+        routes: { "h.p": { restriction: null } },
+      },
+    );
+    expect(built.routes["h.p"].restricted).toBe(false);
+    expect(built.providers.p.restricted).toBe(false);
+  });
+
+  it("blocks on a CONFIGURED (declared, unverified) provider restriction", () => {
+    const ev: Evidence = { at: new Date().toISOString(), source: "config", sha: "a".repeat(40) };
+    const built = buildFallbackCatalog(
+      {
+        routes: { "h.p": { provider: "p", models: null, require_model: false, default_model: null } },
+        providers: { p: { models: ["m"], require_model: false, default_model: null, require_infisical: false } },
+        harnesses: { h: { adapter: "omp" } },
+      },
+      {
+        providers: {
+          p: {
+            billing: "free",
+            quota: null,
+            restriction: attest({
+              value: null,
+              status: "configured",
+              provenance: "estimated",
+              evidence: ev,
+              note: "declared block, not yet verified",
+            }),
+          },
+        },
+        routes: { "h.p": { restriction: null } },
+      },
+    );
+    // Failing open here would ignore a declared block.
+    expect(built.providers.p.restricted).toBe(true);
+  });
+
+  it("rejects a candidate under a provider whose restriction is configured, not verified", () => {
+    // Any PRESENT restriction blocks; only an explicit `unknown` clears it.
+    // Failing open on `configured` would ignore a declared block.
+    const catalog: CatalogLike = {
+      ...MOCK_CATALOG,
+      providers: {
+        ...MOCK_CATALOG.providers,
+        kilo: {
+          ...MOCK_CATALOG.providers.kilo,
+          restricted: true,
+        },
+      },
+    };
+    const resolution = resolveFallbackProfile(
+      withCandidate({
+        route: "omp.kilo",
+        model: "nvidia/nemotron-3-ultra-550b-a55b:free",
+        billing: "free",
+        maxSpend: 0,
+      }),
+      catalog,
+      MOCK_ATTESTATIONS,
+      MOCK_PRIMARY_SCOPE,
+    );
+    expect(resolution.hasUsable).toBe(false);
+    expect(resolution.rejected[0].reason).toBe("provider-restricted");
+  });
+});
+
+describe("mergeAttestations: severity beats recency", () => {
+  const ev = (at: string): Evidence => ({ at, source: "live-e2e", sha: "f".repeat(40) });
+  const att = (
+    status: VerificationStatus,
+    at: string,
+  ): Attested<{ status: VerificationStatus; provenance: Provenance; evidence: Evidence }> =>
+    attest({
+      value: { status, provenance: "measured", evidence: ev(at) },
+      status,
+      provenance: "measured",
+      evidence: ev(at),
+      ...(status === "restricted" ? { note: "observed block" } : {}),
+    });
+
+  it("a same-day local restriction beats a day-precision committed verified record", () => {
+    // Catalog evidence is day-precision, so these TIE. Without the severity
+    // rule the committed `verified-live` would win and a blocked route would
+    // resolve as usable.
+    const day = "2026-11-04T00:00:00Z";
+    const durable = new Map([["r#m", att("verified-live", day)]]);
+    const local = new Map([["r#m", att("restricted", day)]]);
+    expect(mergeAttestations(durable, local).get("r#m")?.value.status).toBe("restricted");
+  });
+
+  it("a local restriction is never cleared by a newer verified observation", () => {
+    const durable = new Map([["r#m", att("restricted", "2026-11-04T00:00:00Z")]]);
+    const local = new Map([["r#m", att("verified-live", "2026-11-05T00:00:00Z")]]);
+    expect(mergeAttestations(durable, local).get("r#m")?.value.status).toBe("restricted");
+  });
+
+  it("a newer unrestricted observation still replaces an older one", () => {
+    const durable = new Map([["r#m", att("verified-live", "2026-11-04T00:00:00Z")]]);
+    const local = new Map([["r#m", att("restricted", "2026-11-05T00:00:00Z")]]);
+    expect(mergeAttestations(durable, local).get("r#m")?.value.status).toBe("restricted");
+  });
+});
+
+describe("parseFallbackProfile: a present spend cap cannot be ignored", () => {
+  const withCap = (cap: unknown, where: "candidate" | "profile") => {
+    const base = MOCK_TOML.fallback_profile["test-profile"];
+    if (where === "profile") {
+      return { fallback_profile: { bad: { ...base, id: "bad", global_max_spend: cap } } };
+    }
+    return {
+      fallback_profile: {
+        bad: {
+          ...base,
+          id: "bad",
+          candidates: [{ ...base.candidates[0], max_spend: cap }],
+        },
+      },
+    };
+  };
+
+  it("rejects a negative candidate cap instead of treating it as uncapped", () => {
+    expect(() => parseFallbackProfile(withCap(-1, "candidate"), "bad")).toThrow(ContractError);
+  });
+
+  it("rejects a non-integer candidate cap", () => {
+    expect(() => parseFallbackProfile(withCap(1.5, "candidate"), "bad")).toThrow(ContractError);
+  });
+
+  it("rejects a negative profile budget", () => {
+    expect(() => parseFallbackProfile(withCap(-5, "profile"), "bad")).toThrow(ContractError);
+  });
+
+  it("keeps an absent cap unset (not a silent zero)", () => {
+    const profile = parseFallbackProfile(withCap(undefined, "candidate"), "bad");
+    expect(profile?.candidates[0].maxSpend ?? null).toBeNull();
   });
 });

@@ -1338,6 +1338,29 @@ source = "provider-catalog"
 sha = "65a2bbc21d3e8dc889669c7bb818e567358a891f"
 note = "GET /openai/v1/models: context_window 131072."
 
+# Free-tier ceiling that makes an OpenCode route impossible (re-measured
+# 2026-11-13): EVERY free Groq chat model reports TPM=8000 in
+# `x-ratelimit-limit-tokens`, while one OpenCode turn's system prompt + tool
+# definitions alone requests ~9.9k-10.7k tokens. There is no model choice that
+# fixes this, so no `opencode.groq` route exists.
+#
+# This is deliberately NOT declared as a provider `restriction`: OMP does
+# complete real tasks on this provider (measured, 320s), so calling the whole
+# provider blocked would remove a working route. The per-model
+# `discouraged_reason` below records the ceiling instead, and the absent
+# `opencode.groq` route is the hard expression of "OpenCode cannot use this".
+
+[catalog.providers.groq.models."openai/gpt-oss-120b".discouraged_reason]
+value = "8,000 tokens/minute on the free tier: unusable from OpenCode (its system prompt + tools alone request ~10k), workable from OMP, slow (320s measured)."
+status = "configured"
+provenance = "estimated"
+
+[catalog.providers.groq.models."openai/gpt-oss-120b".discouraged_reason.evidence]
+at = "2026-11-13T00:00:00Z"
+source = "config"
+sha = "65a2bbc21d3e8dc889669c7bb818e567358a891f"
+note = "Config-declared judgment over the measured TPM ceiling and harness prompt sizes; not a provider statement."
+
 [catalog.routes."opencode.ovhcloud".restriction]
 status = "restricted"
 provenance = "measured"

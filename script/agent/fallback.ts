@@ -174,6 +174,28 @@ function optionalInt(data: Record<string, unknown>, key: string, where: string):
   return typeof v === "number" && Number.isInteger(v) && v >= 0 ? v : null;
 }
 
+/**
+ * A spend cap that is PRESENT must be valid. `optionalInt` silently maps any
+ * invalid value to null (absent), which for `max_spend` means "uncapped" — so
+ * `max_spend = -1` (an operator writing "deny") would authorise unlimited
+ * spend. Absence stays absent; a present-but-invalid value throws.
+ */
+function optionalSpendCap(
+  data: Record<string, unknown>,
+  key: string,
+  where: string,
+): number | null {
+  const v = data[key];
+  if (v === undefined || v === null) return null;
+  if (typeof v !== "number" || !Number.isInteger(v) || v < 0) {
+    throw new ContractError(
+      "schema",
+      `${where}.${key}: must be a non-negative integer (a present cap cannot be ignored)`,
+    );
+  }
+  return v;
+}
+
 function stringArray(data: Record<string, unknown>, key: string, where: string): string[] {
   const v = data[key];
   if (!Array.isArray(v) || !v.every((x) => typeof x === "string"))
@@ -270,7 +292,7 @@ export function parseFallbackProfile(
   const expiresAt = optionalStr(t, "expires_at", key);
   if (expiresAt) validateISO8601(expiresAt, `${key}.expires_at`);
   const revoked = optionalBool(t, "revoked", key) ?? false;
-  const globalMaxSpend = optionalInt(t, "global_max_spend", key);
+  const globalMaxSpend = optionalSpendCap(t, "global_max_spend", key);
 
   // Candidates array
   const candidatesRaw = t.candidates;
@@ -285,7 +307,7 @@ export function parseFallbackProfile(
     const model = requireStr(ct, "model", `${key}.candidates[${idx}]`);
     const billing = validateBilling(ct.billing, `${key}.candidates[${idx}].billing`);
     const credential = validateCredential(ct.credential, `${key}.candidates[${idx}].credential`);
-    const maxSpend = optionalInt(ct, "max_spend", `${key}.candidates[${idx}]`);
+    const maxSpend = optionalSpendCap(ct, "max_spend", `${key}.candidates[${idx}]`);
     const scope = validateScope(ct.scope, `${key}.candidates[${idx}].scope`);
     const candidateExpiresAt = optionalStr(ct, "expires_at", `${key}.candidates[${idx}]`);
     if (candidateExpiresAt) validateISO8601(candidateExpiresAt, `${key}.candidates[${idx}].expires_at`);
@@ -329,6 +351,11 @@ export interface CatalogLike {
     /** Route-declared quota scope key (`<kind>:<id>`), if catalogued. Route
      * scope overrides the provider scope, exactly like `effectiveQuotaKey`. */
     quota_scope?: string | null;
+    /** `[catalog.routes.*.restriction]`: an observed block on this route.
+     * Checked in the resolver (not only while seeding) because seeding can only
+     * attach a per-model fact to models named in that route's e2e list, and a
+     * restricted route may have no e2e (e.g. omp.deepseek: 402 with no e2e). */
+    restricted?: boolean;
   }>;
   providers: Record<string, {
     models: string[];
@@ -412,6 +439,9 @@ export function buildFallbackCatalog(
       default_model: route.default_model ?? undefined,
       // Route scope wins over the provider scope (effectiveQuotaKey rule).
       quota_scope: scope ? `${scope.kind}:${scope.id}` : null,
+      // Same blocking rule as the provider level: any present restriction
+      // blocks unless it is explicitly unknown.
+      restricted: Boolean(facts?.restriction) && facts?.restriction?.status !== "unknown",
     };
   }
 
@@ -427,8 +457,10 @@ export function buildFallbackCatalog(
       billing: facts?.billing ?? "unknown",
       quota_scope: scope ? `${scope.kind}:${scope.id}` : null,
       // A provider-wide restriction carries no per-model fact; its presence
-      // with status `restricted` is the whole statement.
-      restricted: facts?.restriction?.status === "restricted",
+      // with status `restricted` is the whole statement. Any present
+      // restriction blocks: only an explicit absence is "unrestricted", so an
+      // unverified-but-declared block cannot fail open.
+      restricted: Boolean(facts?.restriction) && facts?.restriction?.status !== "unknown",
     };
   }
 
@@ -516,20 +548,19 @@ export function seedAttestationsFromCatalog(
 }
 
 /**
- * Local override wins ONLY when it is newer: a fresher probe observation
- * supersedes the committed record, but an older local entry must not replace
- * newer committed evidence.
+ * Merge committed catalog evidence with local probe state.
  *
- * Without the timestamp comparison two unsafe outcomes were possible:
- *   - stale local evidence replaced fresh committed evidence, and the resolver
- *     rejected the candidate as `attestation-stale` for no real reason;
- *   - an older `verified-live` local entry replaced a newer committed
- *     `restricted` one while still inside the freshness window, so a blocked
- *     route resolved as usable.
+ * Rules, in order:
+ *   1. `restricted` wins over any non-restricted entry regardless of timestamp.
+ *      Catalog evidence is day-precision (`2026-11-04T00:00:00Z`), so a same-day
+ *      local `restricted` observation would otherwise TIE and lose to the
+ *      committed `verified-live` record — resolving a blocked route as usable.
+ *   2. Otherwise the strictly newer `evidence.at` wins.
+ *   3. A tie or unparsable timestamp keeps the committed entry (fail closed
+ *      toward the reviewed record).
  *
- * `Date.parse` returns NaN for a missing/unparsable timestamp; NaN compares
- * false, so a tie or an unreadable timestamp keeps the committed entry
- * (fail closed toward the reviewed record).
+ * `Date.parse` returns NaN for a missing/unparsable timestamp, and NaN compares
+ * false, which is why the tie case falls through to the committed entry.
  */
 export function mergeAttestations(
   durable: Map<string, Attested<{ status: VerificationStatus; provenance: Provenance; evidence: Evidence }>>,
@@ -538,9 +569,24 @@ export function mergeAttestations(
   const merged = new Map(durable);
   for (const [key, localEntry] of local) {
     const committed = merged.get(key);
+    if (!committed) {
+      merged.set(key, localEntry);
+      continue;
+    }
+    const committedRestricted = committed.value.status === "restricted";
+    const localRestricted = localEntry.value.status === "restricted";
+    // A newly observed block always applies; a block is never cleared by
+    // recency alone (clearing requires deleting the committed record).
+    if (localRestricted && !committedRestricted) {
+      merged.set(key, localEntry);
+      continue;
+    }
+    if (committedRestricted && !localRestricted) {
+      continue;
+    }
     const localAt = Date.parse(localEntry.evidence?.at ?? "");
-    const committedAt = Date.parse(committed?.evidence?.at ?? "");
-    if (!committed || localAt > committedAt) {
+    const committedAt = Date.parse(committed.evidence?.at ?? "");
+    if (localAt > committedAt) {
       merged.set(key, localEntry);
     }
   }
@@ -632,6 +678,16 @@ export function resolveFallbackProfile(
       continue;
     }
 
+    // Route-level restriction (e.g. an observed 402 on this exact route).
+    // Checked here rather than trusting the seeded per-model attestation,
+    // because seeding only covers models listed in that route's e2e array —
+    // a restricted route with no e2e (`omp.deepseek`) would otherwise have no
+    // seeded entry at all and be judged on the candidate's own claim.
+    if (routeConfig.restricted) {
+      rejected.push({ candidate: cand, routeRef, reason: "attestation-restricted" });
+      continue;
+    }
+
     // Credential source authorization
     const requiresInfisical = providerConfig?.require_infisical ?? false;
     if (requiresInfisical && cand.credential !== "infisical") {
@@ -665,18 +721,29 @@ export function resolveFallbackProfile(
       continue;
     }
 
-    // Spend cap checks. A `free` candidate that carries a positive cap is a
-    // contradiction: a free route has nothing to cap, and a positive value
-    // would silently authorise spend.
+    // Spend cap checks.
+    //   - A `free` candidate that carries a positive cap is a contradiction: a
+    //     free route has nothing to cap, and a positive value would silently
+    //     authorise spend.
+    //   - A profile whose total budget is 0 must not admit any candidate whose
+    //     billing boundary can bill at all. Without this, a `metered`/`plan`
+    //     candidate with an omitted or zero `max_spend` contributes 0 to the
+    //     running total and slips under a 0 budget — the cap would authorise
+    //     spend it does not model.
     if (cand.billing === "free" && (cand.maxSpend ?? 0) > 0) {
       rejected.push({ candidate: cand, routeRef, reason: "spend-cap-invalid" });
+      continue;
+    }
+    const profileBudget = profile.globalMaxSpend ?? null;
+    if (profileBudget === 0 && cand.billing !== "free") {
+      rejected.push({ candidate: cand, routeRef, reason: "billing-boundary-crossed" });
       continue;
     }
     if (cand.maxSpend !== undefined && cand.maxSpend < 0) {
       rejected.push({ candidate: cand, routeRef, reason: "spend-cap-exceeded" });
       continue;
     }
-    if (profile.globalMaxSpend !== undefined && totalSpend + (cand.maxSpend ?? 0) > profile.globalMaxSpend) {
+    if (profileBudget !== null && totalSpend + (cand.maxSpend ?? 0) > profileBudget) {
       rejected.push({ candidate: cand, routeRef, reason: "spend-cap-exceeded" });
       continue;
     }

@@ -18,9 +18,15 @@ OMP 18.18.9, dsh 0.2.0-rc.2. Date of all measurements: 2026-11-13.
 | Requesty | `REQUESTY_API_KEY` (117 chars) | yes | **yes** |
 | GroqCloud | `GROQ_API_KEY` (56 chars) | yes | **yes** (OMP only, token-budget bound) |
 | OVHcloud AI Endpoints | none (anonymous) | yes | **yes** (2 req/min) |
-| ModelScope | `MODELSCOPE_API_KEY` (39 chars, `ms-` prefix) | catalog yes, inference no | **no — blocked** |
-| SenseNova | `SENSENOVA_API_KEY` (35 chars, `sk-q` prefix) | no | **no — blocked** |
-| SiliconFlow | `SILICONFLOW_API_KEY` (51 chars, `sk-g` prefix) | catalog yes, inference no | **no — blocked** |
+| ModelScope | `MODELSCOPE_API_KEY` (39 chars, `ms-` prefix) | catalog yes, inference no | **no — blocked** (account not bound to Alibaba Cloud) |
+| SenseNova | `SENSENOVA_API_KEY` (35 chars, `sk-q` prefix) | no | **no — blocked** (key matches neither Token Plan workspace) |
+| SiliconFlow | `SILICONFLOW_API_KEY` (51 chars, `sk-g` prefix) | `.com` catalog yes, inference no | **no — blocked** (not verified/entitled; key is `.com` only) |
+
+Root causes for the three blocked providers were identified in a follow-up
+round: see
+[blocked-provider-investigation-2026-11-13](blocked-provider-investigation-2026-11-13.md).
+They are account-eligibility issues, not launcher defects, and each needs a
+one-time console action by the account owner.
 
 ### Blocked providers (details)
 

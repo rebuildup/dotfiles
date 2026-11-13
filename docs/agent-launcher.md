@@ -89,16 +89,22 @@ evaluation).
   adapter must send an auth token — with a credential-free endpoint Claude
   Code would fall back to its own claude.ai login and silently leave the
   route. The adapter rejects `anonymous` providers instead of letting that
-  happen; OMP has no proven credential-free contract either.
+  happen. OMP has no native `ovhcloud` provider, and its credential ladder has
+  no proven credential-free contract, so no `omp.ovhcloud` route exists
+  either.
 - **No `omp.requesty`.** OMP has no native `requesty` or `ovhcloud`
   provider id (`Unknown provider "requesty"`), and adding one would require
   a local `models.yml` endpoint override, which this design does not allow.
 - **No route at all for ModelScope, SenseNova or SiliconFlow.** Their keys
-  exist in Infisical but inference is not entitled: ModelScope answers 401
-  for every request shape, SenseNova 401 on both documented hosts, and
-  SiliconFlow 402 "balance insufficient" (plus 403 "Model disabled"). A key
-  is not evidence that a route is free, so a route that cannot be proven $0
-  must not be reachable.
+  exist in Infisical but the accounts are not entitled, and the reason for each
+  is now identified: ModelScope's token is valid but the account is not bound
+  to an Alibaba Cloud account; SenseNova's key matches neither Token Plan
+  workspace; SiliconFlow's key is valid only on the international host, where
+  the free chat IDs answer 402/403. These are account actions, not launcher
+  defects — see
+  [blocked-provider-investigation-2026-11-13](research/blocked-provider-investigation-2026-11-13.md).
+  A key is not evidence that a route is free, so a route that cannot be proven
+  $0 must not be reachable.
 
 ### New config attributes
 
@@ -149,8 +155,20 @@ different account. `opencode.ovhcloud` needs no secret at all and runs no
 Infisical stage.
 
 `MODELSCOPE_API_KEY`, `SENSENOVA_API_KEY` and `SILICONFLOW_API_KEY` are also
-stored in `dev` but are deliberately unused: inference is not entitled on
-those accounts, so no route reads them.
+stored in `dev` but are deliberately unused: the accounts are not entitled, so
+no route reads them. Each cause is identified — see
+[blocked-provider-investigation-2026-11-13](research/blocked-provider-investigation-2026-11-13.md).
+All three need a one-time console action by the account owner:
+
+| provider | action | where |
+| --- | --- | --- |
+| ModelScope | Bind an Alibaba Cloud account that has completed real-name verification. The token is already valid; the `.cn` site must be used (the international site cannot bind). | `https://modelscope.cn/my/settings/account` |
+| SenseNova | Confirm a key exists under the Free (公测) plan for the 日日新 account, or issue one from the intended TokenPlan workspace. The stored key matches neither. | `https://platform.sensenova.cn` → API Keys |
+| SiliconFlow | Complete real-name verification. The stored key is valid on the international host only; a `.cn` key would need a separate Infisical name. | SiliconFlow console → account |
+
+After the action, re-run the probe in the investigation doc; a working account
+turns the 401/402 into a normal completion, and only then should a route be
+added (with fresh E2E evidence, per ADR-0018).
 
 ### $0 continuity when an allowance is exhausted (429)
 
@@ -193,14 +211,22 @@ rejects a candidate when:
 - its attestation is `restricted`, `unknown` or stale.
 
 `agent fallback` seeds attestations from the **committed** `[catalog.routes.*]`
-E2E/restriction records, then merges local probe state **by evidence
-timestamp**: a local entry wins only when strictly newer, and a tie keeps the
-committed record. So a fresh machine resolves against reviewed evidence, a
-stale committed record still fails the freshness check, and an older local
-observation cannot hide a newer committed restriction. A route with no
-committed evidence stays `attestation-unknown` and is not usable; that is how
-`omp.openrouter` (never live-verified) and the stale `omp.openrouter-free`
-observation are reported today.
+E2E/restriction records, then merges local probe state by **severity first,
+then evidence timestamp**: any observed `restricted` entry wins over a
+non-restricted one regardless of recency (catalog evidence is day-precision, so
+a same-day local block would otherwise tie and lose), and otherwise only a
+strictly newer record wins while a tie keeps the committed one. So a fresh
+machine resolves against reviewed evidence, a stale committed record still fails
+the freshness check, and an older — or same-day — local observation cannot hide
+a newer committed restriction.
+
+Provider-wide and route-wide `[catalog.*.restriction]` are checked directly in
+the resolver rather than only through seeding, because seeding can only attach a
+per-model fact to models named in that route's `e2e` list (a restricted route
+with no e2e, such as `omp.deepseek`'s 402, would otherwise have no seeded entry).
+Any present restriction blocks; only an explicit `unknown` status is treated as
+"no fact". A route with no committed evidence stays `attestation-unknown` and is
+not usable.
 
 ## Policy Controls
 
