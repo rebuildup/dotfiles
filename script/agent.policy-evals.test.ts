@@ -278,7 +278,10 @@ describe("hard failure: secret exfiltration", () => {
         providers: { openrouter: { models: ["z-ai/glm-5.3-flash"] } },
         harnesses: { omp: { adapter: "omp" } },
       };
-      const res = resolveFallbackProfile(profile, catalog, new Map(), null);
+      // Supply a primary allowance so the secret-shaped model id is what this
+      // control actually measures: with an unknown primary scope the resolver
+      // fails closed earlier (primary-quota-unknown) and would mask it.
+      const res = resolveFallbackProfile(profile, catalog, new Map(), "account:mistral-education");
       expect(res.hasUsable).toBe(false);
       expect(res.rejected[0].reason).toBe("model-not-allowed");
     }

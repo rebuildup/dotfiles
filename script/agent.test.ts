@@ -89,6 +89,9 @@ export MISTRAL_API_KEY=secret-mistral-plan
 export MINIMAX_M_PLAN_KEY=secret-minimax-plan
 export MINIMAX_TOKEN_PLAN_KEY=secret-minimax-legacy
 export MIMO_API_KEY=secret-mimo
+export KILO_API_KEY=secret-kilo
+export REQUESTY_API_KEY=secret-requesty
+export GROQ_API_KEY=secret-groq
 export ANTHROPIC_AUTH_TOKEN=secret-anthropic
 export INFISICAL_TOKEN=secret-infisical
 exec "$@"
@@ -414,6 +417,83 @@ test(
         result.stdout.toString().includes("config OK"),
       result.stdout.toString(),
     );
+    // `agent check` must validate fallback profiles too, so a malformed profile
+    // fails CI rather than `agent fallback` time.
+    check(
+      result.stdout.toString().includes("fallback profiles"),
+      `check must report fallback profiles: ${result.stdout.toString()}`,
+    );
+  }),
+);
+
+test(
+  "test_check_validates_fallback_profiles",
+  withFixture((fixture) => {
+    const header = `
+[providers.p1]
+label = "P1"
+base_url = "https://api.example.com"
+secret = "DEEPSEEK_API_KEY"
+env = "DEEPSEEK_API_KEY"
+default_model = "m1"
+models = ["m1"]
+
+[harnesses.omp]
+label = "OMP"
+command = "omp"
+adapter = "omp"
+
+[routes."omp.p1"]
+`;
+    const cases: Array<[string, string, string]> = [
+      [
+        "malformed primary_route",
+        'primary_route = "not-a-route-id"',
+        "primary_route",
+      ],
+      [
+        "negative global budget",
+        'primary_route = "omp.p1"\nglobal_max_spend = -1',
+        "global_max_spend",
+      ],
+    ];
+    cases.forEach(([label, primaryAndBudget, needle], index) => {
+      const config = join(fixture.tmp, `fallback-check-${index}.toml`);
+      writeFileSync(
+        config,
+        `${header}
+[fallback_profile.bad]
+id = "bad"
+version = 1
+description = "d"
+${primaryAndBudget}
+authorized_at = "2026-11-13T00:00:00Z"
+authorized_by = "test"
+candidates = [
+  { route = "omp.p1", model = "m1", billing = "free", credential = "infisical", max_spend = 0, scope = "read-only" },
+]
+`,
+      );
+      const result = fixture.run(["check"], { config });
+      check(result.exitCode === 2, `${label}: expected exit 2, got ${result.exitCode}`);
+      check(
+        result.stderr.toString().includes(needle),
+        `${label}: ${result.stderr.toString()}`,
+      );
+
+      // The same malformed profile must not produce a raw stack trace from
+      // `agent fallback` either.
+      const fb = fixture.run(["fallback", "bad"], { config });
+      check(fb.exitCode !== 0, `${label}: fallback should fail`);
+      check(
+        !fb.stderr.toString().includes("at <anonymous>") && !fb.stderr.toString().includes("Bun v"),
+        `${label}: raw stack trace leaked: ${fb.stderr.toString()}`,
+      );
+      check(
+        fb.stderr.toString().includes("agent:"),
+        `${label}: expected a formatted launcher error: ${fb.stderr.toString()}`,
+      );
+    });
   }),
 );
 
@@ -455,11 +535,22 @@ test(
       "omp.openrouter-free",
       "omp.minimax",
       "dsh.deepseek",
+      "claude.kilo",
+      "opencode.kilo",
+      "omp.kilo",
+      "claude.requesty",
+      "opencode.requesty",
+      "opencode.ovhcloud",
+      "omp.groq",
     ]) {
       check(stdout.includes(route), `list misses ${route}: ${stdout}`);
     }
     check(!stdout.includes("pi."), `the Pi routes must be gone: ${stdout}`);
     check(!stdout.includes("omp.zen"), `omp.zen is out of scope: ${stdout}`);
+    // A paid/provider-blocked route must not appear just because a key exists.
+    for (const absent of ["opencode.groq", "claude.ovhcloud", "omp.ovhcloud", "opencode.modelscope"]) {
+      check(!stdout.includes(absent), `unsupported route must not exist: ${absent}`);
+    }
     check(
       !stdout.includes("--model required"),
       "every configured route must resolve a default model",
@@ -2516,7 +2607,7 @@ default_haiku = "ANTHROPIC_DEFAULT_HAIKU_MODEL"
 
 [routes."h1.p1"]
 `,
-        "can only be registered on an 'opencode' route",
+        "declares opencode_npm but no 'opencode' route uses it",
       ],
     ];
     for (const [index, [content, needle]] of cases.entries()) {
@@ -2813,4 +2904,430 @@ test("test_vibe_native_auth", withFixture((fixture) => {
   check(env["MISTRAL_API_KEY"] === "native-vibe-key", "native environment modified");
   check(!existsSync(fixture.marker), "native Vibe must not fetch Infisical credentials");
 }));
+
+// ---------------------------------------------------------------------------
+// Free-tier providers (Kilo / Requesty / OVHcloud / Groq). Policy:
+// docs/adr/ADR-0018.md. These tests pin the parts that keep the routes free and
+// explicit: credential source, endpoint spelling per adapter, and the fact that
+// a credential-free endpoint never becomes a mail-order credential consumer.
+// ---------------------------------------------------------------------------
+
+test("test_kilo_adapter_endpoints", withFixture((fixture) => {
+  // Claude Code needs the bare origin (it appends /v1/messages itself); with
+  // /v1 the gateway rejects the path with HTTP 400, so a wrong spelling here
+  // would be a silent per-request failure.
+  const claude = fixture.run(["claude", "kilo"], { config: REAL_CONFIG });
+  check(claude.exitCode === 0, claude.stderr.toString());
+  const [, claudeEnv] = fixture.child();
+  check(
+    claudeEnv["ANTHROPIC_BASE_URL"] === "https://api.kilo.ai/api/gateway",
+    JSON.stringify(claudeEnv["ANTHROPIC_BASE_URL"]),
+  );
+  check(
+    claudeEnv["ANTHROPIC_AUTH_TOKEN"] === "secret-kilo",
+    "the Anthropic adapter must carry the Infisical key",
+  );
+  check(
+    claudeEnv["ANTHROPIC_MODEL"] === "nvidia/nemotron-3-ultra-550b-a55b:free",
+    JSON.stringify(claudeEnv["ANTHROPIC_MODEL"]),
+  );
+  check(!("ANTHROPIC_API_KEY" in claudeEnv), "ANTHROPIC_API_KEY must stay cleared");
+  for (const leak of ["REQUESTY_API_KEY", "GROQ_API_KEY", "OPENROUTER_API_KEY"]) {
+    check(!(leak in claudeEnv), `secret leaked to child: ${leak}`);
+  }
+
+  // OpenCode needs /v1 (opencode_base_url), not the bare origin.
+  const opencode = fixture.run(["opencode", "kilo"], { config: REAL_CONFIG });
+  check(opencode.exitCode === 0, opencode.stderr.toString());
+  const [, ocEnv] = fixture.child();
+  const parsed = JSON.parse(ocEnv["OPENCODE_CONFIG_CONTENT"] as string) as OcInlineConfig;
+  check(
+    parsed.model === "kilo/nvidia/nemotron-3-ultra-550b-a55b:free",
+    JSON.stringify(parsed.model),
+  );
+  const block = parsed.provider?.["kilo"];
+  check(block?.options?.baseURL === "https://api.kilo.ai/api/gateway/v1", JSON.stringify(block));
+  check(
+    JSON.stringify(block?.env) === JSON.stringify(["KILO_API_KEY"]),
+    `credential must travel as the env NAME only: ${JSON.stringify(block?.env)}`,
+  );
+  check(block?.models?.["reflection/beam-free"]?.limit?.context === 1048576, JSON.stringify(block));
+  check(!JSON.stringify(parsed).includes("secret-kilo"), "secret leaked into config content");
+  check(ocEnv["KILO_API_KEY"] === "secret-kilo", JSON.stringify(ocEnv["KILO_API_KEY"]));
+
+  // `agent models` must show BOTH endpoint spellings when they differ, so an
+  // operator can see why the adapters disagree; showing only base_url would
+  // hide the /v1 the OpenCode block actually uses.
+  const models = fixture.run(["models", "kilo"], { config: REAL_CONFIG });
+  check(models.exitCode === 0, models.stderr.toString());
+  const modelsOut = models.stdout.toString();
+  check(
+    modelsOut.includes("opencode endpoint: https://api.kilo.ai/api/gateway/v1"),
+    modelsOut,
+  );
+  check(
+    modelsOut.includes(
+      "anthropic endpoint: https://api.kilo.ai/api/gateway (base_url; /v1/messages appended)",
+    ),
+    modelsOut,
+  );
+  // A provider whose spellings agree must not print the second line.
+  const logfareModels = fixture.run(["models", "logfare"], { config: REAL_CONFIG });
+  check(logfareModels.exitCode === 0, logfareModels.stderr.toString());
+  check(
+    !logfareModels.stdout.toString().includes("anthropic endpoint:"),
+    logfareModels.stdout.toString(),
+  );
+}));
+
+test("test_free_routes_require_infisical", withFixture((fixture) => {
+  // A stale ambient key must never win: these routes exist to spend THIS
+  // account's free allowance, so an ambient value is stripped before the
+  // wrapper and a missing Infisical value fails closed.
+  for (const [harness, provider, envName] of [
+    ["opencode", "kilo", "KILO_API_KEY"],
+    ["claude", "requesty", "REQUESTY_API_KEY"],
+    ["omp", "groq", "GROQ_API_KEY"],
+  ] as const) {
+    const stale = fixture.run([harness, provider], {
+      config: REAL_CONFIG,
+      env: { [envName]: "stale-ambient-value" },
+    });
+    check(stale.exitCode === 0, `${harness} ${provider}: ${stale.stderr.toString()}`);
+    check(existsSync(fixture.marker), `${harness} ${provider} must run the wrapper`);
+    const wrapperEnv = readFileSync(fixture.wrapper_env, "utf8");
+    check(
+      !wrapperEnv.includes("stale-ambient-value"),
+      `${harness} ${provider}: the ambient value must be stripped before the wrapper`,
+    );
+    const [, childEnv] = fixture.child();
+    check(
+      childEnv[envName]?.startsWith("secret-"),
+      `${harness} ${provider}: the Infisical value must reach the child, got ${childEnv[envName]}`,
+    );
+  }
+
+  // Removing the Infisical value makes the route fail even with an ambient key.
+  fixture.writeWrapper(
+    FAKE_WITH_SECRETS.replace("export KILO_API_KEY=secret-kilo" + String.fromCharCode(10), ""),
+  );
+  const missing = fixture.run(["opencode", "kilo"], {
+    config: REAL_CONFIG,
+    env: { KILO_API_KEY: "stale-ambient-value" },
+  });
+  check(missing.exitCode === 1, missing.stderr.toString());
+  check(missing.stderr.toString().includes("KILO_API_KEY"), missing.stderr.toString());
+  check(!existsSync(fixture.out), "must not start a harness without the Infisical key");
+}));
+
+test("test_anonymous_provider_is_credential_free", withFixture((fixture) => {
+  // OVHcloud's anonymous tier has NO credential. The launcher must not fetch
+  // Infisical at all, must not require any env name, and must still pin the
+  // model/endpoint through the OpenCode custom-provider block.
+  const result = fixture.run(["opencode", "ovhcloud"], {
+    config: REAL_CONFIG,
+    // An ambient key must not be smuggled in either: the provider has no
+    // credential name, so nothing is looked up and nothing is copied.
+    env: { KILO_API_KEY: "ambient-kilo" },
+  });
+  check(result.exitCode === 0, result.stderr.toString());
+  check(!existsSync(fixture.marker), "an anonymous route must not run with-secrets");
+  const [argv, env] = fixture.child();
+  check(argv.includes("--standalone"), JSON.stringify(argv));
+  const parsed = JSON.parse(env["OPENCODE_CONFIG_CONTENT"] as string) as OcInlineConfig;
+  check(parsed.model === "ovhcloud/gpt-oss-120b", JSON.stringify(parsed.model));
+  const block = parsed.provider?.["ovhcloud"];
+  check(block?.npm === "@ai-sdk/openai-compatible", JSON.stringify(block));
+  check(
+    block?.options?.baseURL === "https://oai.endpoints.kepler.ai.cloud.ovh.net/v1",
+    JSON.stringify(block),
+  );
+  check(
+    JSON.stringify(block?.env) === JSON.stringify([]),
+    `an anonymous provider must declare no credential env: ${JSON.stringify(block?.env)}`,
+  );
+  check(!("KILO_API_KEY" in env), "an unrelated ambient credential leaked to the child");
+  check(block?.models?.["gpt-oss-120b"]?.tool_call === true, JSON.stringify(block));
+
+  // No claude or omp route may exist: the adapter contract cannot honor a
+  // credential-free endpoint, so those combinations fail before a launch.
+  for (const harness of ["claude", "omp"]) {
+    const rejected = fixture.run([harness, "ovhcloud"], { config: REAL_CONFIG });
+    check(rejected.exitCode === 2, `${harness}: ${rejected.stderr.toString()}`);
+    check(
+      rejected.stderr.toString().includes("no route"),
+      `${harness}: ${rejected.stderr.toString()}`,
+    );
+    check(!existsSync(fixture.out), `${harness} must not start a harness`);
+  }
+}));
+
+test("test_anonymous_config_validation", withFixture((fixture) => {
+  const base = `
+[providers.anon]
+label = "Anon"
+base_url = "https://anon.example/v1"
+anonymous = true
+default_model = "m1"
+models = ["m1"]
+opencode_npm = "@ai-sdk/openai-compatible"
+[providers.anon.opencode_models."m1"]
+tool_call = true
+limit = { context = 8000, output = 1000 }
+
+[providers.p1]
+label = "P1"
+base_url = "https://p1.example/v1"
+secret = "DEEPSEEK_API_KEY"
+env = "DEEPSEEK_API_KEY"
+default_model = "m1"
+models = ["m1"]
+opencode_npm = "@ai-sdk/openai-compatible"
+[providers.p1.opencode_models."m1"]
+tool_call = true
+limit = { context = 8000, output = 1000 }
+
+# No custom-provider block: this provider exists only to prove that
+# opencode_base_url cannot be declared without opencode_npm.
+[providers.p2]
+label = "P2"
+base_url = "https://p2.example/v1"
+secret = "DEEPSEEK_API_KEY"
+env = "DEEPSEEK_API_KEY"
+default_model = "m1"
+models = ["m1"]
+
+[harnesses.oc]
+label = "OpenCode"
+command = "opencode"
+adapter = "opencode"
+[harnesses.oc.env]
+config_content = "OPENCODE_CONFIG_CONTENT"
+
+[routes."oc.anon"]
+[routes."oc.p1"]
+`;
+  const okPath = join(fixture.tmp, "anon-ok.toml");
+  writeFileSync(okPath, base);
+  const ok = fixture.run(["check"], { config: okPath });
+  check(ok.exitCode === 0, ok.stderr.toString());
+
+  const cases: Array<[string, string, string]> = [
+    [
+      "an anonymous provider must not declare a credential",
+      base.replace('anonymous = true\n', 'anonymous = true\nsecret = "DEEPSEEK_API_KEY"\nenv = "DEEPSEEK_API_KEY"\n'),
+      "contradicts",
+    ],
+    [
+      "an anonymous provider must declare a base_url",
+      base.replace('base_url = "https://anon.example/v1"\n', ""),
+      "requires base_url",
+    ],
+    [
+      "an anonymous provider that also requires Infisical must fail",
+      base.replace('anonymous = true\n', 'anonymous = true\nrequire_infisical = true\n'),
+      "require_infisical = true requires an Infisical 'secret' name",
+    ],
+    [
+      "opencode_base_url requires opencode_npm",
+      base.replace(
+        '[providers.p2]\nlabel = "P2"',
+        '[providers.p2]\nopencode_base_url = "https://x.example/v1"\nlabel = "P2"',
+      ),
+      "opencode_base_url requires opencode_npm",
+    ],
+    [
+      "opencode_npm without a credential or anonymous must fail",
+      base
+        .replace('secret = "DEEPSEEK_API_KEY"\nenv = "DEEPSEEK_API_KEY"\n', ""),
+      "requires a credential",
+    ],
+  ];
+  cases.forEach(([label, toml, needle], index) => {
+    const path = join(fixture.tmp, `bad-${index}.toml`);
+    writeFileSync(path, toml);
+    const result = fixture.run(["check"], { config: path });
+    check(result.exitCode === 2, `${label}: expected exit 2, got ${result.exitCode}`);
+    check(
+      result.stderr.toString().includes(needle),
+      `${label}: ${result.stderr.toString()}`,
+    );
+  });
+}));
 });
+
+test("test_fallback_reads_catalog_state", withFixture((fixture) => {
+  // Regression: loadAttestations used readdirSync without importing it, so
+  // `agent fallback` died with a raw ReferenceError the moment ANY catalog
+  // state existed — the exact state the durable/local merge is written for.
+  // No state dir existed on the dev machine, which is why the suite was green.
+  const stateDir = join(fixture.tmp, "state");
+  const catalogDir = join(stateDir, "catalog");
+  mkdirSync(catalogDir, { recursive: true });
+  const now = new Date().toISOString();
+  // A contract-legal restriction whose value is null (the restriction IS the
+  // fact): parsing and merging this must not throw either.
+  writeFileSync(
+    join(catalogDir, "probe.json"),
+    JSON.stringify({
+      attestations: {
+        "omp.kilo#nvidia/nemotron-3-ultra-550b-a55b:free": {
+          value: null,
+          status: "restricted",
+          provenance: "measured",
+          evidence: { at: now, source: "probe", sha: "a".repeat(40) },
+          note: "429 observed just now",
+        },
+      },
+    }),
+  );
+
+  const result = fixture.run(["fallback", "free-go-to-kilo"], {
+    config: REAL_CONFIG,
+    env: { AGENT_STATE_DIR: stateDir },
+  });
+  const stderr = result.stderr.toString();
+  check(!stderr.includes("ReferenceError"), `must not crash with ReferenceError: ${stderr}`);
+  check(!stderr.includes("readdirSync"), `must not crash on readdirSync: ${stderr}`);
+  check(result.exitCode === 0, `exit ${result.exitCode}: ${stderr}`);
+  const stdout = result.stdout.toString();
+  // The local restriction now supersedes the committed verified record, so the
+  // kilο candidate is rejected and only the remaining one is usable.
+  check(stdout.includes("attestation-restricted"), stdout);
+  check(!stdout.includes("STATUS: USABLE\n\nUsable candidates (in priority order):\n  1. omp.kilo"), stdout);
+}));
+
+test("test_fallback_cap_enforced_from_real_toml", withFixture((fixture) => {
+  // Regression for the class of bug where a rule was tested only with a
+  // hand-built object: `parseFallbackProfile` normalises an absent cap to
+  // `null`, so `=== undefined` never fired on a real TOML profile. This runs
+  // the FULL path (Bun.TOML.parse -> parse -> resolve) through the CLI.
+  const base = `
+[providers.paid]
+label = "Paid"
+base_url = "https://api.example.com"
+secret = "DEEPSEEK_API_KEY"
+env = "DEEPSEEK_API_KEY"
+default_model = "m1"
+models = ["m1"]
+
+[harnesses.omp]
+label = "OMP"
+command = "omp"
+adapter = "omp"
+
+[routes."omp.paid"]
+
+[catalog.providers.paid]
+billing = "metered"
+terms = "test"
+
+[catalog.providers.paid.quota]
+scope = "account"
+id = "paid"
+
+[catalog.routes."omp.paid".e2e]
+value = [{ model = "m1", tool_call = true }]
+status = "verified-live"
+provenance = "measured"
+
+[catalog.routes."omp.paid".e2e.evidence]
+at = "2026-11-13T00:00:00Z"
+source = "live-e2e"
+sha = "65a2bbc21d3e8dc889669c7bb818e567358a891f"
+`;
+  const profile = (id: string, candidate: string, globalMaxSpend: number) => `
+[fallback_profile.${id}]
+id = "${id}"
+version = 1
+description = "d"
+primary_route = "omp.paid"
+authorized_at = "2026-11-13T00:00:00Z"
+authorized_by = "test"
+global_max_spend = ${globalMaxSpend}
+candidates = [
+  { ${candidate} },
+]
+`;
+  const metered = 'route = "omp.paid", model = "m1", billing = "metered", credential = "infisical", scope = "local-writes"';
+  const meteredCapped = `${metered}, max_spend = 30`;
+
+  // Uncapped metered candidate under a positive budget: must NOT be usable.
+  const nocap = join(fixture.tmp, "cap-nocap.toml");
+  writeFileSync(nocap, base + profile("nocap", metered, 50));
+  const nocapRun = fixture.run(["fallback", "nocap"], { config: nocap });
+  check(nocapRun.exitCode === 0, nocapRun.stderr.toString());
+  check(
+    nocapRun.stdout.toString().includes("spend-cap-invalid"),
+    `uncapped metered candidate must be rejected: ${nocapRun.stdout.toString()}`,
+  );
+  check(
+    !nocapRun.stdout.toString().includes("STATUS: USABLE"),
+    `uncapped metered candidate must not be usable: ${nocapRun.stdout.toString()}`,
+  );
+
+  // The same candidate WITH an in-budget cap gets PAST the cap check. (It is
+  // still rejected here as `quota-exhausted-scope`, because candidate and
+  // primary are the same route; the point is that the cap reason is gone.)
+  const capped = join(fixture.tmp, "cap-capped.toml");
+  writeFileSync(capped, base + profile("capped", meteredCapped, 50));
+  const cappedRun = fixture.run(["fallback", "capped"], { config: capped });
+  check(cappedRun.exitCode === 0, cappedRun.stderr.toString());
+  check(
+    !cappedRun.stdout.toString().includes("spend-cap-invalid"),
+    `an in-budget cap must satisfy the cap check: ${cappedRun.stdout.toString()}`,
+  );
+  check(
+    cappedRun.stdout.toString().includes("quota-exhausted-scope"),
+    `expected the later scope check to be the reason now: ${cappedRun.stdout.toString()}`,
+  );
+}));
+
+test("test_fallback_rejects_wrong_typed_optional_fields", withFixture((fixture) => {
+  // `expires_at = 123` must not silently become "no expiry", and
+  // `revoked = "true"` must not silently become "not revoked": both are
+  // fail-open on a safety field.
+  const base = `
+[providers.p1]
+label = "P1"
+base_url = "https://api.example.com"
+secret = "DEEPSEEK_API_KEY"
+env = "DEEPSEEK_API_KEY"
+default_model = "m1"
+models = ["m1"]
+
+[harnesses.omp]
+label = "OMP"
+command = "omp"
+adapter = "omp"
+
+[routes."omp.p1"]
+`;
+  const cases: Array<[string, string, string]> = [
+    ["wrong type expires_at", "expires_at = 123", "expires_at"],
+    ["wrong type revoked", 'revoked = "true"', "revoked"],
+  ];
+  cases.forEach(([label, field, needle], index) => {
+    const config = join(fixture.tmp, `wrongtype-${index}.toml`);
+    writeFileSync(
+      config,
+      `${base}
+[fallback_profile.bad]
+id = "bad"
+version = 1
+description = "d"
+primary_route = "omp.p1"
+authorized_at = "2026-11-13T00:00:00Z"
+authorized_by = "test"
+global_max_spend = 0
+${field}
+candidates = [
+  { route = "omp.p1", model = "m1", billing = "free", credential = "infisical", max_spend = 0, scope = "read-only" },
+]
+`,
+    );
+    const checkRun = fixture.run(["check"], { config });
+    check(checkRun.exitCode === 2, `${label}: expected exit 2, got ${checkRun.exitCode}`);
+    check(checkRun.stderr.toString().includes(needle), `${label}: ${checkRun.stderr.toString()}`);
+  });
+}));

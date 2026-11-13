@@ -52,6 +52,8 @@ export interface ProviderConfigLike {
   require_model: boolean;
   models: string[];
   require_infisical: boolean;
+  /** Credential-free endpoint (anonymous free tier); no env name exists. */
+  anonymous?: boolean;
 }
 
 export interface HarnessConfigLike {
@@ -115,6 +117,8 @@ function notYetAvailableFooter(): string {
 export interface ModelFactsData {
   tool_call: Attested<boolean> | null;
   context_window: Attested<number> | null;
+  /** Why this model is a poor fit for some use (config-declared judgment). */
+  discouraged_reason: Attested<string> | null;
   pricing: {
     kind: string;
     currency: string | null;
@@ -133,11 +137,14 @@ export interface RouteData {
   default_model: string | null;
   models: string[];
   note: string;
-  /** null = harness-native login (no Infisical secret on the provider).
-   * Keyed `cred`, never `credential`: the redactor treats every
-   * `credential*` compound key as secret-shaped and would redact the whole
-   * object. Only the env var NAME travels, never a value. */
+  /** null = no credential env name. `cred_kind` says which of the two
+   * credential-free cases applies: a harness-native login, or an anonymous
+   * public endpoint where no credential exists at all. Keyed `cred`, never
+   * `credential`: the redactor treats every `credential*` compound key as
+   * secret-shaped and would redact the whole object. Only the env var NAME
+   * travels, never a value. */
   cred: { env: string; infisical_required: boolean } | null;
+  cred_kind: "infisical" | "harness-native" | "anonymous";
   catalog: {
     quota_scope: string | null;
     billing: string | null;
@@ -180,6 +187,7 @@ export function buildRoutesData(config: RoutesInput, catalog: Catalog): RoutesDa
         models[model] = {
           tool_call: entry.tool_call,
           context_window: entry.context_window,
+          discouraged_reason: entry.discouraged_reason,
           pricing: entry.pricing,
         };
       }
@@ -199,6 +207,11 @@ export function buildRoutesData(config: RoutesInput, catalog: Catalog): RoutesDa
       cred: provider.env
         ? { env: provider.env, infisical_required: provider.require_infisical }
         : null,
+      cred_kind: provider.env
+        ? "infisical"
+        : provider.anonymous
+          ? "anonymous"
+          : "harness-native",
       catalog: {
         quota_scope: effectiveQuotaKey(catalog, route.key),
         billing: providerEntry?.billing ?? null,
@@ -309,7 +322,9 @@ export function renderRoutesText(data: RoutesData): string {
       route.cred
         ? `  credential: env ${boundaryText(route.cred.env)}` +
           (route.cred.infisical_required ? " (Infisical-required)" : " (Infisical)")
-        : "  credential: harness-native login"
+        : route.cred_kind === "anonymous"
+          ? "  credential: none (anonymous free tier; no secret is fetched)"
+          : "  credential: harness-native login"
     );
     if (route.note) {
       lines.push(`  note: ${boundaryText(route.note)}`);
@@ -332,6 +347,11 @@ export function renderRoutesText(data: RoutesData): string {
         const ctx = attestedText(facts.context_window, (v) => `${v} tokens`);
         const price = facts.pricing ? pricingValue(facts.pricing) : UNKNOWN;
         lines.push(`    ${boundaryText(model)}: tool_call=${tool}, context=${ctx}, pricing=${price}`);
+        // A declared "why not to use this here" is a real fact and must not be
+        // silently dropped from human or JSON output.
+        if (facts.discouraged_reason) {
+          lines.push(`      discouraged: ${attestedText(facts.discouraged_reason, (v) => v)}`);
+        }
       }
     } else {
       lines.push(`  model facts: ${UNKNOWN}`);
