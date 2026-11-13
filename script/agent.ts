@@ -59,11 +59,14 @@ import {
   renderRoutesText,
   UnknownGuideTopicError,
 } from "./agent/help";
-import { loadCatalog } from "./agent/catalog";
+import { effectiveQuotaKey, loadCatalog, type Catalog } from "./agent/catalog";
 import {
+  buildFallbackCatalog,
+  mergeAttestations,
   parseFallbackProfile,
   resolveFallbackProfile,
   renderFallbackResolution,
+  seedAttestationsFromCatalog,
 } from "./agent/fallback";
 import { agentStateDir } from "./agent/contract";
 import { ContractError, redactJson } from "./agent/contract";
@@ -204,6 +207,11 @@ interface Provider {
   // fails, and OMP-local auth/model overrides are rejected. See
   // config/agents.toml [providers.opencode-go].
   require_infisical: boolean;
+  // Credential-free endpoint (anonymous public free tier, e.g. OVHcloud AI
+  // Endpoints). No secret is fetched, none is required and no credential env
+  // name reaches the child; the endpoint must reject unknown/absent keys
+  // itself. See config/agents.toml [providers.ovhcloud].
+  anonymous: boolean;
   // OpenCode custom-provider registration (opencode adapter only): npm
   // package for base_url plus a per-model capability/limit contract. Set only
   // when the provider id is unknown to OpenCode's built-in catalog (see
@@ -211,6 +219,11 @@ interface Provider {
   // as the env NAME, never as a value in config content or argv.
   opencode_npm: string | null;
   opencode_models: Record<string, OcModelSpec>;
+  // Endpoint spelling for the OpenCode custom-provider block when it differs
+  // from `base_url`. Gateways often serve an OpenAI-compatible surface under
+  // `/v1` but the Anthropic adapter must use the bare origin (it appends
+  // `/v1/messages` itself). Absent = use `base_url`.
+  opencode_base_url: string | null;
 }
 
 /** OpenCode model entry built from config: tool support + enforced limits. */
@@ -415,6 +428,32 @@ function loadConfig(path?: string): Config {
         `${where}: require_infisical = true requires an Infisical 'secret' name`
       );
     }
+    const anonymous = table["anonymous"] ?? false;
+    if (typeof anonymous !== "boolean") {
+      throw new AgentError(`${where}: 'anonymous' must be a boolean`);
+    }
+    if (anonymous && (secret || env)) {
+      // An anonymous endpoint must not also declare a credential: a combined
+      // declaration would silently inject a key the endpoint ignores (or,
+      // worse, reach a paid path with it). One or the other, never both.
+      throw new AgentError(
+        `${where}: anonymous = true contradicts 'secret'/'env' (an anonymous endpoint has no credential)`
+      );
+    }
+    if (anonymous && !optionalStr(table, "base_url", where)) {
+      throw new AgentError(`${where}: anonymous = true requires base_url`);
+    }
+    if (anonymous && require_infisical) {
+      throw new AgentError(
+        `${where}: anonymous = true contradicts require_infisical = true`
+      );
+    }
+    const opencode_base_url = optionalStr(table, "opencode_base_url", where);
+    if (opencode_base_url && !optionalStr(table, "opencode_npm", where)) {
+      throw new AgentError(
+        `${where}: opencode_base_url requires opencode_npm (it only re-spells the custom-provider endpoint)`
+      );
+    }
     if (default_model && require_model) {
       throw new AgentError(
         `${where}: require_model = true contradicts default_model = '${default_model}'`
@@ -438,8 +477,11 @@ function loadConfig(path?: string): Config {
       if (!optionalStr(table, "base_url", where)) {
         throw new AgentError(`${where}: opencode_npm requires base_url`);
       }
-      if (!env) {
-        throw new AgentError(`${where}: opencode_npm requires a credential (secret/env name)`);
+      if (!env && !anonymous) {
+        throw new AgentError(
+          `${where}: opencode_npm requires a credential (secret/env name), ` +
+            "or anonymous = true for a credential-free endpoint"
+        );
       }
       if (models.length === 0) {
         throw new AgentError(`${where}: opencode_npm requires a models list`);
@@ -471,8 +513,10 @@ function loadConfig(path?: string): Config {
       opencode_id: optionalStr(table, "opencode_id", where) || key,
       omp_id: optionalStr(table, "omp_id", where) || key,
       require_infisical,
+      anonymous,
       opencode_npm,
       opencode_models: opencode_models ?? {},
+      opencode_base_url: optionalStr(table, "opencode_base_url", where),
     };
   }
   if (Object.keys(providers).length === 0) {
@@ -582,7 +626,10 @@ function loadConfig(path?: string): Config {
 
   // Every claude-anthropic route needs an Anthropic-compatible endpoint;
   // an OpenCode custom-provider registration only the opencode adapter can
-  // honor must not be declared silently inert on another adapter's route.
+  // honor must not be declared silently inert: a provider that declares
+  // `opencode_npm` must be reachable from at least one `opencode` route (a
+  // gateway may legitimately serve the anthropic adapter on another route).
+  const opencodeNpmProviders = new Set<string>();
   for (const route of Object.values(routes)) {
     const harness = harnesses[route.harness];
     const provider = providers[route.provider];
@@ -591,11 +638,15 @@ function loadConfig(path?: string): Config {
         `routes.${route.key}: adapter anthropic needs provider '${provider.key}' to declare base_url`
       );
     }
-    if (provider.opencode_npm && harness.adapter !== "opencode") {
+    if (provider.opencode_npm && harness.adapter === "opencode") {
+      opencodeNpmProviders.add(provider.key);
+    }
+  }
+  for (const provider of Object.values(providers)) {
+    if (provider.opencode_npm && !opencodeNpmProviders.has(provider.key)) {
       throw new AgentError(
-        `routes.${route.key}: provider '${provider.key}' declares opencode_npm but harness ` +
-          `'${route.harness}' uses adapter '${harness.adapter}'; the custom-provider block ` +
-          "can only be registered on an 'opencode' route"
+        `provider '${provider.key}' declares opencode_npm but no 'opencode' route uses it; ` +
+          "the custom-provider block would sit silently inert (add an opencode route or drop the block)"
       );
     }
   }
@@ -1242,7 +1293,17 @@ function buildPlan(
   const keep = new Set<string>();
   const copy: Array<[string, string]> = [];
   const require_cred: Array<[string, string]> = [];
-  if (provider.secret || provider.env) {
+  if (provider.anonymous) {
+    // Credential-free endpoint: nothing to fetch, nothing to require, and no
+    // credential env name is added to the keep-set. `require_cred` stays empty,
+    // so `needsInjection()` returns false and no Infisical stage runs at all.
+    if (provider.secret || provider.env) {
+      // defensive; loadConfig rejects this combination
+      throw new AgentError(
+        `provider '${provider.key}' is anonymous but declares a credential`
+      );
+    }
+  } else if (provider.secret || provider.env) {
     const envName = provider.env || provider.secret;
     const secretName = provider.secret || provider.env;
     if (!envName || !secretName) throw new AgentError(`provider '${provider.key}' declares no credential`);
@@ -1307,6 +1368,15 @@ function planAnthropic(
   if (!provider.base_url) {
     throw new AgentError(`provider '${provider.key}' has no base_url for adapter anthropic`);
   }
+  if (provider.anonymous) {
+    // The Anthropic adapter must send an auth token; a credential-free
+    // endpoint would look like "no key" to Claude Code, which then falls back
+    // to its own login and silently leaves the route. Fail closed instead.
+    throw new AgentError(
+      `provider '${provider.key}' is anonymous; the anthropic adapter needs a credential, ` +
+        "so declare no claude route for it (use the opencode adapter)"
+    );
+  }
   if (!provider.env) {
     throw new AgentError(`provider '${provider.key}' declares no credential env name`);
   }
@@ -1344,7 +1414,7 @@ function planOpencode(plan: Plan, harness: Harness, provider: Provider, model: s
   // travels as the env NAME (`env: [...]`), which is how OpenCode resolves
   // the key — no secret value enters config content or argv.
   if (provider.opencode_npm) {
-    if (!provider.base_url || !provider.env) {
+    if (!provider.base_url || (!provider.env && !provider.anonymous)) {
       // defensive; loadConfig rejects these combinations
       throw new AgentError(`provider '${provider.key}' lacks base_url/credential for opencode_npm`);
     }
@@ -1359,8 +1429,8 @@ function planOpencode(plan: Plan, harness: Harness, provider: Provider, model: s
     const block: Record<string, unknown> = {
       npm: provider.opencode_npm,
       name: provider.label,
-      env: [provider.env],
-      options: { baseURL: provider.base_url },
+      env: provider.anonymous ? [] : [provider.env],
+      options: { baseURL: provider.opencode_base_url ?? provider.base_url },
       models,
     };
     plan.assign.push([
@@ -1462,6 +1532,15 @@ function insideHerdr(): boolean {
 
 function planOmp(plan: Plan, harness: Harness, provider: Provider, model: string | null): void {
   if (model === null) throw new AgentError("resolved no model for adapter omp");
+  if (provider.anonymous) {
+    // OMP resolves its credential ladder from env/stored auth; an
+    // anonymous route declares no credential env name and the launcher cannot
+    // prove OMP sends no key. Fail closed rather than risk a paid path.
+    throw new AgentError(
+      `provider '${provider.key}' is anonymous; OMP has no credential-free route ` +
+        "contract here, so no omp route may use it (use the opencode adapter)"
+    );
+  }
   const selector = `${provider.omp_id}/${model}`;
   const guardPath = ompDestructiveGuardPath();
 
@@ -2372,6 +2451,10 @@ function cmdModels(config: Config, providerKey: string): number {
       ? " [require_infisical: always sourced from Infisical; ambient env and OMP-local overrides are rejected]"
       : "";
     console.log(`credential: Infisical secret ${provider.secret} -> env ${provider.env}${note}`);
+  } else if (provider.anonymous) {
+    console.log(
+      "credential: none (anonymous free tier; no secret is fetched and no credential env reaches the child)"
+    );
   } else {
     console.log("credential: harness-native login (no Infisical secret)");
   }
@@ -2510,62 +2593,40 @@ function cmdFallback(config: Config, profileId: string, json: boolean): number {
     throw new AgentError(`fallback profile not found: ${profileId}`);
   }
 
-  // Build CatalogLike from config (includes all routes, not just those with catalog metadata)
-  const catalogLike = buildCatalogLike(config);
+  // The validated [catalog.*] tables are the authority for a provider's real
+  // billing model and shared allowance. A malformed catalog fails closed.
+  let catalogFacts;
+  try {
+    catalogFacts = loadCatalog(config.path);
+  } catch (error) {
+    if (error instanceof ContractError) {
+      throw new AgentError(error.message, EXIT_RUNTIME);
+    }
+    throw error;
+  }
+  const catalogLike = buildFallbackCatalog(config, catalogFacts);
 
-  // Load attestations from local catalog state
-  const attestationMap = loadAttestations();
+  // Durable committed evidence first, then ephemeral local probe state (which
+  // wins: a fresher observation supersedes the reviewed record).
+  const attestationMap = mergeAttestations(
+    seedAttestationsFromCatalog(catalogFacts),
+    loadAttestations(),
+  );
 
   // Get primary quota scope for cross-candidate validation
-  const primaryQuotaScope = getPrimaryQuotaScope(config, profile.primaryRoute);
+  const primaryQuotaScope = getPrimaryQuotaScope(catalogFacts, profile.primaryRoute);
 
   // Resolve profile
   const resolution = resolveFallbackProfile(profile, catalogLike, attestationMap, primaryQuotaScope);
 
   if (json) {
-    console.log(JSON.stringify(resolution, null, 2));
+    console.log(redactJson(resolution));
   } else {
     console.log(renderFallbackResolution(resolution));
   }
   return 0;
 }
 
-function buildCatalogLike(config: Config): {
-  routes: Record<string, { provider: string; models?: string[]; require_model?: boolean; default_model?: string }>;
-  providers: Record<string, { models: string[]; require_model?: boolean; default_model?: string; require_infisical?: boolean }>;
-  harnesses: Record<string, { adapter: string }>;
-} {
-  const routes: Record<string, { provider: string; models?: string[]; require_model?: boolean; default_model?: string }> = {};
-  for (const [key, route] of Object.entries(config.routes)) {
-    routes[key] = {
-      provider: route.provider,
-      models: route.models ?? undefined,
-      require_model: route.require_model,
-      default_model: route.default_model ?? undefined,
-    };
-  }
-
-  const providers: Record<string, { models: string[]; require_model?: boolean; default_model?: string; require_infisical?: boolean }> = {};
-  for (const [key, provider] of Object.entries(config.providers)) {
-    providers[key] = {
-      models: provider.models,
-      require_model: provider.require_model,
-      default_model: provider.default_model ?? undefined,
-      require_infisical: provider.require_infisical,
-    };
-  }
-
-  const harnesses: Record<string, { adapter: string }> = {};
-  for (const [key, harness] of Object.entries(config.harnesses)) {
-    harnesses[key] = { adapter: harness.adapter };
-  }
-
-  return { routes, providers, harnesses };
-}
-
-
-
- 
 function loadAttestations(): Map<string, any> {
   const map = new Map<string, any>();
   const stateDir = join(agentStateDir(), "catalog");
@@ -2589,14 +2650,13 @@ function loadAttestations(): Map<string, any> {
   return map;
 }
 
-function getPrimaryQuotaScope(config: Config, primaryRoute: string): string | null {
-  const route = config.routes[primaryRoute];
-  if (!route) return null;
-  const provider = config.providers[route.provider];
-  if (!provider) return null;
-  // Use the quota scope from catalog if available, otherwise construct from provider
-  // This is a simplified version; real implementation would use catalog quota scope
-  return `${provider.secret}:${provider.env}`;
+/** The real shared allowance of a route, from the validated catalog tables. */
+function getPrimaryQuotaScope(catalog: Catalog, primaryRoute: string): string | null {
+  try {
+    return effectiveQuotaKey(catalog, primaryRoute);
+  } catch {
+    return null;
+  }
 }
 
 async function main(argv: string[]): Promise<number> {

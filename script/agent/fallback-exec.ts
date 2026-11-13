@@ -27,10 +27,12 @@ import {
   FallbackRejectionReason,
   parseFallbackProfile,
   resolveFallbackProfile,
-  type CatalogLike,
+  buildFallbackCatalog,
+  mergeAttestations,
+  seedAttestationsFromCatalog,
 } from "./fallback.ts";
 import { loadConfig, type Config, type Route, type Provider, type Harness } from "../agent.ts";
-import { loadCatalog } from "./catalog.ts";
+import { effectiveQuotaKey, loadCatalog, type Catalog } from "./catalog.ts";
 import { agentStateDir } from "./contract.ts";
 import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -339,14 +341,22 @@ export async function executeWithFallback(
     throw new ContractError("identity", `Fallback profile not found: ${profileId}`);
   }
 
-  // Build catalog-like
-  const catalogLike = buildCatalogLike(config);
+  // Build the resolver's catalog view from config PLUS the validated catalog
+  // facts. Without the catalog, a provider's billing model and shared
+  // allowance are unknown, and an unknown billing model is not eligible — so
+  // executing on the config alone would be strictly less safe than the CLI
+  // preflight it mirrors. Fail closed instead.
+  const catalogFacts = loadCatalog(config.path);
+  const catalogLike = buildFallbackCatalog(config, catalogFacts);
 
-  // Load attestations
-  const attestationMap = loadAttestations();
+  // Durable committed evidence first, then local probe state (local wins).
+  const attestationMap = mergeAttestations(
+    seedAttestationsFromCatalog(catalogFacts),
+    loadAttestations(),
+  );
 
   // Get primary quota scope
-  const primaryQuotaScope = getPrimaryQuotaScope(config, profile.primaryRoute);
+  const primaryQuotaScope = getPrimaryQuotaScope(catalogFacts, profile.primaryRoute);
 
   // Resolve profile
   const resolution = resolveFallbackProfile(profile, catalogLike, attestationMap, primaryQuotaScope);
@@ -447,35 +457,6 @@ function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-function buildCatalogLike(config: Config): CatalogLike {
-  const routes: CatalogLike["routes"] = {};
-  for (const [key, route] of Object.entries(config.routes)) {
-    routes[key] = {
-      provider: route.provider,
-      models: route.models ?? undefined,
-      require_model: route.require_model,
-      default_model: route.default_model ?? undefined,
-    };
-  }
-
-  const providers: CatalogLike["providers"] = {};
-  for (const [key, provider] of Object.entries(config.providers)) {
-    providers[key] = {
-      models: provider.models,
-      require_model: provider.require_model,
-      default_model: provider.default_model ?? undefined,
-      require_infisical: provider.require_infisical,
-    };
-  }
-
-  const harnesses: CatalogLike["harnesses"] = {};
-  for (const [key, harness] of Object.entries(config.harnesses)) {
-    harnesses[key] = { adapter: harness.adapter };
-  }
-
-  return { routes, providers, harnesses };
-}
-
 function loadAttestations(): Map<string, any> {
   const map = new Map<string, any>();
   const stateDir = join(agentStateDir(), "catalog");
@@ -498,10 +479,11 @@ function loadAttestations(): Map<string, any> {
   return map;
 }
 
-function getPrimaryQuotaScope(config: Config, primaryRoute: string): string | null {
-  const route = config.routes[primaryRoute];
-  if (!route) return null;
-  const provider = config.providers[route.provider];
-  if (!provider) return null;
-  return `${provider.secret}:${provider.env}`;
+function getPrimaryQuotaScope(catalog: Catalog, primaryRoute: string): string | null {
+  try {
+    return effectiveQuotaKey(catalog, primaryRoute);
+  } catch {
+    return null;
+  }
 }
+

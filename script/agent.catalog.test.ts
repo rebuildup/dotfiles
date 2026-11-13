@@ -10,7 +10,7 @@
  */
 
 import { describe, test, expect, beforeAll } from "bun:test";
-import { mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdtempSync, realpathSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { loadCatalog, effectiveQuotaKey, modelEntry, type Catalog } from "./agent/catalog";
@@ -89,24 +89,61 @@ describe("loadCatalog: real config", () => {
   test("loads every catalogued provider and route", () => {
     expect(Object.keys(catalog.providers).sort()).toEqual([
       "deepseek",
+      "groq",
+      "kilo",
       "logfare",
       "minimax",
       "mistral",
       "opencode-go",
       "openrouter",
       "openrouter-free",
+      "ovhcloud",
+      "requesty",
       "zen",
     ]);
     expect(Object.keys(catalog.routes).sort()).toEqual([
+      "claude.kilo",
       "claude.opencode-go",
       "claude.openrouter-free",
+      "claude.requesty",
       "omp.deepseek",
+      "omp.groq",
+      "omp.kilo",
       "omp.minimax",
       "omp.opencode-go",
       "omp.openrouter-free",
+      "opencode.kilo",
       "opencode.logfare",
       "opencode.openrouter-free",
+      "opencode.ovhcloud",
+      "opencode.requesty",
     ]);
+  });
+
+  test("free-tier providers are catalogued as free with a shared scope", () => {
+    // The $0 claim must be attested, not implied by a provider name.
+    for (const key of ["kilo", "requesty", "ovhcloud", "groq"]) {
+      expect(catalog.providers[key].billing).toBe("free");
+      expect(catalog.providers[key].quota).not.toBeNull();
+      expect(catalog.providers[key].terms).toBeTruthy();
+    }
+    // Requesty's free limits apply per organization across ALL free models,
+    // so every requesty route dedupes to one allowance.
+    expect(effectiveQuotaKey(catalog, "claude.requesty")).toBe("account:requesty");
+    expect(effectiveQuotaKey(catalog, "opencode.requesty")).toBe("account:requesty");
+    // The anonymous OVHcloud budget is per IP, not per account.
+    expect(effectiveQuotaKey(catalog, "opencode.ovhcloud")).toBe(
+      "machine:ovhcloud-anonymous-ip",
+    );
+    expect(effectiveQuotaKey(catalog, "omp.groq")).toBe("account:groq");
+    expect(effectiveQuotaKey(catalog, "claude.kilo")).toBe("account:kilo");
+    expect(effectiveQuotaKey(catalog, "omp.kilo")).toBe("account:kilo");
+    // A free scope must never collapse into an existing paid scope: that
+    // would let one account's free allowance be counted against another.
+    const paid = ["account:openrouter", "plan:opencode-go", "plan:minimax-m-plan"];
+    for (const route of ["claude.kilo", "claude.requesty", "opencode.ovhcloud", "omp.groq"]) {
+      expect(paid).not.toContain(effectiveQuotaKey(catalog, route));
+    }
   });
 
   test("shared account quota collapses to one scope key across routes", () => {
@@ -373,6 +410,15 @@ describe("launcher compatibility", () => {
     const out = new TextDecoder().decode(proc.stdout);
     expect(proc.exitCode).toBe(0);
     expect(out).toContain("config OK");
-    expect(out).toContain("8 providers");
+    // The count is derived from the config, not pinned: a hardcoded number
+    // would turn every legitimate provider addition into a false failure.
+    const raw = Bun.TOML.parse(readFileSync(REAL_CONFIG, "utf8")) as {
+      providers: Record<string, unknown>;
+      routes: Record<string, unknown>;
+      harnesses: Record<string, unknown>;
+    };
+    expect(out).toContain(`${Object.keys(raw.providers).length} providers`);
+    expect(out).toContain(`${Object.keys(raw.harnesses).length} harnesses`);
+    expect(out).toContain(`${Object.keys(raw.routes).length} routes`);
   });
 });
