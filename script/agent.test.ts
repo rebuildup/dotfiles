@@ -3196,3 +3196,138 @@ test("test_fallback_reads_catalog_state", withFixture((fixture) => {
   check(stdout.includes("attestation-restricted"), stdout);
   check(!stdout.includes("STATUS: USABLE\n\nUsable candidates (in priority order):\n  1. omp.kilo"), stdout);
 }));
+
+test("test_fallback_cap_enforced_from_real_toml", withFixture((fixture) => {
+  // Regression for the class of bug where a rule was tested only with a
+  // hand-built object: `parseFallbackProfile` normalises an absent cap to
+  // `null`, so `=== undefined` never fired on a real TOML profile. This runs
+  // the FULL path (Bun.TOML.parse -> parse -> resolve) through the CLI.
+  const base = `
+[providers.paid]
+label = "Paid"
+base_url = "https://api.example.com"
+secret = "DEEPSEEK_API_KEY"
+env = "DEEPSEEK_API_KEY"
+default_model = "m1"
+models = ["m1"]
+
+[harnesses.omp]
+label = "OMP"
+command = "omp"
+adapter = "omp"
+
+[routes."omp.paid"]
+
+[catalog.providers.paid]
+billing = "metered"
+terms = "test"
+
+[catalog.providers.paid.quota]
+scope = "account"
+id = "paid"
+
+[catalog.routes."omp.paid".e2e]
+value = [{ model = "m1", tool_call = true }]
+status = "verified-live"
+provenance = "measured"
+
+[catalog.routes."omp.paid".e2e.evidence]
+at = "2026-11-13T00:00:00Z"
+source = "live-e2e"
+sha = "65a2bbc21d3e8dc889669c7bb818e567358a891f"
+`;
+  const profile = (id: string, candidate: string, globalMaxSpend: number) => `
+[fallback_profile.${id}]
+id = "${id}"
+version = 1
+description = "d"
+primary_route = "omp.paid"
+authorized_at = "2026-11-13T00:00:00Z"
+authorized_by = "test"
+global_max_spend = ${globalMaxSpend}
+candidates = [
+  { ${candidate} },
+]
+`;
+  const metered = 'route = "omp.paid", model = "m1", billing = "metered", credential = "infisical", scope = "local-writes"';
+  const meteredCapped = `${metered}, max_spend = 30`;
+
+  // Uncapped metered candidate under a positive budget: must NOT be usable.
+  const nocap = join(fixture.tmp, "cap-nocap.toml");
+  writeFileSync(nocap, base + profile("nocap", metered, 50));
+  const nocapRun = fixture.run(["fallback", "nocap"], { config: nocap });
+  check(nocapRun.exitCode === 0, nocapRun.stderr.toString());
+  check(
+    nocapRun.stdout.toString().includes("spend-cap-invalid"),
+    `uncapped metered candidate must be rejected: ${nocapRun.stdout.toString()}`,
+  );
+  check(
+    !nocapRun.stdout.toString().includes("STATUS: USABLE"),
+    `uncapped metered candidate must not be usable: ${nocapRun.stdout.toString()}`,
+  );
+
+  // The same candidate WITH an in-budget cap gets PAST the cap check. (It is
+  // still rejected here as `quota-exhausted-scope`, because candidate and
+  // primary are the same route; the point is that the cap reason is gone.)
+  const capped = join(fixture.tmp, "cap-capped.toml");
+  writeFileSync(capped, base + profile("capped", meteredCapped, 50));
+  const cappedRun = fixture.run(["fallback", "capped"], { config: capped });
+  check(cappedRun.exitCode === 0, cappedRun.stderr.toString());
+  check(
+    !cappedRun.stdout.toString().includes("spend-cap-invalid"),
+    `an in-budget cap must satisfy the cap check: ${cappedRun.stdout.toString()}`,
+  );
+  check(
+    cappedRun.stdout.toString().includes("quota-exhausted-scope"),
+    `expected the later scope check to be the reason now: ${cappedRun.stdout.toString()}`,
+  );
+}));
+
+test("test_fallback_rejects_wrong_typed_optional_fields", withFixture((fixture) => {
+  // `expires_at = 123` must not silently become "no expiry", and
+  // `revoked = "true"` must not silently become "not revoked": both are
+  // fail-open on a safety field.
+  const base = `
+[providers.p1]
+label = "P1"
+base_url = "https://api.example.com"
+secret = "DEEPSEEK_API_KEY"
+env = "DEEPSEEK_API_KEY"
+default_model = "m1"
+models = ["m1"]
+
+[harnesses.omp]
+label = "OMP"
+command = "omp"
+adapter = "omp"
+
+[routes."omp.p1"]
+`;
+  const cases: Array<[string, string, string]> = [
+    ["wrong type expires_at", "expires_at = 123", "expires_at"],
+    ["wrong type revoked", 'revoked = "true"', "revoked"],
+  ];
+  cases.forEach(([label, field, needle], index) => {
+    const config = join(fixture.tmp, `wrongtype-${index}.toml`);
+    writeFileSync(
+      config,
+      `${base}
+[fallback_profile.bad]
+id = "bad"
+version = 1
+description = "d"
+primary_route = "omp.p1"
+authorized_at = "2026-11-13T00:00:00Z"
+authorized_by = "test"
+global_max_spend = 0
+${field}
+candidates = [
+  { route = "omp.p1", model = "m1", billing = "free", credential = "infisical", max_spend = 0, scope = "read-only" },
+]
+`,
+    );
+    const checkRun = fixture.run(["check"], { config });
+    check(checkRun.exitCode === 2, `${label}: expected exit 2, got ${checkRun.exitCode}`);
+    check(checkRun.stderr.toString().includes(needle), `${label}: ${checkRun.stderr.toString()}`);
+  });
+}));

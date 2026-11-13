@@ -147,14 +147,33 @@ function requireStr(data: Record<string, unknown>, key: string, where: string): 
   return v;
 }
 
-function optionalStr(data: Record<string, unknown>, key: string, where: string): string | null {
+/**
+ * An optional string. Absent is `null`; a present value must actually be a
+ * string. Silently coercing a wrong type to "absent" would turn
+ * `expires_at = 123` into "no expiry" — the same fail-open shape the spend cap
+ * was hardened against.
+ */
+function optionalStrStrict(data: Record<string, unknown>, key: string, where: string): string | null {
   const v = data[key];
-  return typeof v === "string" ? v : null;
+  if (v === undefined || v === null) return null;
+  if (typeof v !== "string") {
+    throw new ContractError("schema", `${where}.${key}: expected string`);
+  }
+  return v;
 }
 
-function optionalBool(data: Record<string, unknown>, key: string, where: string): boolean | null {
+/**
+ * An optional boolean. Absent is `null`; a present value must be a boolean.
+ * Coercing a wrong type to null would read `revoked = "true"` as "not revoked"
+ * — fail-open on the revocation flag.
+ */
+function optionalBoolStrict(data: Record<string, unknown>, key: string, where: string): boolean | null {
   const v = data[key];
-  return typeof v === "boolean" ? v : null;
+  if (v === undefined || v === null) return null;
+  if (typeof v !== "boolean") {
+    throw new ContractError("schema", `${where}.${key}: expected boolean`);
+  }
+  return v;
 }
 
 /**
@@ -279,10 +298,12 @@ export function parseFallbackProfile(
   validateISO8601(authorizedAt, `${key}.authorized_at`);
   const authorizedBy = requireStr(t, "authorized_by", key);
 
-  // Optional fields
-  const expiresAt = optionalStr(t, "expires_at", key);
+  // Optional fields. A present-but-wrong-type value must be rejected, not
+  // silently coerced to "absent": `expires_at = 123` becoming "no expiry" is
+  // the same fail-open shape the spend cap was hardened against.
+  const expiresAt = optionalStrStrict(t, "expires_at", key);
   if (expiresAt) validateISO8601(expiresAt, `${key}.expires_at`);
-  const revoked = optionalBool(t, "revoked", key) ?? false;
+  const revoked = optionalBoolStrict(t, "revoked", key) ?? false;
   const globalMaxSpend = optionalSpendCap(t, "global_max_spend", key);
 
   // Candidates array
@@ -300,9 +321,9 @@ export function parseFallbackProfile(
     const credential = validateCredential(ct.credential, `${key}.candidates[${idx}].credential`);
     const maxSpend = optionalSpendCap(ct, "max_spend", `${key}.candidates[${idx}]`);
     const scope = validateScope(ct.scope, `${key}.candidates[${idx}].scope`);
-    const candidateExpiresAt = optionalStr(ct, "expires_at", `${key}.candidates[${idx}]`);
+    const candidateExpiresAt = optionalStrStrict(ct, "expires_at", `${key}.candidates[${idx}]`);
     if (candidateExpiresAt) validateISO8601(candidateExpiresAt, `${key}.candidates[${idx}].expires_at`);
-    const note = optionalStr(ct, "note", `${key}.candidates[${idx}]`);
+    const note = optionalStrStrict(ct, "note", `${key}.candidates[${idx}]`);
     return { route, model, billing, credential, maxSpend, scope, expiresAt: candidateExpiresAt, note };
   });
 
