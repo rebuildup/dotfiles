@@ -338,6 +338,34 @@ and `executeWithFallback` now share one `buildFallbackCatalog(config,
 catalogFacts)` builder and both load the validated catalog, so they cannot
 disagree.
 
+Four further gaps were found in independent review and fixed:
+
+5. **Unknown primary scope skipped the quota check entirely.** When the
+   primary's allowance was not catalogued, `primaryQuotaScopeKey` was `null`
+   and the whole comparison was bypassed, so a candidate could be declared
+   fresh capacity with no evidence that it was not drawing on the exhausted
+   primary's budget. Now `primary-quota-unknown` rejects every candidate.
+6. **Provider-wide restriction was dropped.** Only route-level
+   `[catalog.routes.*.restriction]` reached the resolver, so a route under a
+   restricted provider could resolve as usable purely on its own fresh e2e
+   evidence. The provider restriction is now carried into
+   `FallbackCatalogFacts`/`CatalogLike` and checked in resolution
+   (`provider-restricted`); seeding cannot do it, having no route→provider
+   map.
+7. **Candidate quota used provider scope only.** The primary used
+   `effectiveQuotaKey` (route scope overrides provider scope) while the
+   candidate used `providerConfig.quota_scope`, so a candidate route with its
+   own quota could be accepted while sharing the primary's effective
+   allowance, or rejected while being independent. Both sides now use the
+   same route-first rule via `effectiveRouteQuotaKey`.
+8. **`mergeAttestations` ignored evidence timestamps.** Any local entry
+   replaced a committed one with the same key, so an older `verified-live`
+   local observation could hide a newer committed `restricted` one (still
+   inside the 7-day window) and resolve a blocked route as usable — or stale
+   local evidence could make a healthy route look stale. A local entry now
+   wins only when its `evidence.at` is strictly newer; a tie or unparsable
+   timestamp keeps the committed entry.
+
 Separately, `agent fallback` only read ephemeral `agentStateDir()/catalog`
 probe state, so every committed route reported `attestation-unknown` and no
 profile could ever resolve on a fresh machine. It now seeds from the

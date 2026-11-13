@@ -174,23 +174,33 @@ OVHcloud provider, so those cannot appear in an `omp` profile).
 The resolver is the enforcement point, not the profile author's intent. It
 rejects a candidate when:
 
+- the primary's own allowance is not catalogued (`primary-quota-unknown`) —
+  without it the independence check cannot run at all, so every candidate is
+  refused rather than assumed fresh;
 - the provider's catalogued `billing` does not match the declared boundary
   (`billing-boundary-crossed`), or is not catalogued at all (`billing-unknown`
   — unknown billing is never treated as free);
+- the provider itself carries a `[catalog.providers.<id>.restriction]`
+  (`provider-restricted`) — route-level evidence cannot unlock a provider
+  whose allowance is unusable;
 - a `free` candidate declares a positive `max_spend` (`spend-cap-invalid`),
   or any cap would exceed the profile/global cap;
-- the candidate shares the primary's quota scope (`quota-exhausted-scope`) —
-  e.g. two models on the *same* Kilo account are not fresh capacity — or its
-  scope cannot be proven distinct (`quota-scope-unknown`);
+- the candidate's *effective* scope equals the primary's
+  (`quota-exhausted-scope`) — e.g. two models on the *same* Kilo account are
+  not fresh capacity — or its scope is not catalogued (`quota-scope-unknown`).
+  Both sides use the same route-first, provider-second rule, so a route that
+  declares its own quota is compared by that quota;
 - its attestation is `restricted`, `unknown` or stale.
 
 `agent fallback` seeds attestations from the **committed** `[catalog.routes.*]`
-E2E/restriction records, then lets fresher local probe state override them,
-so a fresh machine resolves against reviewed evidence instead of nothing —
-while a stale committed record still fails the freshness check. A route with
-no committed evidence stays `attestation-unknown` and is not usable; that is
-how `omp.openrouter` (never live-verified) and the stale
-`omp.openrouter-free` observation are reported today.
+E2E/restriction records, then merges local probe state **by evidence
+timestamp**: a local entry wins only when strictly newer, and a tie keeps the
+committed record. So a fresh machine resolves against reviewed evidence, a
+stale committed record still fails the freshness check, and an older local
+observation cannot hide a newer committed restriction. A route with no
+committed evidence stays `attestation-unknown` and is not usable; that is how
+`omp.openrouter` (never live-verified) and the stale `omp.openrouter-free`
+observation are reported today.
 
 ## Policy Controls
 

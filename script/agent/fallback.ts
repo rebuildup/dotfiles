@@ -122,6 +122,8 @@ export type FallbackRejectionReason =
   | "credential-mismatch"         // candidate's credential auth doesn't match route config
   | "billing-boundary-crossed"    // would cross unauthorized billing boundary
   | "billing-unknown"             // provider billing model is not catalogued
+  | "provider-restricted"         // the provider itself is observed restricted
+  | "primary-quota-unknown"       // the primary's allowance cannot be identified
   | "spend-cap-invalid"           // a free candidate declared a positive spend cap
   | "spend-cap-exceeded"          // candidate or global maxSpend exceeded
   | "scope-escalation"            // candidate scope exceeds profile allowance
@@ -319,7 +321,15 @@ export function listFallbackProfiles(toml: Record<string, unknown>): string[] {
 // ---------------------------------------------------------------------------
 
 export interface CatalogLike {
-  routes: Record<string, { provider: string; models?: string[]; require_model?: boolean; default_model?: string }>;
+  routes: Record<string, {
+    provider: string;
+    models?: string[];
+    require_model?: boolean;
+    default_model?: string;
+    /** Route-declared quota scope key (`<kind>:<id>`), if catalogued. Route
+     * scope overrides the provider scope, exactly like `effectiveQuotaKey`. */
+    quota_scope?: string | null;
+  }>;
   providers: Record<string, {
     models: string[];
     require_model?: boolean;
@@ -330,6 +340,10 @@ export interface CatalogLike {
     billing?: string;
     /** Provider-declared quota scope key (`<kind>:<id>`), if catalogued. */
     quota_scope?: string | null;
+    /** `[catalog.providers.*].restriction`: an observed block on the whole
+     * provider (e.g. a client-bound tier). A restricted provider makes every
+     * route under it ineligible, regardless of route-level evidence. */
+    restricted?: boolean;
   }>;
   harnesses: Record<string, { adapter: string }>;
 }
@@ -352,15 +366,24 @@ export interface FallbackConfigLike {
   harnesses: Record<string, { adapter: string }>;
 }
 
-/** Structural view of the validated `[catalog.*]` tables. */
+/** Structural view of the validated `[catalog.*]` tables. Provider-level
+ * restriction and route-level quota are carried here because the resolver
+ * needs both to decide eligibility; dropping them silently disabled those
+ * checks. Field names mirror the `Catalog` type so callers can pass it
+ * directly. */
 export interface FallbackCatalogFacts {
   providers: Record<string, {
     billing: string;
     quota: { kind: string; id: string } | null;
+    /** `[catalog.providers.<id>.restriction]`: an observed provider-wide
+     * block. Present (with status `restricted`) = the provider is unusable. */
+    restriction?: Attested<null> | null;
   }>;
   routes?: Record<string, {
     e2e?: Attested<E2eObservation[]> | null;
     restriction?: Attested<null> | null;
+    /** Route-level quota override (wins over the provider scope). */
+    quota?: { kind: string; id: string } | null;
   }>;
 }
 
@@ -380,11 +403,15 @@ export function buildFallbackCatalog(
 ): CatalogLike {
   const routes: CatalogLike["routes"] = {};
   for (const [key, route] of Object.entries(config.routes)) {
+    const facts = catalogFacts?.routes?.[key] ?? null;
+    const scope = facts?.quota ?? null;
     routes[key] = {
       provider: route.provider,
       models: route.models ?? undefined,
       require_model: route.require_model,
       default_model: route.default_model ?? undefined,
+      // Route scope wins over the provider scope (effectiveQuotaKey rule).
+      quota_scope: scope ? `${scope.kind}:${scope.id}` : null,
     };
   }
 
@@ -399,6 +426,9 @@ export function buildFallbackCatalog(
       require_infisical: provider.require_infisical,
       billing: facts?.billing ?? "unknown",
       quota_scope: scope ? `${scope.kind}:${scope.id}` : null,
+      // A provider-wide restriction carries no per-model fact; its presence
+      // with status `restricted` is the whole statement.
+      restricted: facts?.restriction?.status === "restricted",
     };
   }
 
@@ -408,6 +438,24 @@ export function buildFallbackCatalog(
   }
 
   return { routes, providers, harnesses };
+}
+
+/**
+ * The allowance a candidate route draws from, with the same route-first,
+ * provider-second precedence as `effectiveQuotaKey`. Using only the provider
+ * scope would compare a route that declares its own quota by the wrong
+ * allowance, and could accept a candidate sharing the exhausted primary's
+ * budget.
+ */
+export function effectiveRouteQuotaKey(
+  catalog: CatalogLike,
+  routeId: string,
+): string | null {
+  const route = catalog.routes[routeId];
+  if (!route) return null;
+  const routeScope = route.quota_scope ?? null;
+  if (routeScope) return routeScope;
+  return catalog.providers[route.provider]?.quota_scope ?? null;
 }
 
 /**
@@ -467,12 +515,36 @@ export function seedAttestationsFromCatalog(
   return map;
 }
 
-/** Local override wins: a fresher probe observation supersedes the committed record. */
+/**
+ * Local override wins ONLY when it is newer: a fresher probe observation
+ * supersedes the committed record, but an older local entry must not replace
+ * newer committed evidence.
+ *
+ * Without the timestamp comparison two unsafe outcomes were possible:
+ *   - stale local evidence replaced fresh committed evidence, and the resolver
+ *     rejected the candidate as `attestation-stale` for no real reason;
+ *   - an older `verified-live` local entry replaced a newer committed
+ *     `restricted` one while still inside the freshness window, so a blocked
+ *     route resolved as usable.
+ *
+ * `Date.parse` returns NaN for a missing/unparsable timestamp; NaN compares
+ * false, so a tie or an unreadable timestamp keeps the committed entry
+ * (fail closed toward the reviewed record).
+ */
 export function mergeAttestations(
   durable: Map<string, Attested<{ status: VerificationStatus; provenance: Provenance; evidence: Evidence }>>,
   local: Map<string, Attested<{ status: VerificationStatus; provenance: Provenance; evidence: Evidence }>>,
 ): Map<string, Attested<{ status: VerificationStatus; provenance: Provenance; evidence: Evidence }>> {
-  return new Map([...durable, ...local]);
+  const merged = new Map(durable);
+  for (const [key, localEntry] of local) {
+    const committed = merged.get(key);
+    const localAt = Date.parse(localEntry.evidence?.at ?? "");
+    const committedAt = Date.parse(committed?.evidence?.at ?? "");
+    if (!committed || localAt > committedAt) {
+      merged.set(key, localEntry);
+    }
+  }
+  return merged;
 }
 
 /**
@@ -502,6 +574,19 @@ export function resolveFallbackProfile(
   if (profile.expiresAt && new Date(profile.expiresAt).getTime() <= nowMs) {
     for (const cand of profile.candidates) {
       rejected.push({ candidate: cand, routeRef: null, reason: "expired" });
+    }
+    return { profile, primaryRoute: primaryRouteRef, usable, rejected, hasUsable: false };
+  }
+
+  // Fail closed when the primary's allowance cannot be identified. The quota
+  // check below can only prove a candidate is independent by comparing scope
+  // keys; with no primary key the whole check would be skipped, so a candidate
+  // could be declared fresh capacity with no evidence that it is not drawing
+  // on the exhausted primary's allowance. An unknown primary scope therefore
+  // rejects every candidate instead of silently disabling the comparison.
+  if (primaryQuotaScopeKey === null) {
+    for (const cand of profile.candidates) {
+      rejected.push({ candidate: cand, routeRef: null, reason: "primary-quota-unknown" });
     }
     return { profile, primaryRoute: primaryRouteRef, usable, rejected, hasUsable: false };
   }
@@ -536,8 +621,18 @@ export function resolveFallbackProfile(
       continue;
     }
 
-    // Credential source authorization
     const providerConfig = catalog.providers[routeConfig.provider];
+
+    // Provider-wide restriction (e.g. a free tier bound to one client). The
+    // route may still carry fresh e2e evidence, but a restricted provider
+    // means the allowance is not usable at all, so every route under it is
+    // ineligible. Seeding cannot express this: it has no route->provider map.
+    if (providerConfig?.restricted) {
+      rejected.push({ candidate: cand, routeRef, reason: "provider-restricted" });
+      continue;
+    }
+
+    // Credential source authorization
     const requiresInfisical = providerConfig?.require_infisical ?? false;
     if (requiresInfisical && cand.credential !== "infisical") {
       rejected.push({ candidate: cand, routeRef, reason: "credential-mismatch" });
@@ -625,19 +720,19 @@ export function resolveFallbackProfile(
     }
 
     // Quota scope check: a candidate that draws on the SAME allowance as the
-    // exhausted primary is not fresh capacity, so it is rejected. Scope keys
-    // come from the catalog (`<kind>:<id>`); when either side is unknown the
-    // check cannot prove independence and fails closed.
-    const candidateScopeKey = providerConfig?.quota_scope ?? null;
-    if (primaryQuotaScopeKey) {
-      if (candidateScopeKey === null) {
-        rejected.push({ candidate: cand, routeRef, reason: "quota-scope-unknown" });
-        continue;
-      }
-      if (candidateScopeKey === primaryQuotaScopeKey) {
-        rejected.push({ candidate: cand, routeRef, reason: "quota-exhausted-scope" });
-        continue;
-      }
+    // exhausted primary is not fresh capacity, so it is rejected. The key uses
+    // the same route-first, provider-second precedence as `effectiveQuotaKey`
+    // (see `effectiveRouteQuotaKey`); comparing by provider scope alone would
+    // misjudge a candidate route that declares its own quota. An unknown
+    // candidate scope cannot prove independence, so it fails closed.
+    const candidateScopeKey = effectiveRouteQuotaKey(catalog, cand.route);
+    if (candidateScopeKey === null) {
+      rejected.push({ candidate: cand, routeRef, reason: "quota-scope-unknown" });
+      continue;
+    }
+    if (candidateScopeKey === primaryQuotaScopeKey) {
+      rejected.push({ candidate: cand, routeRef, reason: "quota-exhausted-scope" });
+      continue;
     }
 
     // All checks passed
