@@ -11,6 +11,7 @@
  */
 
 import { ContractError, parseRouteId, formatRouteId, type RouteRef, attest, parseAttested, isUsable, type Attested, type Evidence, type VerificationStatus, type Provenance, type EvidenceSource, DEFAULT_MAX_EVIDENCE_AGE_MS } from "./contract.ts";
+import type { E2eObservation } from "./catalog.ts";
 
 // ---------------------------------------------------------------------------
 // Schema types
@@ -120,6 +121,8 @@ export type FallbackRejectionReason =
   | "model-not-allowed"           // model not in route/provider allowlist
   | "credential-mismatch"         // candidate's credential auth doesn't match route config
   | "billing-boundary-crossed"    // would cross unauthorized billing boundary
+  | "billing-unknown"             // provider billing model is not catalogued
+  | "spend-cap-invalid"           // a free candidate declared a positive spend cap
   | "spend-cap-exceeded"          // candidate or global maxSpend exceeded
   | "scope-escalation"            // candidate scope exceeds profile allowance
   | "expired"                     // profile or candidate expired
@@ -128,6 +131,7 @@ export type FallbackRejectionReason =
   | "attestation-unknown"         // attestation status is unknown
   | "attestation-restricted"      // attestation shows restriction (402/403/429)
   | "quota-exhausted-scope"       // candidate shares exhausted quota scope with primary
+  | "quota-scope-unknown"         // candidate's shared allowance cannot be proven distinct
   | "validation-error";           // schema/identity validation failed
 
 // ---------------------------------------------------------------------------
@@ -199,6 +203,23 @@ function validateScope(v: unknown, where: string): FallbackScope {
   if (typeof v !== "string" || !VALID_SCOPE.includes(v as FallbackScope))
     throw new ContractError("schema", `${where}: invalid scope "${v}"`);
   return v as FallbackScope;
+}
+
+/**
+ * A candidate's declared billing boundary must be satisfiable by the
+ * provider's real charging model. `free` is deliberately strict (a free
+ * candidate needs a free provider); a `subscription` candidate may consume a
+ * `plan`, because both are prepaid allowances rather than metered spend.
+ */
+export function billingMatches(
+  declared: BillingBoundary,
+  providerBilling: string,
+): boolean {
+  if (providerBilling === "unknown") return false;
+  if (declared === "free") return providerBilling === "free";
+  if (declared === "metered") return providerBilling === "metered";
+  if (declared === "subscription") return providerBilling === "subscription";
+  return providerBilling === "plan" || providerBilling === "subscription";
 }
 
 function validateISO8601(v: string, where: string): void {
@@ -297,10 +318,161 @@ export function listFallbackProfiles(toml: Record<string, unknown>): string[] {
 // Resolution against catalog and attestation
 // ---------------------------------------------------------------------------
 
-interface CatalogLike {
+export interface CatalogLike {
   routes: Record<string, { provider: string; models?: string[]; require_model?: boolean; default_model?: string }>;
-  providers: Record<string, { models: string[]; require_model?: boolean; default_model?: string; require_infisical?: boolean }>;
+  providers: Record<string, {
+    models: string[];
+    require_model?: boolean;
+    default_model?: string;
+    require_infisical?: boolean;
+    /** `[catalog.providers.*].billing`: the provider's real charging model.
+     * Absent = unknown, which is never treated as free. */
+    billing?: string;
+    /** Provider-declared quota scope key (`<kind>:<id>`), if catalogued. */
+    quota_scope?: string | null;
+  }>;
   harnesses: Record<string, { adapter: string }>;
+}
+
+/** Structural view of the launcher config this module needs. Defined here so
+ * `fallback.ts` does not import `script/agent.ts` (which runs main() at load). */
+export interface FallbackConfigLike {
+  routes: Record<string, {
+    provider: string;
+    models: string[] | null;
+    require_model: boolean;
+    default_model: string | null;
+  }>;
+  providers: Record<string, {
+    models: string[];
+    require_model: boolean;
+    default_model: string | null;
+    require_infisical: boolean;
+  }>;
+  harnesses: Record<string, { adapter: string }>;
+}
+
+/** Structural view of the validated `[catalog.*]` tables. */
+export interface FallbackCatalogFacts {
+  providers: Record<string, {
+    billing: string;
+    quota: { kind: string; id: string } | null;
+  }>;
+  routes?: Record<string, {
+    e2e?: Attested<E2eObservation[]> | null;
+    restriction?: Attested<null> | null;
+  }>;
+}
+
+/**
+ * Build the resolver's catalog view from the launcher config plus the
+ * validated catalog facts. `billing` and `quota_scope` come from the
+ * `[catalog.*]` tables (never guessed): a provider with no catalogued billing
+ * resolves to `unknown` and is therefore ineligible as a fallback candidate.
+ *
+ * Single implementation shared by `agent fallback` and
+ * `executeWithFallback`, so the CLI display and the executor cannot disagree
+ * about which candidates are safe.
+ */
+export function buildFallbackCatalog(
+  config: FallbackConfigLike,
+  catalogFacts: FallbackCatalogFacts | null,
+): CatalogLike {
+  const routes: CatalogLike["routes"] = {};
+  for (const [key, route] of Object.entries(config.routes)) {
+    routes[key] = {
+      provider: route.provider,
+      models: route.models ?? undefined,
+      require_model: route.require_model,
+      default_model: route.default_model ?? undefined,
+    };
+  }
+
+  const providers: CatalogLike["providers"] = {};
+  for (const [key, provider] of Object.entries(config.providers)) {
+    const facts = catalogFacts?.providers[key] ?? null;
+    const scope = facts?.quota ?? null;
+    providers[key] = {
+      models: provider.models,
+      require_model: provider.require_model,
+      default_model: provider.default_model ?? undefined,
+      require_infisical: provider.require_infisical,
+      billing: facts?.billing ?? "unknown",
+      quota_scope: scope ? `${scope.kind}:${scope.id}` : null,
+    };
+  }
+
+  const harnesses: CatalogLike["harnesses"] = {};
+  for (const [key, harness] of Object.entries(config.harnesses)) {
+    harnesses[key] = { adapter: harness.adapter };
+  }
+
+  return { routes, providers, harnesses };
+}
+
+/**
+ * Seed the attestation map with the DURABLE catalog evidence from
+ * `config/agents.toml` (`[catalog.routes.*.e2e]` / `.restriction`).
+ *
+ * Without this, `agent fallback` only sees ephemeral local probe state, so a
+ * route whose real E2E is committed in the config would be reported
+ * `attestation-unknown` and no profile could ever resolve on a fresh machine.
+ * The committed catalog is the reviewed record; local state may override it.
+ *
+ * A route with a `restriction` attestation seeds `restricted`; a route with an
+ * `e2e` observation for the model seeds that observation's status. Routes with
+ * neither stay absent, i.e. genuinely unknown.
+ */
+export function seedAttestationsFromCatalog(
+  catalogFacts: FallbackCatalogFacts | null,
+): Map<string, Attested<{ status: VerificationStatus; provenance: Provenance; evidence: Evidence }>> {
+  const map = new Map<string, Attested<{ status: VerificationStatus; provenance: Provenance; evidence: Evidence }>>();
+  if (!catalogFacts?.routes) return map;
+  for (const [routeId, facts] of Object.entries(catalogFacts.routes)) {
+    if (facts.restriction) {
+      // The restriction is a fact in its own right; it carries no per-model e2e.
+      const restriction = facts.restriction;
+      const affected = facts.e2e?.value?.map((o) => o.model) ?? [];
+      for (const model of affected) {
+        map.set(`${routeId}#${model}`, {
+          value: {
+            status: "restricted",
+            provenance: restriction.provenance,
+            evidence: restriction.evidence as Evidence,
+          },
+          status: restriction.status,
+          provenance: restriction.provenance,
+          evidence: restriction.evidence,
+          ...(restriction.note ? { note: restriction.note } : {}),
+        });
+      }
+      continue;
+    }
+    const e2e = facts.e2e;
+    if (!e2e?.value) continue;
+    for (const observation of e2e.value) {
+      map.set(`${routeId}#${observation.model}`, {
+        value: {
+          status: e2e.status,
+          provenance: e2e.provenance,
+          evidence: e2e.evidence as Evidence,
+        },
+        status: e2e.status,
+        provenance: e2e.provenance,
+        evidence: e2e.evidence,
+        ...(e2e.note ? { note: e2e.note } : {}),
+      });
+    }
+  }
+  return map;
+}
+
+/** Local override wins: a fresher probe observation supersedes the committed record. */
+export function mergeAttestations(
+  durable: Map<string, Attested<{ status: VerificationStatus; provenance: Provenance; evidence: Evidence }>>,
+  local: Map<string, Attested<{ status: VerificationStatus; provenance: Provenance; evidence: Evidence }>>,
+): Map<string, Attested<{ status: VerificationStatus; provenance: Provenance; evidence: Evidence }>> {
+  return new Map([...durable, ...local]);
 }
 
 /**
@@ -375,14 +547,36 @@ export function resolveFallbackProfile(
       // Allow infisical for non-require_infisical routes (explicit opt-in)
     }
 
-    // Billing boundary check
-    // We can't fully validate billing boundary without provider metadata,
-    // but we can reject known problematic combinations
-    if (cand.billing === "free" && providerConfig && !providerConfig.models.some(m => m.endsWith(":free"))) {
-      // Warn but don't reject - this is a config-declared boundary
+    // Billing boundary check. The candidate declares which boundary it is
+    // allowed to consume; the provider's catalogued billing is the fact. A
+    // declared boundary that does not match the provider's real billing model
+    // is rejected (fail closed), and an UNKNOWN billing model is never
+    // accepted as `free` — that would let a paid endpoint be labelled free by
+    // a mere preference.
+    const providerBilling = providerConfig?.billing ?? "unknown";
+    if (providerBilling === "unknown") {
+      rejected.push({ candidate: cand, routeRef, reason: "billing-unknown" });
+      continue;
+    }
+    if (!billingMatches(cand.billing, providerBilling)) {
+      rejected.push({ candidate: cand, routeRef, reason: "billing-boundary-crossed" });
+      continue;
+    }
+    // A `free` candidate must actually be free: `metered` or `subscription`
+    // may never be reached from a free profile, and a free candidate may not
+    // silently point at a paying endpoint.
+    if (cand.billing === "free" && providerBilling !== "free") {
+      rejected.push({ candidate: cand, routeRef, reason: "billing-boundary-crossed" });
+      continue;
     }
 
-    // Spend cap checks
+    // Spend cap checks. A `free` candidate that carries a positive cap is a
+    // contradiction: a free route has nothing to cap, and a positive value
+    // would silently authorise spend.
+    if (cand.billing === "free" && (cand.maxSpend ?? 0) > 0) {
+      rejected.push({ candidate: cand, routeRef, reason: "spend-cap-invalid" });
+      continue;
+    }
     if (cand.maxSpend !== undefined && cand.maxSpend < 0) {
       rejected.push({ candidate: cand, routeRef, reason: "spend-cap-exceeded" });
       continue;
@@ -430,11 +624,16 @@ export function resolveFallbackProfile(
       continue;
     }
 
-    // Quota scope check: reject if candidate shares exhausted quota scope with primary
-    // (This requires the primary's quota scope key; we pass it in)
+    // Quota scope check: a candidate that draws on the SAME allowance as the
+    // exhausted primary is not fresh capacity, so it is rejected. Scope keys
+    // come from the catalog (`<kind>:<id>`); when either side is unknown the
+    // check cannot prove independence and fails closed.
+    const candidateScopeKey = providerConfig?.quota_scope ?? null;
     if (primaryQuotaScopeKey) {
-      const candidateScopeKey = `${routeConfig.provider}:${cand.credential}`;
-      // This is a simplified check; real implementation would use quotaScopeKey from contract
+      if (candidateScopeKey === null) {
+        rejected.push({ candidate: cand, routeRef, reason: "quota-scope-unknown" });
+        continue;
+      }
       if (candidateScopeKey === primaryQuotaScopeKey) {
         rejected.push({ candidate: cand, routeRef, reason: "quota-exhausted-scope" });
         continue;

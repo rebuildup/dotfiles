@@ -48,6 +48,12 @@ drop_env = [
   "MINIMAX_TOKEN_PLAN_KEY",
   "OPENCODE_API_KEY",
   "OPENROUTER_API_KEY",
+  "GROQ_API_KEY",
+  "KILO_API_KEY",
+  "MODELSCOPE_API_KEY",
+  "REQUESTY_API_KEY",
+  "SENSENOVA_API_KEY",
+  "SILICONFLOW_API_KEY",
   # OMP model-role selectors. The launcher pins every role with explicit
   # flags on Infisical-backed routes, so an ambient value must never redirect
   # a route. Profile selection is not dropped silently: the OMP guard rejects
@@ -279,6 +285,240 @@ tool_call = true
 limit = { context = 262144, output = 131072 }
 
 # ---------------------------------------------------------------------------
+# Free-tier providers (no pay-as-you-go, no new subscription, $0/month)
+#
+# These exist so agent development can continue when the OpenCode Go / Zen
+# allowance (or any other paid-plan allowance) is exhausted. They are explicit
+# opt-in routes: nothing here is a fallback target, and no route may cross a
+# billing boundary implicitly (see docs/adr/ADR-0018.md).
+#
+# Every provider below was measured live on 2026-11-13 through the real
+# launcher harnesses (Claude Code 2.1.322, OpenCode 2.2.7, OMP 18.18.9) on a
+# coding task that requires read + bash + edit + a verification run, plus a
+# bug-fix task that requires reading a failing test suite, diagnosing, editing
+# only the implementation file and re-verifying. Quality/role judgments are in
+# docs/research/free-provider-evaluation-2026-11-13.md; attested facts are in
+# the [catalog.*] tables below.
+#
+# The single invariant: a route listed here must be free to call, and the
+# provider must reject an unentitled request instead of silently billing it.
+# Where that cannot be proven, the provider is recorded as blocked
+# (MODELSCOPE_API_KEY / SENSENOVA_API_KEY / SILICONFLOW_API_KEY today) and gets
+# no route at all — a route that cannot be proven free must not be reachable.
+# ---------------------------------------------------------------------------
+
+# Kilo Gateway (https://kilocode.ai/docs/gateway). OpenAI-compatible gateway
+# with Anthropic-compatible /v1/messages, so it serves BOTH the opencode and the
+# claude adapters. The free slice is the `isFree` / `:free` models of the
+# public catalog; `kilo-auto/free` is a server-side router over free models
+# only (per Kilo's Auto model docs), while every other entry is one fixed id.
+#
+# Measured 2026-11-13 (KILO_API_KEY from Infisical, ambient key unset):
+#   - GET /api/gateway/v1/models (no key needed): 473 models, 14 `isFree`;
+#     all 14 report `tools` in supported_parameters;
+#   - POST /api/gateway/v1/chat/completions and /api/gateway/v1/messages both
+#     answer with `Authorization: Bearer` (the Anthropic path does not need
+#     x-api-key); usage.cost = 0 and cost_details.* = 0 on free ids;
+#   - Claude Code needs the base URL WITHOUT the trailing /v1 (it appends
+#     `/v1/messages` itself); with `/v1` the gateway answers
+#     `400 This endpoint only accepts the paths /chat/completions,
+#     /responses and /messages`. OpenCode needs `/v1`.
+#   - Full E2E (response + tools + real file edits, both harnesses) on
+#     nvidia/nemotron-3-ultra-550b-a55b:free, kilo-auto/free,
+#     cohere/north-mini-code:free and reflection/beam-free;
+#   - `deepseek/deepseek-v4-flash:free` appears in the account-visible model
+#     catalog but is rejected at request time ("does not exist"), so it is not
+#     listed here.
+#
+# Data handling: every free id reports mayTrainOnYourPrompts = true and Kilo's
+# own Auto Free warning says prompts may be logged by the upstream provider.
+# Do not send credentials, customer data or private material on these routes.
+#
+# require_infisical = true: the whole point is "$0 on THIS account's free
+# allowance", so the key must come from Infisical. A stale ambient KILO_API_KEY
+# was observed to win the fast path and fail with "Your authentication token is
+# invalid" (2026-11-13), which is exactly the silent wrong-account route this
+# setting removes: the ambient value is stripped before the wrapper and a
+# missing Infisical value fails instead.
+[providers.kilo]
+label = "Kilo Gateway (free models)"
+base_url = "https://api.kilo.ai/api/gateway"
+secret = "KILO_API_KEY"
+env = "KILO_API_KEY"
+require_infisical = true
+default_model = "nvidia/nemotron-3-ultra-550b-a55b:free"
+models = [
+  "nvidia/nemotron-3-ultra-550b-a55b:free",
+  "kilo-auto/free",
+  "cohere/north-mini-code:free",
+  "reflection/beam-free",
+  "nvidia/nemotron-3.5-lightning:free",
+]
+opencode_npm = "@ai-sdk/openai-compatible"
+# The launcher's `base_url` is shared by both adapters, so the OpenCode
+# custom-provider block appends nothing: Kilo's OpenAI-compatible surface and
+# its Anthropic surface sit under the same origin, and only the claude route
+# needs the origin-without-/v1 spelling (see routes."claude.kilo").
+opencode_base_url = "https://api.kilo.ai/api/gateway/v1"
+
+[providers.kilo.opencode_models."nvidia/nemotron-3-ultra-550b-a55b:free"]
+tool_call = true
+limit = { context = 1000000, output = 65536 }
+
+[providers.kilo.opencode_models."kilo-auto/free"]
+tool_call = true
+limit = { context = 256000, output = 32768 }
+
+[providers.kilo.opencode_models."cohere/north-mini-code:free"]
+tool_call = true
+limit = { context = 256000, output = 64000 }
+
+[providers.kilo.opencode_models."reflection/beam-free"]
+tool_call = true
+limit = { context = 1048576, output = 131072 }
+
+[providers.kilo.opencode_models."nvidia/nemotron-3.5-lightning:free"]
+tool_call = true
+limit = { context = 1000000, output = 65536 }
+
+# Requesty (https://docs.requesty.ai/features/free-models). OpenAI-compatible
+# gateway that also serves Anthropic-compatible /v1/messages, so both adapters
+# work. Free models are free "for now" per Requesty's docs and are limited per
+# ORGANIZATION: 200 req/day and 20 req/min for a new organization, 1,000/day and
+# 60/min once paying. The limits apply across all free models combined, so the
+# whole provider is one shared allowance.
+#
+# Measured 2026-11-13 (REQUESTY_API_KEY from Infisical):
+#   - GET /v1/models: 750 entries, 8 with input_price = output_price = 0;
+#     all 8 report supports_tool_calling = true;
+#   - POST /v1/chat/completions and /v1/messages answer with Bearer auth,
+#     usage.cost = 0 on free ids; the Claude adapter needs the origin WITHOUT
+#     /v1, OpenCode needs /v1;
+#   - Full E2E (response + tools + real edits) on
+#     nvidia/nemotron-3-ultra-550b-a55b, nvidia/nemotron-3.5-lightning-30b-a3b
+#     and google/gemma-4-31b-it through Claude Code and OpenCode.
+#   - Rejected: nvidia/nemotron-3-super-120b-a12b is still advertised in
+#     models.dev but Requesty answers `404 no longer available`; it is not
+#     listed. nvidia/muse-glimmer-30b and novita/ling-3.1-flash were not
+#     exercised end to end and are not listed either.
+#
+# require_infisical = true for the same reason as kilo: the free allowance
+# belongs to this organization, so an ambient REQUESTY_API_KEY must never be
+# used (it could be another account's key and silently consume its budget).
+[providers.requesty]
+label = "Requesty (free models)"
+base_url = "https://router.requesty.ai"
+secret = "REQUESTY_API_KEY"
+env = "REQUESTY_API_KEY"
+require_infisical = true
+default_model = "nvidia/nemotron-3-ultra-550b-a55b"
+models = [
+  "nvidia/nemotron-3-ultra-550b-a55b",
+  "nvidia/nemotron-3.5-lightning-30b-a3b",
+  "google/gemma-4-31b-it",
+]
+opencode_npm = "@ai-sdk/openai-compatible"
+opencode_base_url = "https://router.requesty.ai/v1"
+
+[providers.requesty.opencode_models."nvidia/nemotron-3-ultra-550b-a55b"]
+tool_call = true
+limit = { context = 1048576, output = 65536 }
+
+[providers.requesty.opencode_models."nvidia/nemotron-3.5-lightning-30b-a3b"]
+tool_call = true
+limit = { context = 1048576, output = 65536 }
+
+[providers.requesty.opencode_models."google/gemma-4-31b-it"]
+tool_call = true
+limit = { context = 262144, output = 8192 }
+
+# OVHcloud AI Endpoints (https://docs.ovhcloud.com/en/guides/public-cloud/
+# ai-machine-learning/ai-endpoints-capabilities). No key of any kind: the
+# anonymous public tier is rate limited to 2 requests per minute per IP and per
+# model and is OpenAI-compatible only (POST /v1/messages → 404), so it has an
+# opencode route and no claude/omp route.
+#
+# Measured 2026-11-13:
+#   - GET /v1/models (no auth): 21 entries; the chat-capable, non-zero-context
+#     ids are Meta-Llama-3_3-70B-Instruct, gpt-oss-120b, gpt-oss-20b,
+#     Mistral-Small-3.2-24B-Instruct-2506, Qwen3.5-397B-A17B, Qwen3.5-9B,
+#     Qwen3.6-27B, Qwen3.8-27B. The catalog's `pricing.prompt` values are the
+#     *authenticated* list prices, not the anonymous tier: the anonymous tier
+#     is free but metered at 2 req/min;
+#   - a request with NO Authorization header returns 200; a purposefully
+#     invalid `Bearer sk-…` returns 403, so the endpoint does enforce a
+#     presented credential;
+#   - the 2 req/min budget is real: request 2 and 3 inside one minute return
+#     429, and the window recovers after ~60s;
+#   - Full E2E (response + tools + real edits) on gpt-oss-120b and
+#     Meta-Llama-3_3-70B-Instruct through OpenCode. That is 2 requests, i.e.
+#     exactly one anonymous window: an agentic task that needs more than a
+#     couple of turns will hit 429 and must stop, not retry. Meta-Llama-3.3-70B
+#     also timed out at 600s on the bug-fix task, so prefer gpt-oss-120b.
+#
+# Because this provider has NO credential, `anonymous = true` is what makes the
+# launcher skip credential fetching entirely; it must never be combined with a
+# secret name (config validation rejects that).
+#
+# Anonymous is only sound because the endpoint enforces a *presented* key: a
+# request with no Authorization header is served (the anonymous tier), while a
+# request carrying an invalid `Bearer sk-…` is rejected with 403 (measured
+# 2026-11-13). So neither an ambient nor an injected credential can silently be
+# used here, and the route cannot become somebody else's paid endpoint.
+[providers.ovhcloud]
+label = "OVHcloud AI Endpoints (anonymous free tier)"
+base_url = "https://oai.endpoints.kepler.ai.cloud.ovh.net/v1"
+anonymous = true
+default_model = "gpt-oss-120b"
+models = ["gpt-oss-120b", "gpt-oss-20b", "Meta-Llama-3_3-70B-Instruct"]
+opencode_npm = "@ai-sdk/openai-compatible"
+
+[providers.ovhcloud.opencode_models."gpt-oss-120b"]
+tool_call = true
+limit = { context = 131072, output = 131072 }
+
+[providers.ovhcloud.opencode_models."gpt-oss-20b"]
+tool_call = true
+limit = { context = 131072, output = 131072 }
+
+[providers.ovhcloud.opencode_models."Meta-Llama-3_3-70B-Instruct"]
+tool_call = true
+limit = { context = 131072, output = 131072 }
+
+# GroqCloud (https://console.groq.com/docs/rate-limits). Free tier, no credit
+# card: per organization, per model, 30 req/min, 1,000 req/day, 8,000 tokens/
+# min and 200,000 tokens/day. The token budgets are the binding constraint, not
+# the request count.
+#
+# Measured 2026-11-13 (GROQ_API_KEY from Infisical):
+#   - GET /openai/v1/models: 11 ids; the chat ids are openai/gpt-oss-120b,
+#     openai/gpt-oss-20b and qwen/qwen3.8-27b (131,072 context each);
+#   - response headers confirm the free tier: x-ratelimit-limit-requests: 1000,
+#     x-ratelimit-limit-tokens: 8000;
+#   - a single raw tool-call request succeeds (response + tool_calls), but any
+#     real harness turn already exceeds 8,000 TPM: OpenCode's system prompt
+#     plus tools requested 9,853–10,703 tokens and was rejected with 429
+#     "Request too large ... on tokens per minute (TPM): Limit 8000" at every
+#     output budget tried (512/1024/2048/4096). OMP does complete the coding
+#     and bug-fix tasks (response + bash/edit + bun test) because its prompt is
+#     smaller, but takes 320s where Kilo does 23s at equal output.
+#   - Therefore Groq is configured for OMP only: it is the one harness that can
+#     stay under 8,000 TPM, it is slow but functional, and it is a genuine
+#     third path when both Kilo and Requesty are limited. The opencode route is
+#     deliberately absent rather than configured to fail every real turn.
+#
+# require_infisical = true: the 1,000 req/day allowance is per organization,
+# so only the Infisical key may be used.
+[providers.groq]
+label = "GroqCloud (free tier)"
+base_url = "https://api.groq.com/openai/v1"
+secret = "GROQ_API_KEY"
+env = "GROQ_API_KEY"
+require_infisical = true
+default_model = "openai/gpt-oss-120b"
+models = ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b"]
+
+# ---------------------------------------------------------------------------
 # Harnesses: native command + adapter that knows how to select a provider.
 # ---------------------------------------------------------------------------
 
@@ -395,6 +635,51 @@ note = "Default is the officially released MiniMax-M3.1-Flash. OMP selects the e
 
 [routes."dsh.deepseek"]
 note = "Passthrough: dsh keeps its own native DeepSeek provider and auth (unverified here)."
+
+# ---------------------------------------------------------------------------
+# Free-tier routes (no pay-as-you-go, no new subscription). Explicit opt-in
+# only — no route here is a fallback target, and `agent` still forbids implicit
+# switching. See docs/adr/ADR-0018.md for the policy and
+# docs/research/free-provider-evaluation-2026-11-13.md for the measurements.
+#
+# Role split, from the 2026-11-13 evaluation (both harnesses passed a real
+# coding task and a real bug-fix task unless noted):
+#   - kilo.ultra      first choice: fast (20-40s), correct, 1M context, tools
+#   - kilo.auto-free  equal quality, server-side free-model router
+#   - kilo.north      code-specialist alternative (256k context)
+#   - kilo.beam       largest context (1M) but ~4x slower (158s)
+#   - requesty.ultra  independent path once Kilo's allowance is exhausted
+#   - ovh.oss120b     last resort: 2 req/min, no credential at all
+#   - groq.oss120b    OMP only: 8k TPM budget, slow but functional
+# ---------------------------------------------------------------------------
+
+[routes."claude.kilo"]
+default_model = "nvidia/nemotron-3-ultra-550b-a55b:free"
+note = "Kilo free models via the Anthropic-compatible gateway at the bare origin (base_url appends /v1/messages). Real response + tools + edits verified 2026-11-13. Prompts may be used for training: no secrets/customer data."
+
+[routes."opencode.kilo"]
+default_model = "nvidia/nemotron-3-ultra-550b-a55b:free"
+note = "Kilo free models via the OpenAI-compatible /v1 surface (opencode_base_url). Real response + tools + edits verified 2026-11-13 on four free ids."
+
+[routes."omp.kilo"]
+default_model = "nvidia/nemotron-3-ultra-550b-a55b:free"
+note = "Kilo free models through OMP's native kilo provider. Real response + tools + edits verified 2026-11-13 (OMP 18.18.9). No fallback chain is allowed on any omp route."
+
+[routes."claude.requesty"]
+default_model = "nvidia/nemotron-3-ultra-550b-a55b"
+note = "Requesty free models via the Anthropic-compatible gateway at the bare origin. Real response + tools + edits verified 2026-11-13. Free allowance is organization-wide: 200 req/day, 20 req/min for a new organization."
+
+[routes."opencode.requesty"]
+default_model = "nvidia/nemotron-3-ultra-550b-a55b"
+note = "Requesty free models via the OpenAI-compatible /v1 surface. Real response + tools + edits verified 2026-11-13 on three free ids."
+
+[routes."opencode.ovhcloud"]
+default_model = "gpt-oss-120b"
+note = "Anonymous free tier: NO credential of any kind (anonymous = true). 2 req/min per IP and per model, so an agentic turn that needs more than a couple of requests hits 429 and must stop. Real response + tools + edits verified 2026-11-13. No claude/omp route: the endpoint is OpenAI-compatible only and OMP has no credential-free contract."
+
+[routes."omp.groq"]
+default_model = "openai/gpt-oss-120b"
+note = "Groq free tier through OMP only. 8,000 tokens/min is the binding limit: OpenCode's prompt+tools already requests ~10k and is rejected, while OMP completes real tasks but slowly (320s vs 23s on Kilo). Real response + tools + edits verified 2026-11-13."
 
 # ---------------------------------------------------------------------------
 # Catalog metadata (issue #89 / T003, Epic #86): capability, pricing and
@@ -768,6 +1053,402 @@ sha = "bed3716a5008c424a3b2bf97204f1d8ebafe8a6b"
 note = "Real response + tool call, OMP."
 
 # ---------------------------------------------------------------------------
+# Free-tier catalog facts (measured 2026-11-13)
+#
+# Every entry below cites either a provider-published catalog/docs source or our
+# own live E2E. Prices are declared `free` only where the provider's own
+# machine-readable catalog reports a zero price AND our measured request
+# returned cost 0 (or the endpoint is documented as an anonymous free tier).
+# A free-tier rate limit is recorded under `rate_limits` so the probe/quota
+# modules refuse a live probe while a cooldown is active.
+# ---------------------------------------------------------------------------
+
+[catalog.providers.kilo]
+billing = "free"
+terms = "Free models only (:free / isFree). Free ids are $0 per Kilo's own billing docs and return usage.cost = 0. Every free id reports mayTrainOnYourPrompts = true: prompts may be logged and used by the upstream provider, so no secrets or customer data. FILTERED MODEL WARNING: NVIDIA free endpoints are trial-only; do not submit personal or confidential data."
+
+[catalog.providers.kilo.quota]
+scope = "account"
+id = "kilo"
+
+[catalog.providers.kilo.rate_limits]
+value = { per_hour = 200 }
+status = "configured"
+provenance = "official"
+
+[catalog.providers.kilo.rate_limits.evidence]
+at = "2026-11-13T00:00:00Z"
+source = "provider-docs"
+sha = "65a2bbc21d3e8dc889669c7bb818e567358a891f"
+note = "Kilo Gateway docs: anonymous users are limited to 200 requests/hour per IP; authenticated free-model requests are additionally subject to per-upstream rate limits, which the gateway does not publish as a single number."
+
+[catalog.providers.kilo.models."nvidia/nemotron-3-ultra-550b-a55b:free".tool_call]
+value = true
+status = "verified-live"
+provenance = "measured"
+
+[catalog.providers.kilo.models."nvidia/nemotron-3-ultra-550b-a55b:free".tool_call.evidence]
+at = "2026-11-13T00:00:00Z"
+source = "live-e2e"
+sha = "65a2bbc21d3e8dc889669c7bb818e567358a891f"
+note = "Real response + tool call + file edits on claude 2.1.322, opencode 2.2.7 and omp 18.18.9, both the create-task and the bug-fix task."
+
+[catalog.providers.kilo.models."nvidia/nemotron-3-ultra-550b-a55b:free".context_window]
+value = 1000000
+status = "configured"
+provenance = "official"
+
+[catalog.providers.kilo.models."nvidia/nemotron-3-ultra-550b-a55b:free".context_window.evidence]
+at = "2026-11-13T00:00:00Z"
+source = "provider-catalog"
+sha = "65a2bbc21d3e8dc889669c7bb818e567358a891f"
+note = "Public /api/gateway/v1/models: context_length 1000000, max_completion_tokens 65536."
+
+[catalog.providers.kilo.models."nvidia/nemotron-3-ultra-550b-a55b:free".pricing]
+kind = "free"
+currency = "USD"
+
+[catalog.providers.kilo.models."nvidia/nemotron-3-ultra-550b-a55b:free".pricing.input_per_mtok]
+value = 0.0
+status = "configured"
+provenance = "official"
+
+[catalog.providers.kilo.models."nvidia/nemotron-3-ultra-550b-a55b:free".pricing.input_per_mtok.evidence]
+at = "2026-11-13T00:00:00Z"
+source = "provider-catalog"
+sha = "65a2bbc21d3e8dc889669c7bb818e567358a891f"
+note = "Public /api/gateway/v1/models: isFree = true with the :free suffix (completion price is the same zero entry)."
+
+[catalog.providers.kilo.models."kilo-auto/free".tool_call]
+value = true
+status = "verified-live"
+provenance = "measured"
+
+[catalog.providers.kilo.models."kilo-auto/free".tool_call.evidence]
+at = "2026-11-13T00:00:00Z"
+source = "live-e2e"
+sha = "65a2bbc21d3e8dc889669c7bb818e567358a891f"
+note = "Real response + tool call + file edits on claude 2.1.322, opencode 2.2.7 and omp 18.18.9."
+
+[catalog.providers.kilo.models."kilo-auto/free".pricing]
+kind = "free"
+currency = "USD"
+
+[catalog.providers.kilo.models."kilo-auto/free".pricing.input_per_mtok]
+value = 0.0
+status = "configured"
+provenance = "official"
+
+[catalog.providers.kilo.models."kilo-auto/free".pricing.input_per_mtok.evidence]
+at = "2026-11-13T00:00:00Z"
+source = "provider-catalog"
+sha = "65a2bbc21d3e8dc889669c7bb818e567358a891f"
+note = "Public catalog: kilo-auto/free isFree = true; Kilo's Auto model docs state the Free tier routes only to free models."
+
+[catalog.providers.kilo.models."cohere/north-mini-code:free".tool_call]
+value = true
+status = "verified-live"
+provenance = "measured"
+
+[catalog.providers.kilo.models."cohere/north-mini-code:free".tool_call.evidence]
+at = "2026-11-13T00:00:00Z"
+source = "live-e2e"
+sha = "65a2bbc21d3e8dc889669c7bb818e567358a891f"
+note = "Real response + tool call + file edits on claude 2.1.322 and opencode 2.2.7 (bug-fix task)."
+
+[catalog.providers.kilo.models."reflection/beam-free".tool_call]
+value = true
+status = "verified-live"
+provenance = "measured"
+
+[catalog.providers.kilo.models."reflection/beam-free".tool_call.evidence]
+at = "2026-11-13T00:00:00Z"
+source = "live-e2e"
+sha = "65a2bbc21d3e8dc889669c7bb818e567358a891f"
+note = "Real response + tool call + file edits on claude 2.1.322 (bug-fix task, 158s: correct but ~4x slower than Ultra)."
+
+[catalog.providers.kilo.models."nvidia/nemotron-3.5-lightning:free".tool_call]
+value = true
+status = "verified-live"
+provenance = "measured"
+
+[catalog.providers.kilo.models."nvidia/nemotron-3.5-lightning:free".tool_call.evidence]
+at = "2026-11-13T00:00:00Z"
+source = "live-e2e"
+sha = "65a2bbc21d3e8dc889669c7bb818e567358a891f"
+note = "Real response + tool call + file edits on claude 2.1.322 (bug-fix task, 84s)."
+
+[catalog.providers.requesty]
+billing = "free"
+terms = "Free models at $0 input/output, free 'for now' per Requesty's docs with changes announced in the changelog. Rate limits are per ORGANIZATION across all free models combined, so the whole provider is one shared allowance."
+
+[catalog.providers.requesty.quota]
+scope = "account"
+id = "requesty"
+
+[catalog.providers.requesty.rate_limits]
+value = { per_minute = 20, per_day = 200 }
+status = "configured"
+provenance = "official"
+
+[catalog.providers.requesty.rate_limits.evidence]
+at = "2026-11-13T00:00:00Z"
+source = "provider-docs"
+sha = "65a2bbc21d3e8dc889669c7bb818e567358a891f"
+note = "Free Models docs: new organization 200 requests/day and 20 requests/minute; paying organization 1,000/day and 60/minute. Nothing here records whether this organization has a purchase history, so the conservative new-organization budget is declared."
+
+[catalog.providers.requesty.models."nvidia/nemotron-3-ultra-550b-a55b".tool_call]
+value = true
+status = "verified-live"
+provenance = "measured"
+
+[catalog.providers.requesty.models."nvidia/nemotron-3-ultra-550b-a55b".tool_call.evidence]
+at = "2026-11-13T00:00:00Z"
+source = "live-e2e"
+sha = "65a2bbc21d3e8dc889669c7bb818e567358a891f"
+note = "Real response + tool call + file edits on claude 2.1.322 and opencode 2.2.7, both tasks."
+
+[catalog.providers.requesty.models."nvidia/nemotron-3-ultra-550b-a55b".context_window]
+value = 1048576
+status = "configured"
+provenance = "official"
+
+[catalog.providers.requesty.models."nvidia/nemotron-3-ultra-550b-a55b".context_window.evidence]
+at = "2026-11-13T00:00:00Z"
+source = "provider-catalog"
+sha = "65a2bbc21d3e8dc889669c7bb818e567358a891f"
+note = "GET router.requesty.ai/v1/models: context_window 1048576, max_output_tokens 65536, supports_tool_calling true."
+
+[catalog.providers.requesty.models."nvidia/nemotron-3-ultra-550b-a55b".pricing]
+kind = "free"
+currency = "USD"
+
+[catalog.providers.requesty.models."nvidia/nemotron-3-ultra-550b-a55b".pricing.input_per_mtok]
+value = 0.0
+status = "configured"
+provenance = "official"
+
+[catalog.providers.requesty.models."nvidia/nemotron-3-ultra-550b-a55b".pricing.input_per_mtok.evidence]
+at = "2026-11-13T00:00:00Z"
+source = "provider-catalog"
+sha = "65a2bbc21d3e8dc889669c7bb818e567358a891f"
+note = "GET /v1/models: input_price = 0 and output_price = 0; the measured response also reported usage.cost = 0."
+
+[catalog.providers.requesty.models."nvidia/nemotron-3.5-lightning-30b-a3b".tool_call]
+value = true
+status = "verified-live"
+provenance = "measured"
+
+[catalog.providers.requesty.models."nvidia/nemotron-3.5-lightning-30b-a3b".tool_call.evidence]
+at = "2026-11-13T00:00:00Z"
+source = "live-e2e"
+sha = "65a2bbc21d3e8dc889669c7bb818e567358a891f"
+note = "Real response + tool call + file edits on claude 2.1.322 (bug-fix task, 96s)."
+
+[catalog.providers.requesty.models."google/gemma-4-31b-it".tool_call]
+value = true
+status = "verified-live"
+provenance = "measured"
+
+[catalog.providers.requesty.models."google/gemma-4-31b-it".tool_call.evidence]
+at = "2026-11-13T00:00:00Z"
+source = "live-e2e"
+sha = "65a2bbc21d3e8dc889669c7bb818e567358a891f"
+note = "Real response + tool call + file edits on claude 2.1.322 (bug-fix task, 66s)."
+
+[catalog.providers.ovhcloud]
+billing = "free"
+terms = "Anonymous public tier, no credential of any kind. 2 requests/minute per IP and per model; exceeding it returns 429. The endpoint enforces a PRESENTED key (invalid Bearer → 403) while serving requests with no key, so an ambient or injected credential cannot silently redirect the route."
+
+[catalog.providers.ovhcloud.quota]
+scope = "machine"
+id = "ovhcloud-anonymous-ip"
+
+[catalog.providers.ovhcloud.rate_limits]
+value = { per_minute = 2 }
+status = "configured"
+provenance = "official"
+
+[catalog.providers.ovhcloud.rate_limits.evidence]
+at = "2026-11-13T00:00:00Z"
+source = "provider-docs"
+sha = "65a2bbc21d3e8dc889669c7bb818e567358a891f"
+note = "AI Endpoints capabilities page: anonymous 2 requests/minute per IP and per model; authenticated 400/minute per project and model. Confirmed live: request 2 and 3 inside one minute returned 429."
+
+[catalog.providers.ovhcloud.models."gpt-oss-120b".tool_call]
+value = true
+status = "verified-live"
+provenance = "measured"
+
+[catalog.providers.ovhcloud.models."gpt-oss-120b".tool_call.evidence]
+at = "2026-11-13T00:00:00Z"
+source = "live-e2e"
+sha = "65a2bbc21d3e8dc889669c7bb818e567358a891f"
+note = "Real response + tool call + file edits on opencode 2.2.7, both the create-task (13.7s) and the bug-fix task (153.6s)."
+
+[catalog.providers.ovhcloud.models."Meta-Llama-3_3-70B-Instruct".tool_call]
+value = true
+status = "verified-live"
+provenance = "measured"
+
+[catalog.providers.ovhcloud.models."Meta-Llama-3_3-70B-Instruct".tool_call.evidence]
+at = "2026-11-13T00:00:00Z"
+source = "live-e2e"
+sha = "65a2bbc21d3e8dc889669c7bb818e567358a891f"
+note = "Real response + tool call + file edits on opencode 2.2.7 create-task (16-256s depending on the anonymous window). It did NOT finish the bug-fix task: timed out at 600s, so gpt-oss-120b is the safer default."
+
+[catalog.providers.groq]
+billing = "free"
+terms = "Free tier, no credit card, per organization and per model: 30 requests/minute, 1,000 requests/day, 8,000 tokens/minute, 200,000 tokens/day. The token budgets are binding; exceeding them returns 429 with Retry-After."
+
+[catalog.providers.groq.quota]
+scope = "account"
+id = "groq"
+
+[catalog.providers.groq.rate_limits]
+value = { per_minute = 30, per_day = 1000 }
+status = "configured"
+provenance = "official"
+
+[catalog.providers.groq.rate_limits.evidence]
+at = "2026-11-13T00:00:00Z"
+source = "provider-docs"
+sha = "65a2bbc21d3e8dc889669c7bb818e567358a891f"
+note = "Groq rate-limit docs (30 RPM / 1,000 RPD / 8,000 TPM / 200,000 TPD for the gpt-oss models) and the live response headers x-ratelimit-limit-requests: 1000, x-ratelimit-limit-tokens: 8000 on 2026-11-13."
+
+[catalog.providers.groq.models."openai/gpt-oss-120b".tool_call]
+value = true
+status = "verified-live"
+provenance = "measured"
+
+[catalog.providers.groq.models."openai/gpt-oss-120b".tool_call.evidence]
+at = "2026-11-13T00:00:00Z"
+source = "live-e2e"
+sha = "65a2bbc21d3e8dc889669c7bb818e567358a891f"
+note = "Real response + tool call + file edits on omp 18.18.9 (create-task 320s, bug-fix task also completed). Through the opencode adapter the same task fails before a response because prompt + tools alone request ~10k tokens against the 8,000 TPM budget — which is why there is no opencode.groq route."
+
+[catalog.providers.groq.models."openai/gpt-oss-120b".context_window]
+value = 131072
+status = "configured"
+provenance = "official"
+
+[catalog.providers.groq.models."openai/gpt-oss-120b".context_window.evidence]
+at = "2026-11-13T00:00:00Z"
+source = "provider-catalog"
+sha = "65a2bbc21d3e8dc889669c7bb818e567358a891f"
+note = "GET /openai/v1/models: context_window 131072."
+
+[catalog.routes."opencode.ovhcloud".restriction]
+status = "restricted"
+provenance = "measured"
+note = "Anonymous tier allows 2 requests/minute per IP and per model: requests 2 and 3 within one minute returned 429 (measured 2026-11-13). An agentic turn that needs more than a couple of requests is blocked until the window resets; the route must stop, not retry."
+
+[catalog.routes."opencode.ovhcloud".restriction.evidence]
+at = "2026-11-13T00:00:00Z"
+source = "live-e2e"
+sha = "65a2bbc21d3e8dc889669c7bb818e567358a891f"
+note = "Three consecutive gpt-oss-120b requests: 200, 429, 429; recovered after ~60s."
+
+# --- Free-tier route E2E observations (measured 2026-11-13) ---
+
+[catalog.routes."claude.kilo".e2e]
+value = [
+  { model = "nvidia/nemotron-3-ultra-550b-a55b:free", tool_call = true },
+  { model = "kilo-auto/free", tool_call = true },
+  { model = "cohere/north-mini-code:free", tool_call = true },
+  { model = "reflection/beam-free", tool_call = true },
+  { model = "nvidia/nemotron-3.5-lightning:free", tool_call = true },
+]
+status = "verified-live"
+provenance = "measured"
+
+[catalog.routes."claude.kilo".e2e.evidence]
+at = "2026-11-13T00:00:00Z"
+source = "live-e2e"
+sha = "65a2bbc21d3e8dc889669c7bb818e567358a891f"
+note = "Real response + tool call + file edits through the launcher, claude 2.1.322; create-task and bug-fix task."
+
+[catalog.routes."opencode.kilo".e2e]
+value = [
+  { model = "nvidia/nemotron-3-ultra-550b-a55b:free", tool_call = true },
+  { model = "kilo-auto/free", tool_call = true },
+  { model = "cohere/north-mini-code:free", tool_call = true },
+]
+status = "verified-live"
+provenance = "measured"
+
+[catalog.routes."opencode.kilo".e2e.evidence]
+at = "2026-11-13T00:00:00Z"
+source = "live-e2e"
+sha = "65a2bbc21d3e8dc889669c7bb818e567358a891f"
+note = "Real response + tool call + file edits through the launcher, opencode 2.2.7; create-task and bug-fix task."
+
+[catalog.routes."omp.kilo".e2e]
+value = [
+  { model = "nvidia/nemotron-3-ultra-550b-a55b:free", tool_call = true },
+  { model = "kilo-auto/free", tool_call = true },
+]
+status = "verified-live"
+provenance = "measured"
+
+[catalog.routes."omp.kilo".e2e.evidence]
+at = "2026-11-13T00:00:00Z"
+source = "live-e2e"
+sha = "65a2bbc21d3e8dc889669c7bb818e567358a891f"
+note = "Real response + bash/edit tool calls + bun test through the launcher, omp 18.18.9; create-task and bug-fix task."
+
+[catalog.routes."claude.requesty".e2e]
+value = [
+  { model = "nvidia/nemotron-3-ultra-550b-a55b", tool_call = true },
+  { model = "nvidia/nemotron-3.5-lightning-30b-a3b", tool_call = true },
+  { model = "google/gemma-4-31b-it", tool_call = true },
+]
+status = "verified-live"
+provenance = "measured"
+
+[catalog.routes."claude.requesty".e2e.evidence]
+at = "2026-11-13T00:00:00Z"
+source = "live-e2e"
+sha = "65a2bbc21d3e8dc889669c7bb818e567358a891f"
+note = "Real response + tool call + file edits through the launcher, claude 2.1.322."
+
+[catalog.routes."opencode.requesty".e2e]
+value = [{ model = "nvidia/nemotron-3-ultra-550b-a55b", tool_call = true }]
+status = "verified-live"
+provenance = "measured"
+
+[catalog.routes."opencode.requesty".e2e.evidence]
+at = "2026-11-13T00:00:00Z"
+source = "live-e2e"
+sha = "65a2bbc21d3e8dc889669c7bb818e567358a891f"
+note = "Real response + tool call + file edits through the launcher, opencode 2.2.7."
+
+[catalog.routes."opencode.ovhcloud".e2e]
+value = [
+  { model = "gpt-oss-120b", tool_call = true },
+  { model = "Meta-Llama-3_3-70B-Instruct", tool_call = true },
+]
+status = "verified-live"
+provenance = "measured"
+
+[catalog.routes."opencode.ovhcloud".e2e.evidence]
+at = "2026-11-13T00:00:00Z"
+source = "live-e2e"
+sha = "65a2bbc21d3e8dc889669c7bb818e567358a891f"
+note = "Real response + tool call + file edits through the launcher, opencode 2.2.7, with no credential at all. gpt-oss-120b also finished the bug-fix task; Meta-Llama-3.3-70B timed out at 600s on it."
+
+[catalog.routes."omp.groq".e2e]
+value = [{ model = "openai/gpt-oss-120b", tool_call = true }]
+status = "verified-live"
+provenance = "measured"
+
+[catalog.routes."omp.groq".e2e.evidence]
+at = "2026-11-13T00:00:00Z"
+source = "live-e2e"
+sha = "65a2bbc21d3e8dc889669c7bb818e567358a891f"
+note = "Real response + bash/edit tool calls + bun test through the launcher, omp 18.18.9; create-task 320s and the bug-fix task."
+
+# ---------------------------------------------------------------------------
 # Fallback profiles (issue #136 / T020, Epic #86): opt-in continuity profiles
 # for authorized fallback within the same harness.
 #
@@ -816,4 +1497,66 @@ global_max_spend = 50
 candidates = [
   { route = "omp.openrouter", model = "z-ai/glm-5.3-flash", billing = "metered", credential = "infisical", max_spend = 30, scope = "local-writes", note = "Paid fallback with Infisical credential" },
   { route = "omp.openrouter-free", model = "nvidia/nemotron-3-ultra-550b-a55b:free", billing = "free", credential = "infisical", max_spend = 0, scope = "read-only", note = "Free tier fallback" },
+]
+
+# --- $0 free-tier continuity profiles (ADR-0018, measured 2026-11-13) -------
+#
+# These are the 429 safety nets for the paid allowances: when the primary's
+# allowance is exhausted, an explicitly authorized run may continue on another
+# FREE route. They are still opt-in — `agent <harness> <provider>` never
+# switches on its own, and `agent fallback <id>` only resolves/displays.
+#
+# The resolver enforces the important part mechanically: every candidate's
+# declared `billing` must match the provider's catalogued billing model, a
+# `free` candidate may not carry a positive `max_spend`, and a candidate that
+# shares the primary's quota scope is rejected as not-fresh capacity. So a
+# `global_max_spend = 0` profile cannot authorise any spend even if a
+# candidate is later mislabelled.
+#
+# `credential = "infisical"` matches Kilo/Requesty/Groq (all require_infisical).
+# OVHcloud is anonymous and deliberately NOT a candidate: its 2 req/min budget
+# cannot carry an agentic turn, and `anonymous` providers have no credential
+# source to name here.
+
+[fallback_profile.free-kilo-quota]
+id = "free-kilo-quota"
+version = 1
+description = "Continue at $0 when the Kilo free allowance is exhausted (same-harness: Kilo -> Groq)"
+primary_route = "omp.kilo"
+authorized_at = "2026-11-13T00:00:00Z"
+authorized_by = "operator-authorized $0 free-tier continuity (ADR-0018)"
+expires_at = "2026-12-31T23:59:59Z"
+global_max_spend = 0
+candidates = [
+  { route = "omp.groq", model = "openai/gpt-oss-120b", billing = "free", credential = "infisical", max_spend = 0, scope = "local-writes", note = "Independent free account; 8k tokens/min, slow (320s) but functional" },
+]
+
+# Same-harness means the candidates must be routes of the primary's harness:
+# OMP has no native Requesty or OVHcloud provider, so an omp profile cannot
+# list them. Use `opencode-requesty-quota` when OpenCode is the harness.
+[fallback_profile.opencode-requesty-quota]
+id = "opencode-requesty-quota"
+version = 1
+description = "Continue at $0 when the Requesty free allowance is exhausted (OpenCode: Requesty -> Kilo)"
+primary_route = "opencode.requesty"
+authorized_at = "2026-11-13T00:00:00Z"
+authorized_by = "operator-authorized $0 free-tier continuity (ADR-0018)"
+expires_at = "2026-12-31T23:59:59Z"
+global_max_spend = 0
+candidates = [
+  { route = "opencode.kilo", model = "nvidia/nemotron-3-ultra-550b-a55b:free", billing = "free", credential = "infisical", max_spend = 0, scope = "local-writes", note = "Independent free account; 200 req/hour anonymous tier, per-upstream limits" },
+]
+
+[fallback_profile.free-go-to-kilo]
+id = "free-go-to-kilo"
+version = 1
+description = "$0 continuation when the OpenCode Go allowance (5h/weekly/monthly window) is exhausted"
+primary_route = "omp.opencode-go"
+authorized_at = "2026-11-13T00:00:00Z"
+authorized_by = "operator-authorized $0 free-tier continuity (ADR-0018)"
+expires_at = "2026-12-31T23:59:59Z"
+global_max_spend = 0
+candidates = [
+  { route = "omp.kilo", model = "nvidia/nemotron-3-ultra-550b-a55b:free", billing = "free", credential = "infisical", max_spend = 0, scope = "local-writes", note = "First free choice; fastest measured (23s create / 41s bug-fix)" },
+  { route = "omp.groq", model = "openai/gpt-oss-120b", billing = "free", credential = "infisical", max_spend = 0, scope = "local-writes", note = "Third free account; slow (320s) but functional" },
 ]

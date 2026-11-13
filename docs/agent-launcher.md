@@ -41,6 +41,157 @@ agent fallback <profile-id> [--json]
 | `script/agent/fallback.ts` | Opt-in continuity profile (issue #136) |
 | `script/agent/fallback-exec.ts` | Same-harness fallback execution (issue #139) |
 
+## Free-tier providers ($0, explicit opt-in)
+
+Policy: [ADR-0018](adr/ADR-0018.md). Measurements:
+[free-provider-evaluation-2026-11-13](research/free-provider-evaluation-2026-11-13.md).
+
+These routes exist so agent work can continue when the OpenCode Go / Zen
+allowance, the MiniMax plan window or an OpenRouter budget is exhausted, at
+$0 additional monthly cost (no pay-as-you-go, no new subscription). They are
+**explicit opt-in only**: nothing here is a fallback target, and no code path
+moves from a free route to a paid one.
+
+```bash
+agent claude kilo            # first choice: Kilo free models (bare-origin Anthropic endpoint)
+agent opencode kilo          # Kilo free models (OpenAI-compatible /v1)
+agent omp kilo               # Kilo free models through OMP's native provider
+agent claude requesty        # independent free path (org-wide 200/day, 20/min)
+agent opencode requesty
+agent opencode ovhcloud      # anonymous: NO credential, 2 req/min
+agent omp groq               # Groq free tier (8k tokens/min: OMP only)
+```
+
+| route | default model | credential | limit that matters |
+|---|---|---|---|
+| `claude.kilo`, `opencode.kilo`, `omp.kilo` | `nvidia/nemotron-3-ultra-550b-a55b:free` | Infisical `KILO_API_KEY`, `require_infisical` | 200 req/hour anonymous; per-upstream limits |
+| `claude.requesty`, `opencode.requesty` | `nvidia/nemotron-3-ultra-550b-a55b` | Infisical `REQUESTY_API_KEY`, `require_infisical` | 200 req/day, 20 req/min per organization (all free models combined) |
+| `opencode.ovhcloud` | `gpt-oss-120b` | **none** (`anonymous = true`) | 2 req/min per IP and per model |
+| `omp.groq` | `openai/gpt-oss-120b` | Infisical `GROQ_API_KEY`, `require_infisical` | 8,000 tokens/min (binding), 1,000 req/day |
+
+Selectable alternatives: on `kilo`, `--model kilo-auto/free` (free-model
+router), `--model cohere/north-mini-code:free` (code specialist),
+`--model reflection/beam-free` (1M context, ~4× slower),
+`--model nvidia/nemotron-3.5-lightning:free`; on `requesty`,
+`--model nvidia/nemotron-3.5-lightning-30b-a3b` or
+`--model google/gemma-4-31b-it`; on `ovhcloud`, `--model gpt-oss-20b` or
+`--model Meta-Llama-3_3-70B-Instruct` (slower; timed out on the bug-fix
+evaluation).
+
+### Why some combinations deliberately do not exist
+
+- **No `opencode.groq`.** Groq's free tier allows 8,000 tokens/min; an
+  OpenCode turn's system prompt plus tool definitions alone requests
+  ~9.9–10.7k tokens, so every real turn is rejected with 429 before a
+  response. OMP's smaller prompt stays under it and completes real tasks.
+- **No `claude.ovhcloud` / `omp.ovhcloud`.** The endpoint is
+  OpenAI-compatible only (`POST /v1/messages` → 404), and the Anthropic
+  adapter must send an auth token — with a credential-free endpoint Claude
+  Code would fall back to its own claude.ai login and silently leave the
+  route. The adapter rejects `anonymous` providers instead of letting that
+  happen; OMP has no proven credential-free contract either.
+- **No `omp.requesty`.** OMP has no native `requesty` or `ovhcloud`
+  provider id (`Unknown provider "requesty"`), and adding one would require
+  a local `models.yml` endpoint override, which this design does not allow.
+- **No route at all for ModelScope, SenseNova or SiliconFlow.** Their keys
+  exist in Infisical but inference is not entitled: ModelScope answers 401
+  for every request shape, SenseNova 401 on both documented hosts, and
+  SiliconFlow 402 "balance insufficient" (plus 403 "Model disabled"). A key
+  is not evidence that a route is free, so a route that cannot be proven $0
+  must not be reachable.
+
+### New config attributes
+
+```toml
+[providers.ovhcloud]
+anonymous = true                 # credential-free endpoint; no secret is fetched,
+                                 # no credential env name reaches the child.
+                                 # Rejected together with secret/env/require_infisical.
+
+[providers.kilo]
+opencode_base_url = "https://api.kilo.ai/api/gateway/v1"
+                                 # re-spell the endpoint for the OpenCode custom-provider
+                                 # block (requires opencode_npm; defaults to base_url).
+                                 # Claude Code appends /v1/messages itself, so its
+                                 # ANTHROPIC_BASE_URL must be the bare origin.
+```
+
+`agent check` validates both, plus that a provider declaring `opencode_npm`
+is reachable from at least one `opencode` route (otherwise the custom-provider
+block would sit silently inert).
+
+### Data handling
+
+Every Kilo free id reports `mayTrainOnYourPrompts = true`, and Kilo's Auto
+Free docs warn that prompts may be logged by the upstream provider; the
+NVIDIA-hosted free ids are trial-only under NVIDIA's API Trial Terms. Use
+these routes for code and non-sensitive work — not for credentials, customer
+data or private material. `agent routes` shows each provider's `terms`.
+
+### What these routes do not guarantee
+
+The model allowlist only prevents the launcher from selecting a different
+id. If a provider starts charging for an id, or retires it, the launcher will
+still try it. Re-check the live catalog before relying on a route, and keep
+an account-side hard stop (spend limit, or pay-as-you-go switched off) where
+the provider offers one — the launcher cannot see or change those settings
+and does not claim to.
+
+### Credentials (names only)
+
+`KILO_API_KEY`, `REQUESTY_API_KEY` and `GROQ_API_KEY` live in the self-hosted
+Infisical `dev` environment (project `d4c2fc09-a923-4a38-9cf4-b51769aadb76`)
+and were already present on 2026-11-13. They are all `require_infisical`, so a
+stale ambient value is stripped before the wrapper and a missing Infisical
+value fails closed — these routes exist to spend *this* account's free
+allowance, and an ambient key was measured to silently point the route at a
+different account. `opencode.ovhcloud` needs no secret at all and runs no
+Infisical stage.
+
+`MODELSCOPE_API_KEY`, `SENSENOVA_API_KEY` and `SILICONFLOW_API_KEY` are also
+stored in `dev` but are deliberately unused: inference is not entitled on
+those accounts, so no route reads them.
+
+### $0 continuity when an allowance is exhausted (429)
+
+Normal launches never switch providers. To continue the *same authorized
+work* at $0 after a 429 / exhausted allowance, use an explicit opt-in
+continuity profile (ADR-0017 mechanism, ADR-0018 policy). Inspect it first —
+`agent fallback <id>` only resolves and displays, it never executes:
+
+```bash
+agent fallback free-go-to-kilo          # Go allowance exhausted -> Kilo -> Groq
+agent fallback free-kilo-quota          # Kilo exhausted -> Groq
+agent fallback opencode-requesty-quota  # Requesty exhausted -> Kilo (OpenCode)
+agent fallback <id> --json              # redacted machine-readable form
+```
+
+Each profile declares `global_max_spend = 0`, so the resolver's spend checks
+can never authorise paid usage. Candidates are `billing = "free"` and are
+bound to the harness of their primary route (OMP has no native Requesty or
+OVHcloud provider, so those cannot appear in an `omp` profile).
+
+The resolver is the enforcement point, not the profile author's intent. It
+rejects a candidate when:
+
+- the provider's catalogued `billing` does not match the declared boundary
+  (`billing-boundary-crossed`), or is not catalogued at all (`billing-unknown`
+  — unknown billing is never treated as free);
+- a `free` candidate declares a positive `max_spend` (`spend-cap-invalid`),
+  or any cap would exceed the profile/global cap;
+- the candidate shares the primary's quota scope (`quota-exhausted-scope`) —
+  e.g. two models on the *same* Kilo account are not fresh capacity — or its
+  scope cannot be proven distinct (`quota-scope-unknown`);
+- its attestation is `restricted`, `unknown` or stale.
+
+`agent fallback` seeds attestations from the **committed** `[catalog.routes.*]`
+E2E/restriction records, then lets fresher local probe state override them,
+so a fresh machine resolves against reviewed evidence instead of nothing —
+while a stale committed record still fails the freshness check. A route with
+no committed evidence stays `attestation-unknown` and is not usable; that is
+how `omp.openrouter` (never live-verified) and the stale
+`omp.openrouter-free` observation are reported today.
+
 ## Policy Controls
 
 Deterministic policy evaluation controls live in `evals/agent-router/controls.sh`.

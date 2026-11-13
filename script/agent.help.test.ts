@@ -538,6 +538,7 @@ describe("launcher integration", () => {
         id: string;
         catalog: { quota_scope: string | null };
         cred: { env: string; infisical_required: boolean } | null;
+        cred_kind: "infisical" | "harness-native" | "anonymous";
       }>;
       not_yet_available: Record<string, unknown>;
     };
@@ -556,10 +557,19 @@ describe("launcher integration", () => {
     for (const route of data.routes) {
       if (route.cred) {
         expect(human.stdout).toContain(`credential: env ${route.cred.env}`);
+        expect(route.cred_kind).toBe("infisical");
+      } else if (route.cred_kind === "anonymous") {
+        // A credential-free public endpoint is a distinct kind, never
+        // reported as the harness's own login.
+        expect(human.stdout).toContain("credential: none (anonymous free tier");
       } else {
+        expect(route.cred_kind).toBe("harness-native");
         expect(human.stdout).toContain("credential: harness-native login");
       }
     }
+    const anonymous = data.routes.filter((r) => r.cred_kind === "anonymous");
+    expect(anonymous.map((r) => r.id)).toEqual(["opencode.ovhcloud"]);
+    expect(anonymous[0].cred).toBeNull();
     const deepseek = data.routes.find((r) => r.id === "claude.deepseek");
     expect(deepseek?.cred).toEqual({ env: "DEEPSEEK_API_KEY", infisical_required: false });
     expect(json.stdout).toContain("DEEPSEEK_API_KEY");

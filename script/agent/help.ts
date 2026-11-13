@@ -52,6 +52,8 @@ export interface ProviderConfigLike {
   require_model: boolean;
   models: string[];
   require_infisical: boolean;
+  /** Credential-free endpoint (anonymous free tier); no env name exists. */
+  anonymous?: boolean;
 }
 
 export interface HarnessConfigLike {
@@ -133,11 +135,14 @@ export interface RouteData {
   default_model: string | null;
   models: string[];
   note: string;
-  /** null = harness-native login (no Infisical secret on the provider).
-   * Keyed `cred`, never `credential`: the redactor treats every
-   * `credential*` compound key as secret-shaped and would redact the whole
-   * object. Only the env var NAME travels, never a value. */
+  /** null = no credential env name. `cred_kind` says which of the two
+   * credential-free cases applies: a harness-native login, or an anonymous
+   * public endpoint where no credential exists at all. Keyed `cred`, never
+   * `credential`: the redactor treats every `credential*` compound key as
+   * secret-shaped and would redact the whole object. Only the env var NAME
+   * travels, never a value. */
   cred: { env: string; infisical_required: boolean } | null;
+  cred_kind: "infisical" | "harness-native" | "anonymous";
   catalog: {
     quota_scope: string | null;
     billing: string | null;
@@ -199,6 +204,11 @@ export function buildRoutesData(config: RoutesInput, catalog: Catalog): RoutesDa
       cred: provider.env
         ? { env: provider.env, infisical_required: provider.require_infisical }
         : null,
+      cred_kind: provider.env
+        ? "infisical"
+        : provider.anonymous
+          ? "anonymous"
+          : "harness-native",
       catalog: {
         quota_scope: effectiveQuotaKey(catalog, route.key),
         billing: providerEntry?.billing ?? null,
@@ -309,7 +319,9 @@ export function renderRoutesText(data: RoutesData): string {
       route.cred
         ? `  credential: env ${boundaryText(route.cred.env)}` +
           (route.cred.infisical_required ? " (Infisical-required)" : " (Infisical)")
-        : "  credential: harness-native login"
+        : route.cred_kind === "anonymous"
+          ? "  credential: none (anonymous free tier; no secret is fetched)"
+          : "  credential: harness-native login"
     );
     if (route.note) {
       lines.push(`  note: ${boundaryText(route.note)}`);
