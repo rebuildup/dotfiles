@@ -171,7 +171,9 @@ require("lazy").setup({
 					["<C-d>"] = { "scroll_documentation_down", "fallback" },
 					["<C-u>"] = { "scroll_documentation_up", "fallback" },
 					["<C-y>"] = { "select_and_accept" },
-					["<Tab>"] = { "snippet_forward", "select_next", "fallback" },
+					-- Tab: snippet次 → 候補確定(選択済みをaccept、未選択なら先頭をaccept) → 通常Tab
+					["<Tab>"] = { "snippet_forward", "select_and_accept", "fallback" },
+					-- Shift+Tab: snippet前 → 候補を前へ → 通常Shift+Tab
 					["<S-Tab>"] = { "snippet_backward", "select_prev", "fallback" },
 					["<CR>"] = { "accept", "fallback" },
 				},
@@ -682,44 +684,18 @@ vim.diagnostic.config({
 })
 
 -- =============================================================
--- Completion Keymaps (明示的優先順位)
+-- Completion Keymaps
 -- =============================================================
--- 優先順位:
---   1. snippet placeholder内        → luasnip.jump (Tab/Shift-Tab)
---   2. blink.cmpの補完メニュー表示中 → accept / select_prev (Tab/Enter/Shift-Tab)
---   3. それ以外                      → 通常のキー入力をそのまま流す
-
-local function smart_key(key)
-	return function()
-		local ls = require("luasnip")
-		if ls.jumpable(1) then
-			return function() ls.jump(1) end
-		end
-		if require("blink.cmp").is_visible() then
-			return require("blink.cmp").accept()
-		end
-		return key
-	end
-end
-
-vim.keymap.set("i", "<Tab>", smart_key("<Tab>"), { expr = true, desc = "Tab: snippet→cmp→fallback" })
-vim.keymap.set("i", "<S-Tab>", function()
-	local ls = require("luasnip")
-	if ls.jumpable(-1) then
-		return function() ls.jump(-1) end
-	end
-	if require("blink.cmp").is_visible() then
-		return require("blink.cmp").select_prev()
-	end
-	return "<S-Tab>"
-end, { expr = true, desc = "Shift-Tab: snippet→cmp prev→fallback" })
-
-vim.keymap.set("i", "<CR>", function()
-	if require("blink.cmp").is_visible() then
-		return require("blink.cmp").accept()
-	end
-	return "<CR>"
-end, { expr = true, desc = "Enter: cmp accept→fallback" })
+-- Tab / Shift-Tab / Enter の挿入モード確定系は blink.cmp の keymap 設定に集約する。
+-- blink.cmp は InsertEnter でバッファローカルに設定するため、ここで
+-- グローバルな expr マップを重ねると shadow され、挙動が分かりにくくなる。
+--   Tab       snippet次 → 候補確定(accept) → 通常Tab
+--   Shift+Tab snippet前 → 候補を前へ → 通常Shift+Tab
+--   Enter     候補確定 → 通常の改行
+--   C-n/p     候補を次/前
+--   C-Space   補完メニューを開く
+--   C-e       補完メニューを閉じる
+-- =============================================================
 
 -- =============================================================
 -- Window/Buffer Keymaps (VS Codeライク)
