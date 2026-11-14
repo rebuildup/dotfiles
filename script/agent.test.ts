@@ -3331,3 +3331,38 @@ candidates = [
     check(checkRun.stderr.toString().includes(needle), `${label}: ${checkRun.stderr.toString()}`);
   });
 }));
+
+test("test_check_rejects_non_table_profile", withFixture((fixture) => {
+  // A profile key whose VALUE is not a table must fail validation. It used to
+  // be counted as a valid profile by `agent check` while `agent fallback`
+  // reported "not found" — a config that cannot work passed CI.
+  const base = `
+[providers.p1]
+label = "P1"
+base_url = "https://api.example.com"
+secret = "DEEPSEEK_API_KEY"
+env = "DEEPSEEK_API_KEY"
+default_model = "m1"
+models = ["m1"]
+
+[harnesses.omp]
+label = "OMP"
+command = "omp"
+adapter = "omp"
+
+[routes."omp.p1"]
+
+[fallback_profile]
+good = "this-should-be-a-table"
+`;
+  const config = join(fixture.tmp, "nontable.toml");
+  writeFileSync(config, base);
+  const result = fixture.run(["check"], { config });
+  check(result.exitCode === 2, `expected exit 2, got ${result.exitCode}: ${result.stderr.toString()}`);
+  check(
+    result.stderr.toString().includes("fallback_profile.good") &&
+      result.stderr.toString().includes("table expected"),
+    `expected a table-expected error naming the profile: ${result.stderr.toString()}`,
+  );
+  check(!result.stderr.toString().includes("Bun v"), "no raw stack trace");
+}));
