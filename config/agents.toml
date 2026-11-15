@@ -1508,6 +1508,8 @@ note = "Real response + bash/edit tool calls + bun test through the launcher, om
 #
 # Example (disabled by default - remove 'disabled = true' and fill in real values to enable):
 #
+[fallback_profile]
+
 [fallback_profile.omp-mistral-quota]
 id = "omp-mistral-quota"
 version = 1
