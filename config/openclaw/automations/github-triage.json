@@ -21,8 +21,6 @@
     "tools": [
       "exec",
       "read",
-      "write",
-      "edit",
       "github"
     ],
     "noDeliver": true,

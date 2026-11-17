@@ -47,6 +47,14 @@
             "openrouter/cohere/north-mini-code:free",
             "openrouter/google/gemma-4-31b-it:free"
           ]
+        },
+        "tools": {
+          "deny": [
+            "edit",
+            "write",
+            "apply_patch",
+            "notebook_edit"
+          ]
         }
       },
       "manager": {
@@ -61,6 +69,14 @@
           "fallbacks": [
             "openrouter/nvidia/nemotron-3.5-lightning:free",
             "openrouter/cohere/north-mini-code:free"
+          ]
+        },
+        "tools": {
+          "deny": [
+            "edit",
+            "write",
+            "apply_patch",
+            "notebook_edit"
           ]
         }
       },
@@ -77,6 +93,14 @@
             "openrouter/cohere/north-mini-code:free",
             "openrouter/google/gemma-4-31b-it:free"
           ]
+        },
+        "tools": {
+          "deny": [
+            "edit",
+            "write",
+            "apply_patch",
+            "notebook_edit"
+          ]
         }
       },
       "project-init": {
@@ -91,6 +115,14 @@
           "fallbacks": [
             "openrouter/cohere/north-mini-code:free",
             "openrouter/google/gemma-4-31b-it:free"
+          ]
+        },
+        "tools": {
+          "deny": [
+            "edit",
+            "write",
+            "apply_patch",
+            "notebook_edit"
           ]
         }
       }

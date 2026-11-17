@@ -36,6 +36,10 @@ for f in sorted(glob.glob(f"{repo}/config/openclaw/bots/*.json")):
         "agentDir": f"~/.openclaw/agents/{bid}/agent",
         "identity": {"name": b["name"]},
         "model": {"primary": b["model"], "fallbacks": b.get("fallbacks", [])},
+        # Supervisors observe/dispatch only; source mutation belongs to Workers.
+        # Capability-level deny, not just prompt policy: a bot cannot edit or
+        # write repository files even if it ignores the standing orders.
+        "tools": {"deny": ["edit", "write", "apply_patch", "notebook_edit"]},
     }
     ws = os.path.join(home, ".openclaw", f"workspace-{bid}")
     os.makedirs(ws, exist_ok=True)
