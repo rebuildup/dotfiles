@@ -24,9 +24,11 @@ test('Windows remote identity command reads the registry MachineGuid',()=>{
  expect(identityCommand('windows')).toContain('MachineGuid');
 });
 const windowsTest=process.platform==='win32'?test:test.skip;
+// localInstance() spawns Windows PowerShell, whose cold start on a CI runner can
+// approach bun's default 5s test budget; give it the same headroom as the spawn.
 windowsTest('Windows local identity is the machine GUID from the registry',()=>{
  expect(localInstance()).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
-});
+}, 30000);
 test('wrong instance or execution user fails closed',()=>{
  expect(()=>assertIdentity(validateNode(node),'Linux\nbasic\n306ab9474cff458ca563e7807ded1da5\n')).not.toThrow();
  expect(()=>assertIdentity(validateNode(node),'Linux\nroot\n306ab9474cff458ca563e7807ded1da5\n')).toThrow();
