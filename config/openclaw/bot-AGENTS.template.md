@@ -19,10 +19,12 @@ Read them; do not duplicate or override them here.
 
 1. **In-flight work first.** Before selecting anything new, enumerate your
    outstanding Workers (`herdr agent list` / `herdr workspace list`, and any
-   `agent` launcher sessions you started). For each: collect results/evidence,
-   answer pending questions or unblock it, apply `agent-recovery` on failure,
-   and only then decide whether capacity remains. At most ONE active Worker
-   per bot at a time; never leave a Worker waiting on input unanswered.
+   `agent` launcher sessions you started). For each: collect results/evidence
+   with `herdr agent read <name>`, answer pending questions or unblock it with
+   `herdr agent prompt <name> '<text>'` (add `--wait` to block for a status),
+   apply `agent-recovery` on failure, and only then decide whether capacity
+   remains. At most ONE active Worker per bot at a time; never leave a Worker
+   waiting on input unanswered.
 2. Restore state from GitHub truth: issues, Spec/ADR docs, open PRs, failing
    checks in your repos (`gh` is authenticated). Your chat history is NOT the
    source of truth.
