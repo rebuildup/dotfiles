@@ -103,6 +103,7 @@ describe("loadCatalog: real config", () => {
     ]);
     expect(Object.keys(catalog.routes).sort()).toEqual([
       "claude.kilo",
+      "claude.logfare",
       "claude.opencode-go",
       "claude.openrouter-free",
       "claude.requesty",

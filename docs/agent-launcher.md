@@ -237,6 +237,21 @@ Any present restriction blocks; only an explicit `unknown` status is treated as
 "no fact". A route with no committed evidence stays `attestation-unknown` and is
 not usable.
 
+## Route coverage notes
+
+`claude.logfare` joins `opencode.logfare`: Logfare serves both an
+OpenAI-compatible `/v1` surface (OpenCode custom provider via
+`opencode_npm` + `opencode_base_url`) and an Anthropic-protocol
+`/v1/messages` surface at the bare origin (Claude Code appends the path
+itself). Same account budget on both routes; still explicit opt-in only.
+There is no `omp.logfare` — OMP has no native `logfare` provider id and
+`models.yml` endpoint overrides are outside this design.
+
+The 2026-11-17 audit of every other provider × harness gap (including why
+`claude.mistral`, `opencode.opencode-go`, `claude.groq`,
+`claude.ovhcloud`, `claude.zen` and `omp.requesty` cannot exist) is in
+[provider-route-expansion-2026-11-17](research/provider-route-expansion-2026-11-17.md).
+
 ## Policy Controls
 
 Deterministic policy evaluation controls live in `evals/agent-router/controls.sh`.

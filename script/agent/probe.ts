@@ -281,6 +281,9 @@ export interface ProbeProviderConfig {
   default_model: string | null;
   models: string[];
   opencode_npm: string | null;
+  /** OpenAI-compatible base URL spelling for the opencode adapter; falls
+   * back to `base_url` when absent (same rule as the launcher). */
+  opencode_base_url: string | null;
 }
 
 export interface ProbeHarnessConfig {
@@ -338,6 +341,7 @@ export function loadProbeConfig(configFile?: string): ProbeConfig {
       default_model: optionalName(entry["default_model"], `providers.'${key}'.default_model`),
       models,
       opencode_npm: optionalName(entry["opencode_npm"], `providers.'${key}'.opencode_npm`),
+      opencode_base_url: optionalName(entry["opencode_base_url"], `providers.'${key}'.opencode_base_url`),
     };
   }
 
@@ -399,8 +403,14 @@ type Wire = "anthropic" | "openai";
  * `not-applicable` / `unsupported-wire` — never approximated.
  */
 function wireFor(provider: ProbeProviderConfig, harness: ProbeHarnessConfig): Wire | null {
-  if (provider.opencode_npm) return "openai"; // OpenAI-compatible custom provider
-  if (harness.adapter === "anthropic" && provider.base_url) return "anthropic";
+  // The wire follows the harness adapter, not the provider's opencode
+  // registration: a provider can serve BOTH surfaces (e.g. Logfare's
+  // Anthropic /v1/messages for claude and OpenAI /v1 for opencode), so
+  // `opencode_npm` alone must not force the OpenAI wire onto a claude route.
+  if (harness.adapter === "anthropic") {
+    return provider.base_url ? "anthropic" : null;
+  }
+  if (harness.adapter === "opencode" && provider.opencode_npm) return "openai";
   return null;
 }
 
@@ -774,8 +784,14 @@ export async function probeRoute(options: ProbeOptions): Promise<ProbeReport> {
     });
     return finish(skippedAll(layers, "upstream configured check failed"), options.target.route, model, mode, transport, quotaScope, now, started, secrets);
   }
-  baseUrl = provider.base_url;
   wire = wireFor(provider, harness);
+  // Each wire speaks its own endpoint spelling: the OpenAI wire uses the
+  // opencode custom-provider base (opencode_base_url when declared), the
+  // Anthropic wire the bare origin the adapter appends /v1/messages to.
+  baseUrl =
+    wire === "openai"
+      ? provider.opencode_base_url ?? provider.base_url
+      : provider.base_url;
   add({
     layer: "configured",
     status: "pass",

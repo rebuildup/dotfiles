@@ -524,6 +524,7 @@ test(
       "claude.openrouter",
       "claude.deepseek",
       "claude.minimax",
+      "claude.logfare",
       "claude.opencode-go",
       "opencode.zen",
       "opencode.logfare",
@@ -561,6 +562,7 @@ test(
     check(stdout.includes("mimo-v2.6-flash"), "Go omp default missing");
     check(stdout.includes("opencode-zen"), "shortcut names must be listed");
     check(stdout.includes("opencode-logfare"), "Logfare shortcut name missing");
+    check(stdout.includes("claude-logfare"), "Logfare claude shortcut name missing");
     check(stdout.includes("claude-opencode-go"), "Go shortcut name missing");
     check(stdout.includes("omp-opencode-go"), "Go omp shortcut name missing");
   }),
@@ -608,6 +610,17 @@ test(
     check(logfareStdout.includes("deepseek-v4.1-flash-1017"), logfareStdout);
     check(logfareStdout.includes("glm-5.3"), logfareStdout);
     check(logfareStdout.includes("opencode.logfare"), logfareStdout);
+    check(logfareStdout.includes("claude.logfare"), logfareStdout);
+    // The claude route uses the bare origin (Claude Code appends
+    // /v1/messages); OpenCode uses the /v1 spelling via opencode_base_url.
+    check(
+      logfareStdout.includes("anthropic endpoint: https://logfare.ai"),
+      logfareStdout,
+    );
+    check(
+      logfareStdout.includes("opencode endpoint: https://logfare.ai/v1"),
+      logfareStdout,
+    );
   }),
 );
 
@@ -2185,10 +2198,55 @@ test(
     check(mergedParsed.model === "logfare/deepseek-v4.1-flash-1017", JSON.stringify(mergedParsed));
     check(mergedParsed.provider?.["logfare"] !== undefined, JSON.stringify(mergedParsed));
 
-    // There is no claude Logfare route: the Anthropic adapter cannot use the
-    // OpenAI-compatible endpoint, so selection fails closed (the adapter
-    // rule itself is covered in test_invalid_configs).
-    const wrongAdapter = fixture.run(["claude", "logfare"], { config: REAL_CONFIG });
+    // claude.logfare: the same provider on the Anthropic adapter. Claude
+    // Code appends /v1/messages itself, so the bare origin is injected and
+    // the credential travels as ANTHROPIC_AUTH_TOKEN (never ANTHROPIC_API_KEY).
+    const claude = fixture.run(["claude", "logfare"], { config: REAL_CONFIG });
+    check(claude.exitCode === 0, claude.stderr.toString());
+    const [claudeArgv, claudeEnv] = fixture.child();
+    check(claudeArgv.length === 0, `argv ${JSON.stringify(claudeArgv)}`);
+    check(
+      claudeEnv["ANTHROPIC_BASE_URL"] === "https://logfare.ai",
+      JSON.stringify(claudeEnv["ANTHROPIC_BASE_URL"]),
+    );
+    check(
+      claudeEnv["ANTHROPIC_AUTH_TOKEN"] === "secret-logfare",
+      JSON.stringify(claudeEnv["ANTHROPIC_AUTH_TOKEN"]),
+    );
+    check(
+      claudeEnv["ANTHROPIC_MODEL"] === "deepseek-v4.1-flash-1017",
+      JSON.stringify(claudeEnv["ANTHROPIC_MODEL"]),
+    );
+    check(!("ANTHROPIC_API_KEY" in claudeEnv), "ANTHROPIC_API_KEY must stay cleared");
+    check(claudeEnv["LOGFARE_API_KEY"] === "secret-logfare", JSON.stringify(claudeEnv["LOGFARE_API_KEY"]));
+    for (const leak of ["OPENROUTER_API_KEY", "OPENCODE_API_KEY", "INFISICAL_TOKEN"]) {
+      check(!(leak in claudeEnv), `secret leaked to child: ${leak}`);
+    }
+
+    // The second declared model is selectable on the claude route too, and
+    // an id outside the allowlist still fails closed before credentials.
+    const claudeGlm = fixture.run(["claude", "logfare", "--model", "glm-5.3"], {
+      config: REAL_CONFIG,
+    });
+    check(claudeGlm.exitCode === 0, claudeGlm.stderr.toString());
+    const [, claudeGlmEnv] = fixture.child();
+    check(
+      claudeGlmEnv["ANTHROPIC_MODEL"] === "glm-5.3",
+      JSON.stringify(claudeGlmEnv["ANTHROPIC_MODEL"]),
+    );
+    const claudeRejected = fixture.run(["claude", "logfare", "--model", "logfare-auto"], {
+      config: REAL_CONFIG,
+    });
+    check(claudeRejected.exitCode === 2, `expected exit 2, got ${claudeRejected.exitCode}`);
+    check(
+      claudeRejected.stderr.toString().includes("unknown model"),
+      claudeRejected.stderr.toString(),
+    );
+
+    // There is still no omp.logfare route: OMP has no native `logfare`
+    // provider id and a local models.yml endpoint override is outside this
+    // design, so selection fails closed.
+    const wrongAdapter = fixture.run(["omp", "logfare"], { config: REAL_CONFIG });
     check(wrongAdapter.exitCode === 2, `expected exit 2, got ${wrongAdapter.exitCode}`);
     check(
       wrongAdapter.stderr.toString().includes("no route"),
@@ -2972,10 +3030,22 @@ test("test_kilo_adapter_endpoints", withFixture((fixture) => {
     modelsOut,
   );
   // A provider whose spellings agree must not print the second line.
+  const ovhModels = fixture.run(["models", "ovhcloud"], { config: REAL_CONFIG });
+  check(ovhModels.exitCode === 0, ovhModels.stderr.toString());
+  check(
+    !ovhModels.stdout.toString().includes("anthropic endpoint:"),
+    ovhModels.stdout.toString(),
+  );
+  // Logfare's spellings differ (bare origin for the Anthropic adapter, /v1
+  // for the OpenCode custom provider), so both lines must appear.
   const logfareModels = fixture.run(["models", "logfare"], { config: REAL_CONFIG });
   check(logfareModels.exitCode === 0, logfareModels.stderr.toString());
   check(
-    !logfareModels.stdout.toString().includes("anthropic endpoint:"),
+    logfareModels.stdout.toString().includes("anthropic endpoint: https://logfare.ai"),
+    logfareModels.stdout.toString(),
+  );
+  check(
+    logfareModels.stdout.toString().includes("opencode endpoint: https://logfare.ai/v1"),
     logfareModels.stdout.toString(),
   );
 }));

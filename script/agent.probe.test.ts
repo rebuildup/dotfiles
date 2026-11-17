@@ -43,12 +43,13 @@ default_model = "test-model"
 models = ["test-model", "alt-model"]
 
 [providers.wireprov]
-base_url = "https://wire.example/v1"
+base_url = "https://wire.example"
 secret = "WIRE_API_KEY"
 env = "WIRE_API_KEY"
 default_model = "wire-model"
 models = ["wire-model"]
 opencode_npm = "@ai-sdk/openai-compatible"
+opencode_base_url = "https://wire.example/v1"
 
 [harnesses.claude]
 label = "Claude Code"
@@ -73,6 +74,8 @@ adapter = "anthropic"
 [routes."claude.testprov"]
 
 [routes."other.testprov"]
+
+[routes."claude.wireprov"]
 
 [routes."opencode.wireprov"]
 
@@ -266,7 +269,7 @@ describe("probeRoute: live mode (mocked provider)", () => {
     expect(probeJson(report)).not.toContain(CREDENTIAL_ENV.TEST_API_KEY);
   });
 
-  test("openai-compatible wire posts to <base>/chat/completions", async () => {
+  test("openai-compatible wire posts to <opencode_base_url>/chat/completions", async () => {
     const stateDir = newStateDir();
     const mock = mockTransport([httpResponse(200), httpResponse(200, toolBody())]);
     await probeRoute(
@@ -277,6 +280,24 @@ describe("probeRoute: live mode (mocked provider)", () => {
       }),
     );
     expect(mock.calls[1]!.url).toBe("https://wire.example/v1/chat/completions");
+  });
+
+  test("claude route on an opencode_npm provider uses the anthropic wire", async () => {
+    // The provider serves BOTH surfaces: the claude route must probe
+    // <base_url>/v1/messages (bare origin + appended path), never the
+    // OpenAI /chat/completions spelling reserved for the opencode route.
+    const stateDir = newStateDir();
+    const mock = mockTransport([httpResponse(200), httpResponse(200, toolBody())]);
+    await probeRoute(
+      baseOptions(CONFIG_PATH, stateDir, {
+        transport: mock.transport,
+        target: { route: "claude.wireprov" },
+        mode: "live",
+      }),
+    );
+    expect(mock.calls[1]!.url).toBe("https://wire.example/v1/messages");
+    const headers = mock.calls[1]!.init.headers as Record<string, string>;
+    expect(headers["anthropic-version"]).toBe("2023-06-01");
   });
 
   test("429 records rate-limit and starts a cooldown that refuses the next live probe", async () => {
