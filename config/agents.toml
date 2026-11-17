@@ -237,17 +237,27 @@ models = ["deepseek-v4.1-flash", "mimo-v2.6-flash"]
 #     training_optin_required. Account must also keep its Discord account in
 #     the Logfare server (403 otherwise).
 #
-# `opencode_npm` registers base_url as a custom OpenCode provider. The
-# credential reaches it as the env NAME only (OpenCode reads the key from
-# that env var); no secret value ever enters config content or argv.
+# `opencode_npm` registers the OpenAI-compatible surface as a custom OpenCode
+# provider. The two adapters need different spellings of the same origin:
+# Claude Code appends `/v1/messages` itself, so `base_url` is the bare origin
+# (https://logfare.ai -> https://logfare.ai/v1/messages, Anthropic protocol,
+# verified live 2026-11-17); OpenCode needs the `/v1` base URL, carried by
+# `opencode_base_url`. The credential reaches OpenCode as the env NAME only
+# (OpenCode reads the key from that env var); no secret value ever enters
+# config content or argv.
+#
+# There is deliberately no `omp.logfare` route: OMP has no native `logfare`
+# provider id and a local models.yml endpoint override is outside this
+# design, so the omp adapter cannot reach this provider.
 [providers.logfare]
 label = "Logfare"
-base_url = "https://logfare.ai/v1"
+base_url = "https://logfare.ai"
 secret = "LOGFARE_API_KEY"
 env = "LOGFARE_API_KEY"
 default_model = "deepseek-v4.1-flash-1017"
 models = ["deepseek-v4.1-flash-1017", "glm-5.3"]
 opencode_npm = "@ai-sdk/openai-compatible"
+opencode_base_url = "https://logfare.ai/v1"
 
 # Mistral Education / Pro plan; Code > Vibe CLI PLAN key stored in Infisical
 # as MISTRAL_API_KEY. Never use a pay-as-you-go API key here by accident.
@@ -589,6 +599,9 @@ note = "Anthropic-compatible endpoint; claude-* aliases are deliberately not exp
 
 [routes."claude.minimax"]
 note = "Default is the officially released MiniMax-M3.1-Flash; verify live M Plan access before rollout. Reasoning is always on, effort defaults to max. MiniMax-M3 remains selectable with --model."
+
+[routes."claude.logfare"]
+note = "Explicit Logfare route via the Anthropic-compatible /v1/messages surface (bare origin; Claude Code appends /v1/messages). Same account budget as opencode.logfare: 5,000 req/day, 6 concurrent, never a fallback target and never selected implicitly. Needs Infisical LOGFARE_API_KEY plus the /consent training opt-in (both models are premium). Real response + tool call verified 2026-11-17."
 
 [routes."opencode.zen"]
 note = "Free zen models through the OpenCode client (free tier is client-bound)."
@@ -1030,6 +1043,30 @@ at = "2026-11-05T00:00:00Z"
 source = "live-e2e"
 sha = "6640c4457efba054e72614fceffc82a1954f8057"
 note = "Real response + shell-tool call, both models."
+
+[catalog.routes."claude.logfare".concurrency]
+value = 6
+status = "configured"
+provenance = "official"
+
+[catalog.routes."claude.logfare".concurrency.evidence]
+at = "2026-11-05T00:00:00Z"
+source = "provider-docs"
+sha = "6640c4457efba054e72614fceffc82a1954f8057"
+note = "Same account-wide concurrent request limit as opencode.logfare; new accounts: 2 for the first 24h."
+
+[catalog.routes."claude.logfare".e2e]
+value = [
+  { model = "deepseek-v4.1-flash-1017", tool_call = true },
+  { model = "glm-5.3", tool_call = true },
+]
+status = "verified-live"
+provenance = "measured"
+
+[catalog.routes."claude.logfare".e2e.evidence]
+at = "2026-11-17T00:00:00Z"
+source = "live-e2e"
+note = "Real response + file-creation tool call on both models via `agent claude logfare` (claude 2.1.325, Anthropic /v1/messages at the bare origin)."
 
 [catalog.routes."omp.deepseek".restriction]
 status = "restricted"
