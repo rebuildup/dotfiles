@@ -1,0 +1,13 @@
+{
+  "name": "manager",
+  "repos": "rebuildup/*",
+  "model": "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+  "fallbacks": [
+    "openrouter/nvidia/nemotron-3.5-lightning:free",
+    "openrouter/cohere/north-mini-code:free"
+  ],
+  "cron": "15 */2 * * *",
+  "role": "cross-project prioritization, shared free-quota budget, host load, inter-project conflicts",
+  "declarationKey": "rebuildup.bot.manager",
+  "enabled": true
+}

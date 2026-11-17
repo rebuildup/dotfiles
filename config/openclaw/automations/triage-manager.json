@@ -1,0 +1,24 @@
+{
+  "declarationKey": "rebuildup.triage.manager",
+  "name": "triage-manager",
+  "displayName": "manager triage",
+  "description": "cross-project prioritization, shared free-quota budget, host load, inter-project conflicts",
+  "enabled": true,
+  "schedule": {
+    "kind": "cron",
+    "expr": "15 */2 * * *",
+    "stagger": "10m"
+  },
+  "payload": {
+    "kind": "agentTurn",
+    "session": "isolated",
+    "agent": "manager",
+    "message": "Run the manager standing-orders loop in AGENTS.md for repos rebuildup/*: restore state from GitHub (gh), pick at most one work unit, dispatch via agent/herdr per project-init, else NO_REPLY. Never use paid models.",
+    "model": "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+    "fallbacks": [
+      "openrouter/nvidia/nemotron-3.5-lightning:free",
+      "openrouter/cohere/north-mini-code:free"
+    ],
+    "noDeliver": true
+  }
+}

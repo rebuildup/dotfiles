@@ -1,0 +1,13 @@
+{
+  "name": "dotfiles",
+  "repos": "rebuildup/dotfiles",
+  "model": "openrouter/nvidia/nemotron-3.5-lightning:free",
+  "fallbacks": [
+    "openrouter/cohere/north-mini-code:free",
+    "openrouter/google/gemma-4-31b-it:free"
+  ],
+  "cron": "23 */3 * * *",
+  "role": "bot config, model routes, Infisical, dotfiles sync",
+  "declarationKey": "rebuildup.bot.dotfiles",
+  "enabled": true
+}

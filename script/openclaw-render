@@ -1,0 +1,51 @@
+#!/usr/bin/env python3
+"""script/openclaw-render — regenerate OpenClaw managed surfaces.
+
+Sources (dotfiles, committed):
+  config/openclaw/openclaw.base.json   gateway/agent defaults template
+  config/openclaw/bots/*.json          per-bot roster declarations
+  config/openclaw/bot-AGENTS.template.md  standing-orders template
+
+Outputs:
+  home/.openclaw/openclaw.json                    committed managed config
+  ~/.openclaw/workspace-<bot>/AGENTS.md          local generated standing orders
+                                                  (NOT committed: OpenClaw file
+                                                  tools require regular files)
+
+--check exits 1 when home/.openclaw/openclaw.json is stale.
+"""
+import json, glob, os, sys
+
+repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+check = "--check" in sys.argv
+home = os.path.expanduser("~")
+
+cfg = json.load(open(f"{repo}/config/openclaw/openclaw.base.json"))
+agents = cfg.setdefault("agents", {}).setdefault("entries", {})
+tpl_path = f"{repo}/config/openclaw/bot-AGENTS.template.md"
+tpl = open(tpl_path).read() if os.path.exists(tpl_path) else ""
+
+for f in sorted(glob.glob(f"{repo}/config/openclaw/bots/*.json")):
+    b = json.load(open(f))
+    if not b.get("enabled", True):
+        continue
+    bid = os.path.splitext(os.path.basename(f))[0]
+    agents[bid] = {
+        "name": b["name"],
+        "workspace": f"~/.openclaw/workspace-{bid}",
+        "agentDir": f"~/.openclaw/agents/{bid}/agent",
+        "identity": {"name": b["name"]},
+        "model": {"primary": b["model"], "fallbacks": b.get("fallbacks", [])},
+    }
+    ws = os.path.join(home, ".openclaw", f"workspace-{bid}")
+    os.makedirs(ws, exist_ok=True)
+    open(os.path.join(ws, "AGENTS.md"), "w").write(
+        tpl.replace("{{BOT}}", bid).replace("{{REPOS}}", b["repos"]))
+
+out = f"{repo}/home/.openclaw/openclaw.json"
+rendered = json.dumps(cfg, indent=2) + "\n"
+if check:
+    cur = open(out).read() if os.path.exists(out) else ""
+    sys.exit(0 if cur == rendered else 1)
+open(out, "w").write(rendered)
+print("rendered agents:", ", ".join(agents))

@@ -1,0 +1,154 @@
+{
+  "$schema": "https://docs.openclaw.ai/schemas/openclaw.json",
+  "agents": {
+    "defaults": {
+      "workspace": "~/.openclaw/workspace",
+      "model": {
+        "primary": "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+        "fallbacks": [
+          "openrouter/nvidia/nemotron-3.5-lightning:free",
+          "openrouter/cohere/north-mini-code:free",
+          "openrouter/google/gemma-4-31b-it:free",
+          "openrouter/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
+        ]
+      },
+      "utilityModel": "openrouter/nvidia/nemotron-3.5-lightning:free",
+      "modelPolicy": {
+        "allow": [
+          "openrouter/inclusionai/ling-3.2-flash:free",
+          "openrouter/baidu/ernie-5.5-flash-preview:free",
+          "openrouter/thinkingmachines/inkling-2-small:free",
+          "openrouter/liquid/lfm-3-1.7b:free",
+          "openrouter/particle-ai/particle-1:free",
+          "openrouter/recursive/flint-v1.0:free",
+          "openrouter/nvidia/nemotron-3.5-super-vl:free",
+          "openrouter/dots-studio/dots-3-note-preview:free",
+          "openrouter/nvidia/nemotron-3.5-lightning:free",
+          "openrouter/cohere/north-mini-code:free",
+          "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+          "openrouter/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+          "openrouter/google/gemma-4-26b-a4b-it:free",
+          "openrouter/google/gemma-4-31b-it:free"
+        ]
+      },
+      "skipBootstrap": false
+    },
+    "entries": {
+      "dotfiles": {
+        "name": "dotfiles",
+        "workspace": "~/.openclaw/workspace-dotfiles",
+        "agentDir": "~/.openclaw/agents/dotfiles/agent",
+        "identity": {
+          "name": "dotfiles"
+        },
+        "model": {
+          "primary": "openrouter/nvidia/nemotron-3.5-lightning:free",
+          "fallbacks": [
+            "openrouter/cohere/north-mini-code:free",
+            "openrouter/google/gemma-4-31b-it:free"
+          ]
+        }
+      },
+      "manager": {
+        "name": "manager",
+        "workspace": "~/.openclaw/workspace-manager",
+        "agentDir": "~/.openclaw/agents/manager/agent",
+        "identity": {
+          "name": "manager"
+        },
+        "model": {
+          "primary": "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+          "fallbacks": [
+            "openrouter/nvidia/nemotron-3.5-lightning:free",
+            "openrouter/cohere/north-mini-code:free"
+          ]
+        }
+      },
+      "pc-setup": {
+        "name": "pc-setup",
+        "workspace": "~/.openclaw/workspace-pc-setup",
+        "agentDir": "~/.openclaw/agents/pc-setup/agent",
+        "identity": {
+          "name": "pc-setup"
+        },
+        "model": {
+          "primary": "openrouter/nvidia/nemotron-3.5-lightning:free",
+          "fallbacks": [
+            "openrouter/cohere/north-mini-code:free",
+            "openrouter/google/gemma-4-31b-it:free"
+          ]
+        }
+      },
+      "project-init": {
+        "name": "project-init",
+        "workspace": "~/.openclaw/workspace-project-init",
+        "agentDir": "~/.openclaw/agents/project-init/agent",
+        "identity": {
+          "name": "project-init"
+        },
+        "model": {
+          "primary": "openrouter/nvidia/nemotron-3.5-lightning:free",
+          "fallbacks": [
+            "openrouter/cohere/north-mini-code:free",
+            "openrouter/google/gemma-4-31b-it:free"
+          ]
+        }
+      }
+    },
+    "ownership": "explicit"
+  },
+  "gateway": {
+    "mode": "local",
+    "auth": {
+      "mode": "token",
+      "token": {
+        "source": "env",
+        "provider": "default",
+        "id": "OPENCLAW_GATEWAY_TOKEN"
+      }
+    },
+    "port": 18789,
+    "bind": "loopback",
+    "tailscale": {
+      "mode": "off"
+    }
+  },
+  "tools": {
+    "profile": "full"
+  },
+  "skills": {
+    "install": {
+      "nodeManager": "npm"
+    }
+  },
+  "plugins": {
+    "entries": {
+      "anthropic": {
+        "config": {
+          "sessionCatalog": {
+            "enabled": false
+          }
+        }
+      },
+      "codex": {
+        "config": {
+          "sessionCatalog": {
+            "enabled": false
+          }
+        }
+      },
+      "openrouter": {
+        "enabled": true
+      }
+    }
+  },
+  "hooks": {
+    "internal": {
+      "entries": {
+        "session-memory": {
+          "enabled": true
+        }
+      }
+    }
+  }
+}

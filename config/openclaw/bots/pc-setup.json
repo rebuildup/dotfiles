@@ -1,0 +1,13 @@
+{
+  "name": "pc-setup",
+  "repos": "rebuildup/pc-setup",
+  "model": "openrouter/nvidia/nemotron-3.5-lightning:free",
+  "fallbacks": [
+    "openrouter/cohere/north-mini-code:free",
+    "openrouter/google/gemma-4-31b-it:free"
+  ],
+  "cron": "7 */3 * * *",
+  "role": "machine setup, mise, OS services",
+  "declarationKey": "rebuildup.bot.pc-setup",
+  "enabled": true
+}

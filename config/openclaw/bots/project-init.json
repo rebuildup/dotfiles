@@ -1,0 +1,13 @@
+{
+  "name": "project-init",
+  "repos": "rebuildup/project-init",
+  "model": "openrouter/nvidia/nemotron-3.5-lightning:free",
+  "fallbacks": [
+    "openrouter/cohere/north-mini-code:free",
+    "openrouter/google/gemma-4-31b-it:free"
+  ],
+  "cron": "41 */3 * * *",
+  "role": "supervision contracts, quality gates, delivery policy",
+  "declarationKey": "rebuildup.bot.project-init",
+  "enabled": true
+}

@@ -1,0 +1,24 @@
+{
+  "declarationKey": "rebuildup.triage.dotfiles",
+  "name": "triage-dotfiles",
+  "displayName": "dotfiles triage",
+  "description": "bot config, model routes, Infisical, dotfiles sync",
+  "enabled": true,
+  "schedule": {
+    "kind": "cron",
+    "expr": "23 */3 * * *",
+    "stagger": "10m"
+  },
+  "payload": {
+    "kind": "agentTurn",
+    "session": "isolated",
+    "agent": "dotfiles",
+    "message": "Run the dotfiles standing-orders loop in AGENTS.md for repos rebuildup/dotfiles: restore state from GitHub (gh), pick at most one work unit, dispatch via agent/herdr per project-init, else NO_REPLY. Never use paid models.",
+    "model": "openrouter/nvidia/nemotron-3.5-lightning:free",
+    "fallbacks": [
+      "openrouter/cohere/north-mini-code:free",
+      "openrouter/google/gemma-4-31b-it:free"
+    ],
+    "noDeliver": true
+  }
+}

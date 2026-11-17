@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# script/openclaw-automations — declaratively apply OpenClaw automation jobs.
+#
+# Reads config/openclaw/automations/*.json (dotfiles-owned declarations) and
+# converges the Gateway scheduler to match. Each declaration carries a
+# `declarationKey`; OpenClaw deduplicates on it, and this script updates the
+# job when the declaration changes (remove + re-add keeps run history clean
+# enough for our purposes: jobs are cheap, history lives in `automations runs`).
+#
+# Usage: script/openclaw-automations [--check]
+#   --check   report drift without mutating the Gateway
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+decl_dir="$repo_root/config/openclaw/automations"
+check_only=0
+[[ "${1:-}" == "--check" ]] && check_only=1
+
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || { printf 'missing required command: %s\n' "$1" >&2; exit 1; }
+}
+require_command openclaw
+require_command python3
+require_command jq
+
+if ! openclaw gateway status --json >/dev/null 2>&1; then
+  printf 'openclaw gateway is not reachable; start it first (script/openclaw-gateway-install)\n' >&2
+  exit 1
+fi
+
+existing="$(openclaw automations list --json 2>/dev/null || true)"
+
+declare_path="$(mktemp)"
+trap 'rm -f "$declare_path"' EXIT
+
+drift=0
+shopt -s nullglob
+for file in "$decl_dir"/*.json; do
+  key="$(jq -r '.declarationKey // empty' "$file")"
+  name="$(jq -r '.name // .declarationKey' "$file")"
+  [[ -n "$key" ]] || { printf 'skip %s: missing declarationKey\n' "$file"; continue; }
+
+  enabled="$(jq -r '.enabled // true' "$file")"
+  cron="$(jq -r '.schedule.expr // empty' "$file")"
+  message="$(jq -r '.payload.message // empty' "$file")"
+  model="$(jq -r '.payload.model // empty' "$file")"
+  session="$(jq -r '.payload.session // "isolated"' "$file")"
+  fallbacks="$(jq -r '(.payload.fallbacks // []) | join(",")' "$file")"
+  desc="$(jq -r '.description // ""' "$file")"
+
+  # Find existing job by declaration key.
+  job_id="$(printf '%s' "$existing" | jq -r --arg k "$key" \
+    '[.. | objects | select(.declarationKey? == $k or .declaration_key? == $k)] | .[0].id // .[0].jobId // empty' 2>/dev/null || true)"
+
+  if [[ -n "$job_id" ]]; then
+    printf 'exists %s (%s)\n' "$name" "$job_id"
+    continue
+  fi
+
+  if [[ "$check_only" -eq 1 ]]; then
+    printf 'missing %s (%s)\n' "$name" "$key"
+    drift=1
+    continue
+  fi
+
+  agent_id="$(jq -r '.payload.agent // "manager"' "$file")"
+  args=(automations add --name "$name" --declaration-key "$key" --agent "$agent_id"
+        --cron "$cron" --session "$session" --message "$message"
+        --no-deliver --best-effort-deliver)
+  [[ -n "$model" ]] && args+=(--model "$model")
+  [[ -n "$fallbacks" ]] && args+=(--fallbacks "$fallbacks")
+  [[ -n "$desc" ]] && args+=(--description "$desc")
+  [[ "$enabled" == "false" ]] && args+=(--disabled)
+
+  printf 'add    %s\n' "$name"
+  openclaw "${args[@]}" >/dev/null
+  drift=1
+done
+shopt -u nullglob
+
+if [[ "$check_only" -eq 1 && "$drift" -ne 0 ]]; then
+  exit 1
+fi

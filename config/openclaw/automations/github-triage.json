@@ -1,0 +1,31 @@
+{
+  "declarationKey": "rebuildup.github-triage",
+  "name": "github-triage",
+  "displayName": "GitHub triage & work selection",
+  "description": "Periodic survey of rebuildup repos; selects at most one work unit and dispatches a Worker per project-init contracts.",
+  "enabled": true,
+  "schedule": {
+    "kind": "cron",
+    "expr": "*/45 * * * *",
+    "stagger": "5m"
+  },
+  "payload": {
+    "kind": "agentTurn",
+    "session": "isolated",
+    "message": "Run the standing-orders work selection loop in AGENTS.md: survey rebuildup GitHub state with gh, pick at most one actionable work unit, and dispatch it through agent/herdr per project-init contracts. If nothing is actionable or all free model routes are exhausted, end with NO_REPLY.",
+    "model": "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+    "fallbacks": [
+      "openrouter/nvidia/nemotron-3.5-lightning:free",
+      "openrouter/cohere/north-mini-code:free"
+    ],
+    "tools": [
+      "exec",
+      "read",
+      "write",
+      "edit",
+      "github"
+    ],
+    "noDeliver": true,
+    "agent": "manager"
+  }
+}
