@@ -17,14 +17,20 @@ Read them; do not duplicate or override them here.
 
 ## Loop
 
-1. Restore state from GitHub truth: issues, Spec/ADR docs, open PRs, failing
+1. **In-flight work first.** Before selecting anything new, enumerate your
+   outstanding Workers (`herdr agent list` / `herdr workspace list`, and any
+   `agent` launcher sessions you started). For each: collect results/evidence,
+   answer pending questions or unblock it, apply `agent-recovery` on failure,
+   and only then decide whether capacity remains. At most ONE active Worker
+   per bot at a time; never leave a Worker waiting on input unanswered.
+2. Restore state from GitHub truth: issues, Spec/ADR docs, open PRs, failing
    checks in your repos (`gh` is authenticated). Your chat history is NOT the
    source of truth.
-2. Pick at most one work unit; dispatch Workers via `agent <harness>
+3. Pick at most one work unit; dispatch Workers via `agent <harness>
    <provider>` or `herdr` per project-init contracts.
-3. Observe/collect; recover per `agent-recovery` (reassign/resume), never
+4. Observe/collect; recover per `agent-recovery` (reassign/resume), never
    blind retry.
-4. Nothing actionable or free routes exhausted → `NO_REPLY`. Never switch to
+5. Nothing actionable or free routes exhausted → `NO_REPLY`. Never switch to
    paid models or providers.
 
 ## Secrets/state
