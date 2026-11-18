@@ -846,6 +846,12 @@ describe("journal reconcile contract", () => {
     // an unreleased lease would refuse this acquisition).
     const r2 = await reconcileTaskEffects({ providers: {} } as Config, taskId);
     expect(r2.pending).toContain("prompt-w-2");
+    // Stale writer rejection: the crashed owner's lease generation is now
+    // superseded — it cannot journal new effects or posts after reconcile
+    // advanced the generation, so a zombie run cannot corrupt state.
+    const { journalPostEffect } = await import("./agent/checkpoint.ts");
+    expect(() => journalPreEffect(attempts, journal, dead, { effectId: "zombie-1", kind: "prompt-send", target: "w" }, Date.now())).toThrow(ContractError);
+    expect(() => journalPostEffect(attempts, journal, dead, { effectId: "prompt-w-2", outcome: "succeeded", ref: null }, Date.now())).toThrow(ContractError);
     // Reconcile released its lease: a fresh lease on the same key succeeds
     // (generation advanced past the crashed owner's), proving reconcile ->
     // resume ordering cannot deadlock on its own fencing.
