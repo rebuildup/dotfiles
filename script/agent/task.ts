@@ -23,7 +23,13 @@ import {
   type FailureSignal,
   classifyFailure,
 } from "./fallback-exec.ts";
-import { ensureOmpCustomProvider, type Config, type Provider } from "../agent.ts";
+import {
+  ompWorkerArgs,
+  prepareOmpWorker,
+  type Config,
+  type OmpWorkerPreparation,
+  type Provider,
+} from "../agent.ts";
 import { agentStateDir } from "./contract.ts";
 import {
   createWorkspace,
@@ -72,6 +78,8 @@ export interface TaskAttempt {
   herdrWorkerName?: string;
   generation: number;
   fallbackCandidate?: FallbackCandidate;
+  /** Credential scope used (env name or infisical:<secret>), never a value. */
+  credentialScope?: string;
   error?: ClassifiedError;
   result?: unknown;
 }
@@ -159,32 +167,33 @@ function harnessToAgentKind(adapter: string): "claude" | "codex" | "opencode" | 
  * (a missing entry starts the worker on OMP's default provider, i.e. a
  * different account than the route authorized).
  */
-export function buildAgentStartOptions(provider: Provider, model: string): string[] {
-  // OMP has no credential-free route contract for a NATIVE provider, so an
-  // anonymous provider can only run on the omp adapter through omp_custom
-  // (models.yml `auth: none` is the credential-free contract).
+export function buildAgentStartOptions(
+  provider: Provider,
+  model: string,
+  prepared?: OmpWorkerPreparation,
+): string[] {
+  // The worker argv is built by the same function the interactive plan path
+  // uses, so a Herdr worker gets the destructive guard, tool-surface overlay,
+  // model-role pins and --profile exactly like a launcher-started OMP. The
+  // side-effecting checks (models.yml integrity, credential-source guard,
+  // ambient OMP_* rejection) run in prepareOmpWorker before this is called.
   if (provider.anonymous && !provider.omp_custom) {
+    // Defense in depth: prepareOmpWorker rejects this too, but a caller that
+    // skips preparation must still fail closed — a native OMP provider has
+    // no credential-free contract.
     throw new ContractError(
       "state",
       `provider '${provider.key}' is anonymous; OMP has no credential-free route contract unless omp_custom = true`,
     );
   }
-  const args = ["--", "--provider", provider.omp_id, "--model", model];
-  if (provider.omp_custom) {
-    // The worker runs under a Herdr-started OMP process, not through
-    // planOmp, so the managed models.yml must exist before the worker
-    // starts. ensureOmpCustomProvider is idempotent and refuses to clobber
-    // a file it does not own.
-    args.push("--profile", ensureOmpCustomProvider(provider).profile);
+  if (provider.omp_custom && !prepared?.profile) {
+    throw new ContractError(
+      "state",
+      `provider '${provider.key}' is omp_custom; buildAgentStartOptions requires prepareOmpWorker(provider) first`,
+    );
   }
-  // Pin the model roles for credentialed providers: agents.toml forbids
-  // implicit model fallback on omp routes, so a role switch must not reach
-  // another (possibly paid) model.
-  if (provider.require_infisical) {
-    const selector = `${provider.omp_id}/${model}`;
-    args.push("--smol", selector, "--slow", selector, "--plan", selector);
-  }
-  return args;
+  const fallback: OmpWorkerPreparation = prepared ?? { profile: null, custom: null };
+  return ["--", ...ompWorkerArgs(provider, model, fallback)];
 }
 
 // ---------------------------------------------------------------------------
@@ -230,10 +239,34 @@ export async function dispatchTask(
     }
   }
 
+  // The worker is started with OMP's --provider/--model flags, so the route's
+  // adapter must be omp. Starting an OMP worker for another adapter would
+  // run a different harness against the route's account. This check precedes
+  // the OMP-specific preparation below.
+  const harnessKey = route.harness;
+  const harness = config.harnesses[harnessKey];
+  const agentKind = harnessToAgentKind(harness.adapter);
+  if (agentKind !== "omp") {
+    throw new ContractError(
+      "state",
+      `task dispatch drives the omp adapter only; route '${descriptor.route}' uses adapter '${harness.adapter}'`,
+    );
+  }
+
+  // Credential presence is checked before any launcher-side guard so a
+  // missing credential reports itself, not a downstream guard error.
+  const workerEnv = routeWorkerEnv(provider);
+  // Side-effecting launch checks shared with the interactive path: managed
+  // models.yml integrity, credential-source guard, implicit-switch guard.
+  // A Herdr worker cannot re-run them inside __exec, so they run here,
+  // immediately before the worker is started.
+  const prepared = prepareOmpWorker(provider);
+  await verifyOmpCustomCredential(provider);
+
   // Create Herdr workspace for the task
   const workspace = await createWorkspace(process.cwd(), `task-${descriptor.id.slice(0, 8)}`, {
     noFocus: true,
-    env: routeWorkerEnv(provider),
+    env: { ...workerEnv, OMP_SKIP_SETUP: "1" },
   });
   const workspaceId = workspace.id;
 
@@ -244,22 +277,8 @@ export async function dispatchTask(
   await new Promise(r => setTimeout(r, 2000));
   
   // Build worker name
-  const harnessKey = route.harness;
-  const harness = config.harnesses[harnessKey];
-  const agentKind = harnessToAgentKind(harness.adapter);
-  // The worker is started with OMP's --provider/--model flags, so the route's
-  // adapter must be omp. Starting an OMP worker for another adapter would
-  // run a different harness against the route's account.
-  if (agentKind !== "omp") {
-    throw new ContractError(
-      "state",
-      `task dispatch drives the omp adapter only; route '${descriptor.route}' uses adapter '${harness.adapter}'`,
-    );
-  }
-
-  const agentOptions = buildAgentStartOptions(provider, descriptor.model);
-  
   const workerName = `worker-${descriptor.id.slice(0, 8)}-${route.harness}-${randomUUID().slice(0, 8)}`;
+  const agentOptions = buildAgentStartOptions(provider, descriptor.model, prepared);
   
   // Start the agent in the root pane with model/provider flags via Herdr
   const startResult = await startAgent({ 
@@ -355,6 +374,12 @@ function promptFailureSignal(promptResult: { blocked?: boolean; stalled?: boolea
  */
 function routeWorkerEnv(provider: Provider): Record<string, string> {
   if (provider.anonymous) return {};
+  // omp_custom providers with an Infisical secret resolve the credential
+  // inside OMP itself: models.yml `apiKey: "!infisical-key.sh <secret>"`
+  // makes OMP fetch the value from Infisical at request time. Passing the
+  // value through `herdr --env NAME=VALUE` would expose it in process argv
+  // and the Herdr server — the secret never needs to leave Infisical.
+  if (provider.omp_custom && provider.secret) return {};
   const envName = provider.env ?? provider.secret;
   if (!envName) {
     throw new ContractError("identity", `Provider '${provider.key}' declares no credential env name`);
@@ -368,6 +393,33 @@ function routeWorkerEnv(provider: Provider): Record<string, string> {
     );
   }
   return { [envName]: value };
+}
+
+/**
+ * Verify an omp_custom provider's Infisical credential resolves BEFORE a
+ * worker is spawned. The apiKey `!command` makes OMP fetch the secret
+ * itself, so the dispatcher never holds the value — but a missing
+ * Infisical session or absent secret would otherwise surface as an opaque
+ * provider 401 inside the worker. The resolved value is captured by the
+ * child process only to check non-emptiness; it is never stored, logged,
+ * or passed on.
+ */
+async function verifyOmpCustomCredential(provider: Provider): Promise<void> {
+  if (!provider.omp_custom || !provider.secret) return;
+  const helper = join(import.meta.dir, "infisical-key.sh");
+  const result = Bun.spawnSync({
+    cmd: ["bash", helper, provider.secret],
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  if (result.exitCode !== 0 || result.stdout.length === 0) {
+    throw new ContractError(
+      "auth",
+      `Infisical credential '${provider.secret}' for omp_custom provider ` +
+        `'${provider.key}' did not resolve; the worker's apiKey command ` +
+        "needs a working Infisical session for the dispatching user",
+    );
+  }
 }
 
 /**
@@ -432,6 +484,61 @@ async function readWorkerOutput(workerName: string): Promise<string | undefined>
   }
 }
 
+/** The credential scope an attempt ran under — the env NAME or the
+ * Infisical secret name, never a value. Recorded for audit/resume. */
+function credentialScopeFor(config: Config, providerKey: string): string {
+  const provider = config.providers[providerKey];
+  if (!provider) return "unknown";
+  if (provider.anonymous) return "none";
+  if (provider.omp_custom && provider.secret) return `infisical:${provider.secret}`;
+  return provider.env ?? provider.secret ?? "unknown";
+}
+
+/**
+ * Persist one fallback-attempt outcome into the task history. Called by
+ * executeWithFallback's onAttempt hook for EVERY attempt (primary and each
+ * candidate), so the durable record shows which route/model/credential
+ * scope ran, how it failed (classified), and which worker served it —
+ * enough to resume or audit without Herdr state.
+ */
+function recordCandidateAttempt(
+  parent: TaskAttempt,
+  record: {
+    route: RouteRef;
+    model: string;
+    candidate: FallbackCandidate | null;
+    success: boolean;
+    error: FailureSignal | null;
+    classified: ClassifiedError | null;
+    result: unknown;
+  },
+  credentialScope: string,
+): void {
+  const state = loadTaskState(parent.taskId);
+  if (!state) return;
+  const served = record.result as { workerName?: string; paneId?: string; output?: string } | null;
+  const attempt: TaskAttempt = {
+    id: randomUUID(),
+    taskId: parent.taskId,
+    route: record.route,
+    model: record.model,
+    profileId: parent.profileId,
+    attemptNumber: state.history.length + 1,
+    startedAt: new Date().toISOString(),
+    status: record.success ? "completed" : "failed",
+    herdrWorkerName: served?.workerName,
+    herdrPaneId: served?.paneId,
+    herdrWorkspaceId: parent.herdrWorkspaceId,
+    generation: parent.generation,
+    fallbackCandidate: record.candidate ?? undefined,
+    error: record.classified ?? undefined,
+    credentialScope,
+    result: record.success ? { output: served?.output } : undefined,
+  };
+  state.history.push(attempt);
+  saveTaskState(parent.taskId, state);
+}
+
 /**
  * Send a prompt to the agent and handle retries/fallback.
  *
@@ -443,7 +550,7 @@ export async function startTaskAttempt(
   config: Config,
   attempt: TaskAttempt,
   prompt: string
-): Promise<{ success: boolean; error?: ClassifiedError; result?: unknown; workerName?: string }> {
+): Promise<{ success: boolean; error?: ClassifiedError; result?: unknown; workerName?: string; paneId?: string }> {
   if (!attempt.herdrWorkerName || !attempt.herdrPaneId) {
     throw new ContractError("state", "No Herdr worker name or pane in attempt");
   }
@@ -451,6 +558,9 @@ export async function startTaskAttempt(
   try {
     // Use the fallback execution logic if a profile is available
     if (attempt.profileId) {
+      // prepareOmpWorker runs filesystem/credential-source guards; cache per
+      // provider so a retry on the same candidate does not re-scan.
+      const preparedProviders = new Map<string, OmpWorkerPreparation>();
       const result = await executeWithFallback(config, attempt.profileId, async (routeRef, model, candidate) => {
         // The primary attempt runs on the worker already started for this
         // route. A CANDIDATE is a different route/model on the same harness,
@@ -483,24 +593,59 @@ export async function startTaskAttempt(
         }
 
         const workerName = `worker-${attempt.taskId.slice(0, 8)}-${routeRef.harness}-${randomUUID().slice(0, 8)}`;
-        const options = buildAgentStartOptions(candidateProvider, model);
-        const candidateAttempt = await startCandidateWorker(attempt, workerName, options, routeWorkerEnv(candidateProvider));
+        const candidatePrepared = preparedProviders.get(routeRef.provider)
+          ?? prepareOmpWorker(candidateProvider);
+        preparedProviders.set(routeRef.provider, candidatePrepared);
+        await verifyOmpCustomCredential(candidateProvider);
+        const options = buildAgentStartOptions(candidateProvider, model, candidatePrepared);
+        const candidateAttempt = await startCandidateWorker(attempt, workerName, options, {
+          ...routeWorkerEnv(candidateProvider),
+          OMP_SKIP_SETUP: "1",
+        });
 
+        let outcome: { success: boolean; error?: FailureSignal; result?: unknown } | undefined;
         try {
           const promptResult = await promptAgent(candidateAttempt.workerName, prompt, { wait: true, timeoutMs: 300000 });
           const signal = promptFailureSignal(promptResult);
-          if (signal) return { success: false, error: signal };
-          // The output must be read before the pane is closed.
-          const output = await readWorkerOutput(candidateAttempt.workerName);
-          // The executor returns the taskFn's `result` verbatim, so the
-          // serving worker travels inside it.
-          return { success: true, result: { output, workerName: candidateAttempt.workerName } };
+          if (signal) {
+            outcome = { success: false, error: signal };
+          } else {
+            // The output must be read before the pane is closed — and on
+            // success the pane stays OPEN until collectTaskAttempt has read
+            // the serving worker (closing it here made collect read a dead
+            // pane).
+            const output = await readWorkerOutput(candidateAttempt.workerName);
+            outcome = {
+              success: true,
+              result: {
+                output,
+                workerName: candidateAttempt.workerName,
+                paneId: candidateAttempt.paneId,
+              },
+            };
+          }
         } finally {
-          await closeCandidateWorker(candidateAttempt);
+          // Close the pane only when the candidate did NOT serve the task:
+          // a successful candidate's worker must stay alive until
+          // collectTaskAttempt reads it.
+          if (!outcome || !outcome.success) {
+            await closeCandidateWorker(candidateAttempt);
+          }
         }
+        return outcome ?? { success: false };
+      }, {
+        // The model the task was dispatched with, not the route default:
+        // the primary worker is already pinned to it.
+        primaryModel: attempt.model,
+        onAttempt: (record) => recordCandidateAttempt(attempt, record, credentialScopeFor(config, record.route.provider)),
       });
-      const served = result.result as { output?: string; workerName?: string };
-      return { success: true, result: { output: served?.output }, workerName: served?.workerName };
+      const served = result.result as { output?: string; workerName?: string; paneId?: string };
+      return {
+        success: true,
+        result: { output: served?.output },
+        workerName: served?.workerName,
+        paneId: served?.paneId,
+      };
     } else {
       // No fallback profile - single route execution
       const promptResult = await promptAgent(attempt.herdrWorkerName!, prompt, { wait: true, timeoutMs: 300000 });
@@ -683,6 +828,16 @@ export async function runTaskToCompletion(
     error: collected.error,
     result: collected.result,
   });
+  // A fallback candidate ran on its own pane: close it only AFTER collect
+  // has read the serving worker. The primary's root pane is never closed
+  // here (paneId is set only for candidate workers).
+  if (startResult.paneId) {
+    try {
+      await closePane(startResult.paneId);
+    } catch {
+      // Cleanup must not mask the task outcome.
+    }
+  }
   return collected;
 }
 

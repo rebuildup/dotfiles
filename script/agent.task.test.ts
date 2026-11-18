@@ -562,7 +562,13 @@ describe("buildAgentStartOptions", () => {
       provider({ key: "openrouter-free", omp_id: "openrouter" }),
       "nvidia/nemotron-3-ultra-550b-a55b:free",
     );
-    expect(opts).toEqual(["--", "--provider", "openrouter", "--model", "nvidia/nemotron-3-ultra-550b-a55b:free"]);
+    // The selector pair leads the worker argv (after the "--" separator);
+    // the tool-surface hardening flags follow it.
+    expect(opts.slice(0, 5)).toEqual([
+      "--", "--provider", "openrouter", "--model", "nvidia/nemotron-3-ultra-550b-a55b:free",
+    ]);
+    expect(opts).toContain("--tools");
+    expect(opts).toContain("--trusted-extension");
   });
 
   it("includes every omp route's provider, including ones added later", () => {

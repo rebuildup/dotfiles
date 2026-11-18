@@ -2277,7 +2277,12 @@ test(
     check(existsSync(modelsPath), `managed models.yml missing: ${modelsPath}`);
     const modelsYaml = readFileSync(modelsPath, "utf8");
     check(modelsYaml.includes('baseUrl: "https://logfare.ai/v1"'), modelsYaml);
-    check(modelsYaml.includes('apiKey: "LOGFARE_API_KEY"'), modelsYaml);
+    // The credential travels as an OMP `!command`: OMP runs
+    // infisical-key.sh itself and uses stdout as the key, so the secret
+    // goes Infisical -> OMP directly and never enters Herdr argv/env or
+    // the pane environment on the worker path.
+    check(modelsYaml.includes('apiKey: "!'), modelsYaml);
+    check(modelsYaml.includes("infisical-key.sh LOGFARE_API_KEY"), modelsYaml);
     check(modelsYaml.includes('api: "openai-completions"'), modelsYaml);
     check(!modelsYaml.includes("secret-logfare"), "secret value leaked into models.yml");
     check(modelsYaml.includes('id: "glm-5.3"'), modelsYaml);

@@ -33,7 +33,7 @@ test('wrong instance or execution user fails closed',()=>{
  expect(()=>assertIdentity(validateNode(node),'Linux\nbasic\nother\n')).toThrow();
 });
 
-import {mkdtempSync,writeFileSync,mkdirSync,readFileSync,rmSync,existsSync,symlinkSync} from 'node:fs';
+import {mkdtempSync,writeFileSync,mkdirSync,readFileSync,rmSync,existsSync,symlinkSync,chmodSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 const unixTest=process.platform==='win32'?test.skip:test;
@@ -48,6 +48,10 @@ unixTest('real CLI sync is idempotent, isolates foreign profiles and rejects wro
  writeFileSync(join(bin,'infisical'),prelude+`if(!args.includes('--domain=https://secrets.rebuildup.dev/api')||!args.includes('--env=dev')||!args.includes('--path=/devices')||!args.includes('--include-imports=false')||!args.includes('--secret-overriding=false'))process.exit(1);console.log(read(${JSON.stringify(registry)},'utf8'));`,{mode:0o755});
  writeFileSync(join(bin,'ssh'),prelude+`if(existsSync(${JSON.stringify(join(dir,'offline'))}))process.exit(255);console.log(args.at(-1).includes('status server')?'status: running':'Linux\\nbasic\\n306ab9474cff458ca563e7807ded1da5');`,{mode:0o755});
  writeFileSync(join(bin,'herdr'),prelude+`const f=${JSON.stringify(db)},p=JSON.parse(read(f,'utf8'));if(args[1]==='list')console.log(JSON.stringify(p));else if(args[1]==='add'){p.push({id:'managed',label:args.at(-1),target:args[2],session:args[4],enabled:true});write(f,JSON.stringify(p));}else if(args[1]==='remove')write(f,JSON.stringify(p.filter(x=>x.id!==args[2])));else if(args[1]==='disable'||args[1]==='enable'){p.find(x=>x.id===args[2]).enabled=args[1]==='enable';write(f,JSON.stringify(p));}else process.exit(1);`,{mode:0o755});
+ // chmod explicitly: a leaked fs module mock from another test file can drop
+ // the {mode} option, leaving the stubs non-executable (execvp then skips
+ // them and the REAL binaries run).
+ for(const n of ['infisical','ssh','herdr'])chmodSync(join(bin,n),0o755);
  const runSync=(args=['sync'])=>Bun.spawnSync([process.execPath,join(import.meta.dir,'devices.ts'),...args],{env:{...process.env,HOME:home,PATH:bin+':'+process.env.PATH},stdout:'pipe',stderr:'pipe'});
  try{
   const state=join(home,'.local/state/dotfiles/devices'),lock=join(state,'lock');

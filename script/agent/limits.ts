@@ -160,7 +160,7 @@ export const CATEGORY_FACTS: Record<LimitCategory, CategoryFacts> = {
  * (lower number) wins, so a later billing/auth observation can never be
  * weakened by an earlier transient block.
  */
-const CATEGORY_SEVERITY: Record<LimitCategory, number> = {
+export const CATEGORY_SEVERITY: Record<LimitCategory, number> = {
   billing: 0,
   auth: 0,
   "quota-exhausted": 1,

@@ -643,9 +643,12 @@ describe("admission blocks", () => {
       mock.module("node:fs", () => ({
         ...realFs,
         // Behave like the real write (the tmp file IS created), then fail —
-        // exactly the window where debris could be left behind.
-        writeFileSync: (path: string, data: string) => {
-          realWriteFileSync(path, data);
+        // exactly the window where debris could be left behind. All args are
+        // forwarded: this mock outlives mock.restore() in this bun version,
+        // and dropping `options` would silently strip mode bits (e.g. 0o755)
+        // from unrelated test fixtures.
+        writeFileSync: (...args: Parameters<typeof realWriteFileSync>) => {
+          realWriteFileSync(...args);
           if (injected === 0) {
             injected += 1;
             throw new Error("injected ENOSPC");

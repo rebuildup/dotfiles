@@ -100,8 +100,11 @@ evaluation).
   `models.yml` under a `dotfiles-omp-<provider>` profile and passes
   `--profile`. For OVHcloud the file declares `auth: none` — that IS the
   credential-free contract the native-provider path could not provide. For
-  credentialed providers `apiKey` names the credential *env var*; the value
-  is never written to the file.
+  Infisical-backed providers `apiKey` is an OMP `!command`
+  (`script/agent/infisical-key.sh <SECRET>`): OMP runs it and uses stdout as
+  the key, so the secret travels Infisical → OMP directly and never enters
+  Herdr `--env` argv, the pane environment, or the Herdr server. The env-name
+  form remains only for providers whose credential is ambient-only.
 - **No route at all for SiliconFlow.** Its key
   exists in Infisical but the account is not entitled: the key is valid only on the international host, where
   the free chat IDs answer 402/403. This is an account action, not a launcher
@@ -141,9 +144,10 @@ output = 65536                  # generated models.yml; falls back to the
 `omp_custom` requires `base_url` (the OpenAI-compatible spelling —
 `opencode_base_url` when set), a non-empty `models` list, and either a
 credential env/secret name or `anonymous = true`. `omp_id`, when present,
-must equal the provider key. The generated `models.yml` is byte-verified on
-every launch: a file the launcher did not write is never overwritten, and a
-post-plan tamper fails the pre-spawn guard. Ambient `OMP_PROFILE` /
+must equal the provider key. The generated `models.yml` carries the
+launcher-managed marker: a file without it is never overwritten, a stale
+managed file is rewritten atomically, and a post-plan tamper fails the
+pre-spawn sha256 recheck. Ambient `OMP_PROFILE` /
 `PI_*` overrides are rejected on `omp_custom` routes because the launcher
 passes `--profile` explicitly.
 
@@ -267,7 +271,8 @@ OpenAI-compatible `/v1` surface (OpenCode custom provider via
 `opencode_npm` + `opencode_base_url`) and an Anthropic-protocol
 `/v1/messages` surface at the bare origin (Claude Code appends the path
 itself). `omp.logfare` reaches the same `/v1` surface through `omp_custom`
-(managed `models.yml`, `apiKey = LOGFARE_API_KEY`). Same account budget on
+(managed `models.yml`, `apiKey` = the `infisical-key.sh LOGFARE_API_KEY`
+command). Same account budget on
 all three routes; still explicit opt-in only.
 
 `omp.requesty`, `omp.modelscope` and `omp.ovhcloud` likewise run through
