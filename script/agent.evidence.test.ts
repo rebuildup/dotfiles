@@ -173,6 +173,22 @@ describe("extractProviderFailureEvidence", () => {
     })).toBeNull();
   });
 
+  it("returns null when two same-prompt sessions make attribution ambiguous", () => {
+    // Worker A errored, worker B (identical prompt/cwd/provider) succeeded:
+    // either outcome could be misattributed, so evidence stays unknown.
+    sessionFile([errorEvent(SINCE + 1000, 401)]);
+    const dir = join(root, "proj");
+    const lines = [
+      JSON.stringify({ type: "session", version: 3, id: "s3", timestamp: "2026-11-18T13:00:02.000Z", cwd }),
+      JSON.stringify(userEvent(SINCE + 800)),
+      JSON.stringify(successEvent(SINCE + 1500)),
+    ];
+    writeFileSync(join(dir, "2026-11-18T13-00-03-000Z_s3.jsonl"), lines.join("\n") + "\n");
+    expect(extractProviderFailureEvidence({
+      provider: provider(), cwd, sinceMs: SINCE, sessionsRoot: root, prompt: PROMPT,
+    })).toBeNull();
+  });
+
   it("returns null when the sessions root does not exist", () => {
     expect(extractProviderFailureEvidence({
       provider: provider(), cwd, sinceMs: SINCE,

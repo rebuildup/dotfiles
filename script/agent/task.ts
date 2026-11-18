@@ -220,7 +220,11 @@ async function journaledEffect<T>(
     journalPostEffect(taskAttemptStore, taskJournalStore, lease, { effectId, outcome: "succeeded", ref: null }, Date.now());
     return result;
   } catch (error) {
-    journalPostEffect(taskAttemptStore, taskJournalStore, lease, { effectId, outcome: "failed", ref: null }, Date.now());
+    // An exception mid-operation means the effect's outcome is UNKNOWN —
+    // the worker may or may not have received/acted on it. Do NOT post:
+    // the pre-without-post entry stays pending and blocks replay until
+    // externally reconciled. Asserting "failed" here would launder an
+    // uncertain effect into a known one.
     throw error;
   }
 }
@@ -1342,6 +1346,7 @@ export async function runTaskToCompletion(
   // Exclusive execution lease: fences any concurrent resume/dispatch on the
   // same task and anchors journal pre/post entries for this run.
   const lease = acquireTaskLease(descriptor, `task-${process.pid}`);
+  const baselineBefore = captureWorkspaceBaseline();
   try {
   // Unreconciled effects from a previous run block replay — never assume
   // an interrupted operation did not happen.
@@ -1393,6 +1398,9 @@ export async function runTaskToCompletion(
     ...(isPlainObject(collected.result) ? collected.result : { value: collected.result }),
     ...(acceptance ? { acceptance } : {}),
     workspaceBaseline: captureWorkspaceBaseline(),
+    ...(workspaceDrift(baselineBefore, captureWorkspaceBaseline())
+      ? { workspaceDrift: workspaceDrift(baselineBefore, captureWorkspaceBaseline()) }
+      : {}),
   };
   const outcomeError: ClassifiedError | undefined = !collected.success
     ? collected.error
@@ -1510,16 +1518,13 @@ export async function resumeTaskAttempt(
   const attemptKey = taskAttemptKey(state.descriptor);
   assertNoPendingEffects(attemptKey, taskId);
   const lease = acquireTaskLease(state.descriptor, `resume-${process.pid}`);
+  // The lease covers the WHOLE resume — prompt, evidence scan, collect,
+  // acceptance verification and the durable outcome write — so a concurrent
+  // resume or stale writer is fenced until the new state is committed.
   let promptResult;
   try {
     promptResult = await journaledEffect(lease, uniqueEffectId("prompt", resumed.herdrWorkerName!), "prompt-send", resumed.herdrWorkerName!, () =>
       promptAgent(resumed.herdrWorkerName!, prompt, { wait: true, timeoutMs: promptTimeoutMs }));
-  } finally {
-    // The lease covers prompt dispatch; outcome recording below is protected
-    // by the task-state lock + generation guard. Release so a later resume
-    // can proceed; expiry would fence anyway.
-    try { releaseLease(taskAttemptStore, lease, Date.now()); } catch { /* expiry fences */ }
-  }
   const signal = promptFailureSignal(promptResult);
   if (signal) {
     // Same evidence contract as dispatch: real provider errorStatus from
@@ -1590,6 +1595,9 @@ export async function resumeTaskAttempt(
     result: storedResult,
   });
   return { ...collected, attempt: resumed, ...(acceptance ? { acceptance } : {}) };
+  } finally {
+    try { releaseLease(taskAttemptStore, lease, Date.now()); } catch { /* expiry fences */ }
+  }
 }
 
 /**
