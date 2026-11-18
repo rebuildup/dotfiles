@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // Infisical owns destinations; OpenSSH and Herdr own transport and terminals.
-import {readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, lstatSync, rmSync, copyFileSync, rmdirSync, readdirSync, openSync, fstatSync, closeSync, constants} from 'node:fs';
-import {homedir, platform, userInfo} from 'node:os';
+import {readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, lstatSync, rmSync, copyFileSync, rmdirSync, readdirSync, openSync, fstatSync, closeSync, constants, mkdtempSync} from 'node:fs';
+import {homedir, platform, userInfo, tmpdir} from 'node:os';
 import {join, resolve} from 'node:path';
 import {randomUUID} from 'node:crypto';
 
@@ -80,6 +80,17 @@ function providerArgs(){
  return [`--domain=${domain}`,`--projectId=${project}`,`--env=${env}`,'--path=/devices','--silent'];
 }
 function run(args:string[],timeout=30000):string{
+ // Windows OpenSSH never exits while stdout/stderr are pipes; hand ssh real file handles instead.
+ if(platform()==='win32'&&args[0]==='ssh'){
+  const dir=mkdtempSync(join(tmpdir(),'devices-ssh-'));
+  const out=join(dir,'out'),err=join(dir,'err');
+  const fo=openSync(out,'w'),fe=openSync(err,'w');
+  try{
+   const p=Bun.spawnSync(args,{stdin:'ignore',stdout:fo,stderr:fe,timeout});
+   if(p.exitCode!==0)throw Error(`${args[0]} ${args[1]} failed: ${readFileSync(err,'utf8').trim()||'timeout or nonzero exit'}`);
+   return readFileSync(out,'utf8');
+  }finally{closeSync(fo);closeSync(fe);rmSync(dir,{recursive:true,force:true});}
+ }
  const p=Bun.spawnSync(args,{stdin:'ignore',stdout:'pipe',stderr:'pipe',timeout});
  if(p.exitCode!==0)throw Error(`${args[0]} ${args[1]} failed: ${p.stderr.toString().trim()||'timeout or nonzero exit'}`);
  return p.stdout.toString();
