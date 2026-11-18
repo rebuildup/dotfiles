@@ -19,8 +19,15 @@ import {
   verifyAcceptanceCriteria,
   captureWorkspaceBaseline,
   runTaskToCompletion,
+  reconcileTaskEffects,
+  gitOperationInProgress,
 } from "./agent/task.ts";
-import { ContractError } from "./agent/contract.ts";
+import { ContractError, formatAttemptKey } from "./agent/contract.ts";
+import { acquireLease, FsAttemptStore } from "./agent/attempts.ts";
+import { journalPreEffect, FsJournalStore } from "./agent/checkpoint.ts";
+import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { writeFileSync } from "node:fs";
 import { type Config, type Provider } from "./agent/config.ts";
 import { rmSync, existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -791,6 +798,58 @@ describe("fallback scope gate", () => {
         prompt: "p",
         profileId: "prof-1",
       })).rejects.toThrow(ContractError);
+    } finally {
+      process.chdir(prev);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("journal reconcile contract", () => {
+  it("a crash between pre and post stays pending; reconcile cannot prove it", async () => {
+    // Fault injection: journal 'pre' written, process "crashes" before
+    // post. The effect is UNKNOWN — reconcile with no provider evidence
+    // must leave it pending, never resolve it as sent or failed.
+    const taskId = `test-reconcile-${randomUUID().slice(0, 8)}`;
+    const descriptor = { id: taskId, route: "omp.groq", model: "test-model", prompt: "prompt-unique-xyz" };
+    saveTaskState(taskId, { descriptor, history: [], currentAttempt: null });
+    const key = formatAttemptKey({ route: descriptor.route, model: descriptor.model, machine: "", attempt: taskId });
+    const attempts = new FsAttemptStore();
+    const journal = new FsJournalStore();
+    // Expired lease simulates the dead owner; reconcile must supersede it.
+    const dead = acquireLease(attempts, key, "dead-owner", { now: Date.now() - 7200000, leaseMs: 3600000 });
+    journalPreEffect(attempts, journal, dead, { effectId: "prompt-w-1", kind: "prompt-send", target: "w-1" }, Date.now() - 7100000);
+    const report = await reconcileTaskEffects({ providers: {} } as Config, taskId);
+    expect(report.resolved).toEqual([]);
+    expect(report.pending).toContain("prompt-w-1");
+  });
+
+  it("duplicate effect ids cannot double-post", async () => {
+    const taskId = `test-dupe-${randomUUID().slice(0, 8)}`;
+    const descriptor = { id: taskId, route: "omp.groq", model: "test-model", prompt: "p" };
+    saveTaskState(taskId, { descriptor, history: [], currentAttempt: null });
+    const key = formatAttemptKey({ route: descriptor.route, model: descriptor.model, machine: "", attempt: taskId });
+    const attempts = new FsAttemptStore();
+    const journal = new FsJournalStore();
+    const lease = acquireLease(attempts, key, "t", { now: Date.now(), leaseMs: 3600000 });
+    journalPreEffect(attempts, journal, lease, { effectId: "e1", kind: "prompt-send", target: "w" }, Date.now());
+    const { journalPostEffect } = await import("./agent/checkpoint.ts");
+    journalPostEffect(attempts, journal, lease, { effectId: "e1", outcome: "succeeded", ref: null }, Date.now());
+    expect(() => journalPostEffect(attempts, journal, lease, { effectId: "e1", outcome: "succeeded", ref: null }, Date.now())).toThrow();
+  });
+});
+
+describe("git operation gate", () => {
+  it("detects in-progress git operations and is false otherwise", () => {
+    const prev = process.cwd();
+    const dir = mkdtempSync(join(tmpdir(), "gitop-"));
+    try {
+      process.chdir(dir);
+      expect(gitOperationInProgress()).toBe(false); // not a repo
+      spawnSync("git", ["init", "-q"], { cwd: dir });
+      expect(gitOperationInProgress()).toBe(false); // clean repo
+      writeFileSync(join(dir, ".git", "MERGE_HEAD"), "0".repeat(40) + "\n");
+      expect(gitOperationInProgress()).toBe(true);
     } finally {
       process.chdir(prev);
       rmSync(dir, { recursive: true, force: true });
