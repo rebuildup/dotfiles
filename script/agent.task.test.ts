@@ -18,10 +18,12 @@ import {
   routeWorkerEnv,
   verifyAcceptanceCriteria,
   captureWorkspaceBaseline,
+  runTaskToCompletion,
 } from "./agent/task.ts";
 import { ContractError } from "./agent/contract.ts";
 import { type Config, type Provider } from "./agent/config.ts";
-import { rmSync, existsSync } from "node:fs";
+import { rmSync, existsSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { agentStateDir } from "./agent/contract.ts";
 
@@ -770,6 +772,29 @@ describe("generation fencing on outcome writes", () => {
     const state = loadTaskState(taskId);
     expect(state?.currentAttempt?.generation).toBe(2);
     expect(state?.currentAttempt?.status).toBe("completed");
+  });
+});
+
+describe("fallback scope gate", () => {
+  it("refuses a fallback profile outside any verifiable scope", async () => {
+    // Non-git cwd + no --accept + no acknowledgement => the worker's side
+    // effects cannot be audited, so auto-fallback must fail closed BEFORE
+    // dispatch creates any worker.
+    const prev = process.cwd();
+    const dir = mkdtempSync(join(tmpdir(), "task-nogit-"));
+    process.chdir(dir);
+    try {
+      await expect(runTaskToCompletion({} as Config, {
+        id: "task-gate-1",
+        route: "omp.groq",
+        model: "m",
+        prompt: "p",
+        profileId: "prof-1",
+      })).rejects.toThrow(ContractError);
+    } finally {
+      process.chdir(prev);
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

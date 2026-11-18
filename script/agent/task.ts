@@ -61,7 +61,7 @@ import {
   journalPostEffect,
   pendingSideEffects,
 } from "./checkpoint.ts";
-import { extractProviderFailureEvidence } from "./evidence.ts";
+import { extractProviderFailureEvidence, providerTurnObserved } from "./evidence.ts";
 import { randomUUID } from "node:crypto";
 
 // ---------------------------------------------------------------------------
@@ -80,6 +80,9 @@ export interface TaskDescriptor {
   maxAttempts?: number;
   acceptanceCriteria?: string[];
   timeoutMs?: number;
+  /** Explicit operator acknowledgement that fallback may run with side
+   *  effects outside observable scope (no --accept, non-git cwd). */
+  allowUnobservedEffects?: boolean;
 }
 
 export interface TaskAttempt {
@@ -204,20 +207,34 @@ function uniqueEffectId(kind: string, target: string): string {
   return id.slice(0, 64).replace(/[^A-Za-z0-9._-]/g, "-");
 }
 
-/** Run `fn` between journal pre/post entries under the caller's lease. */
+type EffectVerdict = "succeeded" | "failed" | "unknown";
+
+/** Run `fn` between journal pre/post entries under the caller's lease.
+ *  `verdict` classifies a NORMAL return: "unknown" leaves the pre pending
+ *  (Herdr returned but cannot prove the effect landed — e.g. a wait
+ *  timeout), "failed" records a structured rejection. Exceptions never
+ *  post: mid-flight outcome is UNKNOWN by definition. */
 async function journaledEffect<T>(
   lease: Lease | undefined,
   effectId: string,
   kind: string,
   target: string,
   fn: () => Promise<T>,
+  verdict?: (result: T) => EffectVerdict,
 ): Promise<T> {
   if (!lease) return fn();
   const now = Date.now();
   journalPreEffect(taskAttemptStore, taskJournalStore, lease, { effectId, kind, target }, now);
   try {
     const result = await fn();
-    journalPostEffect(taskAttemptStore, taskJournalStore, lease, { effectId, outcome: "succeeded", ref: null }, Date.now());
+    const v = verdict ? verdict(result) : "succeeded";
+    if (v === "succeeded") {
+      journalPostEffect(taskAttemptStore, taskJournalStore, lease, { effectId, outcome: "succeeded", ref: null }, Date.now());
+    } else if (v === "failed") {
+      journalPostEffect(taskAttemptStore, taskJournalStore, lease, { effectId, outcome: "failed", ref: null }, Date.now());
+    }
+    // "unknown": no post — the pre stays pending and blocks replay until
+    // reconcileTaskEffects resolves it against observed evidence.
     return result;
   } catch (error) {
     // An exception mid-operation means the effect's outcome is UNKNOWN —
@@ -227,6 +244,16 @@ async function journaledEffect<T>(
     // uncertain effect into a known one.
     throw error;
   }
+}
+
+/** promptAgent's structured result decides the journal verdict for a
+ *  prompt-send: a structured rejection (agent_blocked / errorCode) is a
+ *  KNOWN failure; a stall or missing CLI means the prompt may or may not
+ *  have landed — UNKNOWN, never recorded as sent. */
+function promptSendVerdict(r: { blocked?: boolean; stalled?: boolean; errorCode?: string }): EffectVerdict {
+  if (r.blocked === true || r.errorCode !== undefined) return "failed";
+  if (r.stalled === true) return "unknown";
+  return "succeeded";
 }
 
 /** Acquire the exclusive execution lease for a task attempt. */
@@ -438,6 +465,10 @@ function parseStoredDescriptor(raw: unknown, where: string): TaskDescriptor {
     throw new ContractError("schema", `${where}: acceptanceCriteria must be an array`);
   }
   const profileId = optStr(raw, "profileId");
+  const allowUnobservedEffects = raw["allowUnobservedEffects"];
+  if (allowUnobservedEffects !== undefined && typeof allowUnobservedEffects !== "boolean") {
+    throw new ContractError("schema", `${where}: allowUnobservedEffects must be a boolean`);
+  }
   return {
     id: requireStr(raw, "id", where),
     route: requireStr(raw, "route", where),
@@ -448,6 +479,7 @@ function parseStoredDescriptor(raw: unknown, where: string): TaskDescriptor {
     ...(maxAttempts !== undefined ? { maxAttempts } : {}),
     ...(acceptanceCriteria !== undefined ? { acceptanceCriteria: stringList(acceptanceCriteria, where, "acceptanceCriteria") } : {}),
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+    ...(allowUnobservedEffects === true ? { allowUnobservedEffects: true } : {}),
   };
 }
 
@@ -926,7 +958,7 @@ export async function startTaskAttempt(
   config: Config,
   attempt: TaskAttempt,
   prompt: string,
-  opts?: { timeoutMs?: number; evidenceSinceMs?: number; lease?: Lease }
+  opts?: { timeoutMs?: number; evidenceSinceMs?: number; lease?: Lease; attemptKey?: string }
 ): Promise<{ success: boolean; error?: ClassifiedError; result?: unknown; workerName?: string; paneId?: string }> {
   // --timeout propagates to every prompt wait in this attempt (primary and
   // each fallback candidate); the default matches the previous fixed bound.
@@ -979,7 +1011,7 @@ export async function startTaskAttempt(
         // authorized.
         if (candidate === null) {
           const promptResult = await journaledEffect(opts?.lease, uniqueEffectId("prompt", attempt.herdrWorkerName!), "prompt-send", attempt.herdrWorkerName!, () =>
-            promptAgent(attempt.herdrWorkerName!, prompt, { wait: true, timeoutMs: promptTimeoutMs }));
+            promptAgent(attempt.herdrWorkerName!, prompt, { wait: true, timeoutMs: promptTimeoutMs }), promptSendVerdict);
           const signal = promptFailureSignal(promptResult);
           if (signal) {
             const enriched = primaryProvider
@@ -1009,6 +1041,10 @@ export async function startTaskAttempt(
           );
         }
 
+        // Gate EVERY candidate dispatch: an unreconciled effect from a
+        // prior candidate (or an interrupted run) must block the next
+        // external operation — never assume it did not happen.
+        if (opts?.attemptKey) assertNoPendingEffects(opts.attemptKey, attempt.taskId);
         const workerName = `worker-${attempt.taskId.slice(0, 8)}-${routeRef.harness}-${randomUUID().slice(0, 8)}`;
         const candidatePrepared = preparedProviders.get(routeRef.provider)
           ?? prepareOmpWorker(candidateProvider);
@@ -1026,10 +1062,13 @@ export async function startTaskAttempt(
           }),
         );
 
+        // Re-check immediately before the candidate prompt: the worker-start
+        // post may have raced a crash-window effect.
+        if (opts?.attemptKey) assertNoPendingEffects(opts.attemptKey, attempt.taskId);
         let outcome: { success: boolean; error?: FailureSignal; result?: unknown } | undefined;
         try {
           const promptResult = await journaledEffect(opts?.lease, uniqueEffectId("prompt", candidateAttempt.workerName), "prompt-send", candidateAttempt.workerName, () =>
-            promptAgent(candidateAttempt.workerName, prompt, { wait: true, timeoutMs: promptTimeoutMs }));
+            promptAgent(candidateAttempt.workerName, prompt, { wait: true, timeoutMs: promptTimeoutMs }), promptSendVerdict);
           const signal = promptFailureSignal(promptResult);
           if (signal) {
             outcome = {
@@ -1081,7 +1120,7 @@ export async function startTaskAttempt(
     } else {
       // No fallback profile - single route execution
       const promptResult = await journaledEffect(opts?.lease, uniqueEffectId("prompt", attempt.herdrWorkerName!), "prompt-send", attempt.herdrWorkerName!, () =>
-        promptAgent(attempt.herdrWorkerName!, prompt, { wait: true, timeoutMs: promptTimeoutMs }));
+        promptAgent(attempt.herdrWorkerName!, prompt, { wait: true, timeoutMs: promptTimeoutMs }), promptSendVerdict);
       const signal = promptFailureSignal(promptResult);
       if (signal) {
         const enriched = primaryProvider
@@ -1337,6 +1376,25 @@ export async function runTaskToCompletion(
   config: Config,
   descriptor: TaskDescriptor
 ): Promise<CollectResult> {
+  // Auto-fallback re-prompts workers whose external side effects cannot be
+  // fully audited. Restrict it to scopes where continuation is verifiable:
+  // declared acceptance criteria, a git-observable workspace (drift is
+  // recorded), or an explicit operator acknowledgement. Otherwise fail
+  // closed BEFORE any worker is created.
+  if (descriptor.profileId) {
+    const verifiable =
+      (descriptor.acceptanceCriteria?.length ?? 0) > 0 ||
+      captureWorkspaceBaseline() !== null ||
+      descriptor.allowUnobservedEffects === true;
+    if (!verifiable) {
+      throw new ContractError(
+        "policy",
+        "fallback profile requires a verifiable scope: pass --accept criteria, " +
+          "run inside a git worktree (workspace drift is recorded), or pass " +
+          "--allow-unobserved-effects to acknowledge unaudited side effects",
+      );
+    }
+  }
   // Dispatch the task
   const { attempt } = await dispatchTask(config, descriptor);
   
@@ -1356,6 +1414,7 @@ export async function runTaskToCompletion(
   const startResult = await startTaskAttempt(config, attempt, descriptor.prompt, {
     timeoutMs: descriptor.timeoutMs,
     lease,
+    attemptKey: taskAttemptKey(descriptor),
   });
   
   if (!startResult.success) {
@@ -1467,6 +1526,65 @@ export async function runTaskToCompletion(
  * re-verified and durable status follows the same worker-success AND
  * acceptance-verified rule as dispatch.
  */
+/**
+ * Reconcile pending (pre-without-post) journal effects for a task.
+ *
+ * A "prompt-send" UNKNOWN resolves to succeeded ONLY on positive proof:
+ * exactly one provider session observed the prompt turn at/after the
+ * pre timestamp. Zero or ambiguous matches stay pending — absence of
+ * evidence is not evidence of absence. A "worker-start" resolves when
+ * the worker still exists in Herdr. Everything else stays pending and
+ * keeps blocking replay. The reconcile itself holds the execution lease
+ * so it cannot interleave with a live run/resume.
+ */
+export async function reconcileTaskEffects(
+  config: Config,
+  taskId: string,
+): Promise<{ resolved: string[]; pending: string[] }> {
+  const state = loadTaskState(taskId);
+  if (!state) {
+    throw new ContractError("identity", `no task state for '${taskId}'`);
+  }
+  const attemptKey = taskAttemptKey(state.descriptor);
+  const pending = pendingSideEffects(taskJournalStore, attemptKey);
+  if (pending.length === 0) return { resolved: [], pending: [] };
+  const lease = acquireTaskLease(state.descriptor, `reconcile-${process.pid}`);
+  const resolved: string[] = [];
+  const stillPending: string[] = [];
+  try {
+    for (const effect of pending) {
+      let outcome: "succeeded" | "failed" | null = null;
+      if (effect.kind === "prompt-send") {
+        const sinceMs = Date.parse(effect.declaredAt);
+        const verdicts = Object.values(config.providers).map((provider) =>
+          providerTurnObserved({
+            provider,
+            cwd: process.cwd(),
+            sinceMs: Number.isFinite(sinceMs) ? sinceMs : 0,
+            prompt: state.descriptor.prompt,
+          }));
+        const ones = verdicts.filter((v) => v === "one").length;
+        const manies = verdicts.filter((v) => v === "many").length;
+        if (ones === 1 && manies === 0) outcome = "succeeded";
+      } else if (effect.kind === "worker-start") {
+        const agent = await getAgent(effect.target).catch(() => null);
+        if (agent !== null) outcome = "succeeded";
+      }
+      if (outcome !== null) {
+        journalPostEffect(taskAttemptStore, taskJournalStore, lease, {
+          effectId: effect.effectId, outcome, ref: null,
+        }, Date.now());
+        resolved.push(effect.effectId);
+      } else {
+        stillPending.push(effect.effectId);
+      }
+    }
+  } finally {
+    try { releaseLease(taskAttemptStore, lease, Date.now()); } catch { /* expiry fences */ }
+  }
+  return { resolved, pending: stillPending };
+}
+
 export async function resumeTaskAttempt(
   config: Config,
   taskId: string,
@@ -1524,7 +1642,7 @@ export async function resumeTaskAttempt(
   let promptResult;
   try {
     promptResult = await journaledEffect(lease, uniqueEffectId("prompt", resumed.herdrWorkerName!), "prompt-send", resumed.herdrWorkerName!, () =>
-      promptAgent(resumed.herdrWorkerName!, prompt, { wait: true, timeoutMs: promptTimeoutMs }));
+      promptAgent(resumed.herdrWorkerName!, prompt, { wait: true, timeoutMs: promptTimeoutMs }), promptSendVerdict);
   const signal = promptFailureSignal(promptResult);
   if (signal) {
     // Same evidence contract as dispatch: real provider errorStatus from

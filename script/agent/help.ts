@@ -673,7 +673,7 @@ usage:
   agent task run <route> --model <id> [--fallback <profile-id>]
       [--prompt <text>] [--accept <criteria>]...
   agent task resume <task-id> [--prompt <text>] [--timeout <ms>]
-  agent task status <task-id>
+  agent task status|reconcile <task-id>
   agent help
 subcommands:
   agent help                 show this help
@@ -700,13 +700,13 @@ subcommands:
                              fallback (issue #136); does not execute fallback
   agent task run <route>               dispatch a prompt to a Herdr worker on
                              <harness>.<provider>; --model picks the model
-                             (route default when omitted); --fallback names
-                             an opt-in continuity profile whose candidates
-                             serve after a classified primary failure;
-                             --prompt supplies task text (stdin when omitted
-                             and not a TTY); --accept records a criterion
-  agent task resume <task-id>          continue a single-route attempt in place
-  agent task status <task-id>          durable task state (attempts, failures)
+                             (route default); --fallback names an opt-in
+                             continuity profile; --prompt supplies task
+                             text (stdin when omitted); --accept verifies
+                             criteria post-collect; --fallback needs
+                             --accept, git cwd, or --allow-unobserved-effects
+  agent task resume <task-id>          continue an attempt in place
+  agent task status|reconcile <task-id> durable state / resolve journal UNKNOWNs
   agent help --json          machine-readable help (quotes this text)
 
 shortcut form:

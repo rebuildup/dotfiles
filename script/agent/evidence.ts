@@ -244,3 +244,31 @@ export function extractProviderFailureEvidence(opts: {
     errorKind: null,
   };
 }
+
+/**
+ * Reconciliation probe (issue #173): did a provider session provably
+ * observe THIS prompt turn? Returns "one" when exactly one session
+ * matches (provider + cwd + exact prompt + window), "many" when several
+ * do (indistinguishable parallel workers — attribution impossible),
+ * "none" when no session shows the prompt. Used to resolve journal
+ * "prompt-send" UNKNOWNs: "one" proves delivery+processing, anything
+ * else stays pending.
+ */
+export function providerTurnObserved(opts: {
+  provider: Provider;
+  cwd: string;
+  sinceMs: number;
+  prompt: string;
+  sessionsRoot?: string;
+}): "none" | "one" | "many" {
+  const root = opts.sessionsRoot ?? ompSessionsRoot(opts.provider);
+  let count = 0;
+  for (const file of sessionFilesSince(root, opts.sinceMs)) {
+    const hit = scanSessionFile(file, opts.cwd, opts.provider, opts.sinceMs, opts.prompt);
+    if (hit.matched) {
+      count += 1;
+      if (count > 1) return "many";
+    }
+  }
+  return count === 1 ? "one" : "none";
+}

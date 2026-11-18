@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { extractProviderFailureEvidence } from "./agent/evidence.ts";
+import { extractProviderFailureEvidence, providerTurnObserved } from "./agent/evidence.ts";
 import type { Provider } from "./agent/config.ts";
 
 function provider(overrides: Partial<Provider> = {}): Provider {
@@ -187,6 +187,21 @@ describe("extractProviderFailureEvidence", () => {
     expect(extractProviderFailureEvidence({
       provider: provider(), cwd, sinceMs: SINCE, sessionsRoot: root, prompt: PROMPT,
     })).toBeNull();
+  });
+
+  it("providerTurnObserved distinguishes none/one/many for reconcile", () => {
+    const opts = { provider: provider(), cwd, sinceMs: SINCE, sessionsRoot: root, prompt: PROMPT };
+    expect(providerTurnObserved(opts)).toBe("none");
+    sessionFile([userEvent(SINCE + 500), successEvent(SINCE + 900)]);
+    expect(providerTurnObserved(opts)).toBe("one");
+    // A second indistinguishable same-prompt session makes it ambiguous.
+    const dir = join(root, "proj");
+    writeFileSync(join(dir, "2026-11-18T13-00-09-000Z_s9.jsonl"), [
+      JSON.stringify({ type: "session", version: 3, id: "s9", timestamp: "2026-11-18T13:00:09.000Z", cwd }),
+      JSON.stringify(userEvent(SINCE + 700)),
+      JSON.stringify(successEvent(SINCE + 1200)),
+    ].join("\n") + "\n");
+    expect(providerTurnObserved(opts)).toBe("many");
   });
 
   it("returns null when the sessions root does not exist", () => {

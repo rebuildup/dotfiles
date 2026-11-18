@@ -72,6 +72,13 @@ function parseTaskArgs(argv: string[]): Action {
     }
     return ["task", "status", argv[1]];
   }
+  if (sub === "reconcile") {
+    const taskId = argv[1];
+    if (!taskId || taskId.startsWith("-")) {
+      throw new AgentError("usage: agent task reconcile <task-id>");
+    }
+    return ["task", "reconcile", taskId];
+  }
   if (sub === "resume") {
     const taskId = argv[1];
     if (!taskId || taskId.startsWith("-")) {
@@ -103,7 +110,7 @@ function parseTaskArgs(argv: string[]): Action {
   }
   if (sub !== "run") {
     throw new AgentError(
-      `unknown task action '${sub ?? ""}'; usage: agent task run|resume|status ...`
+      `unknown task action '${sub ?? ""}'; usage: agent task run|resume|status|reconcile ...`
     );
   }
   const route = argv[1];
@@ -115,6 +122,7 @@ function parseTaskArgs(argv: string[]): Action {
   }
   const opts: TaskRunOptions = {
     model: null, fallback: null, prompt: null, accept: [], timeoutMs: null,
+    allowUnobservedEffects: false,
   };
   const rest = argv.slice(2);
   for (let i = 0; i < rest.length; i++) {
@@ -128,6 +136,7 @@ function parseTaskArgs(argv: string[]): Action {
     else if (token === "--fallback") opts.fallback = take();
     else if (token === "--prompt") opts.prompt = take();
     else if (token === "--accept") opts.accept.push(take());
+    else if (token === "--allow-unobserved-effects") opts.allowUnobservedEffects = true;
     else if (token === "--timeout") {
       const raw = take();
       const ms = Number(raw);
@@ -152,6 +161,7 @@ export interface TaskRunOptions {
   prompt: string | null;
   accept: string[];
   timeoutMs: number | null;
+  allowUnobservedEffects: boolean;
 }
 
 export interface TaskResumeOptions {
@@ -162,7 +172,8 @@ export interface TaskResumeOptions {
 export type TaskAction =
   | ["task", "run", string, TaskRunOptions]
   | ["task", "status", string]
-  | ["task", "resume", string, TaskResumeOptions];
+  | ["task", "resume", string, TaskResumeOptions]
+  | ["task", "reconcile", string];
 
 export type Action =
   | ["help", boolean]
