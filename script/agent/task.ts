@@ -23,7 +23,7 @@ import {
   type FailureSignal,
   classifyFailure,
 } from "./fallback-exec.ts";
-import { type Config, type Provider } from "../agent.ts";
+import { ensureOmpCustomProvider, type Config, type Provider } from "../agent.ts";
 import { agentStateDir } from "./contract.ts";
 import {
   createWorkspace,
@@ -160,15 +160,23 @@ function harnessToAgentKind(adapter: string): "claude" | "codex" | "opencode" | 
  * different account than the route authorized).
  */
 export function buildAgentStartOptions(provider: Provider, model: string): string[] {
-  // OMP has no credential-free route contract, so an anonymous provider
-  // (e.g. OVHcloud) can never be started on the omp adapter.
-  if (provider.anonymous) {
+  // OMP has no credential-free route contract for a NATIVE provider, so an
+  // anonymous provider can only run on the omp adapter through omp_custom
+  // (models.yml `auth: none` is the credential-free contract).
+  if (provider.anonymous && !provider.omp_custom) {
     throw new ContractError(
       "state",
-      `provider '${provider.key}' is anonymous; OMP has no credential-free route contract, so no omp route may use it`,
+      `provider '${provider.key}' is anonymous; OMP has no credential-free route contract unless omp_custom = true`,
     );
   }
   const args = ["--", "--provider", provider.omp_id, "--model", model];
+  if (provider.omp_custom) {
+    // The worker runs under a Herdr-started OMP process, not through
+    // planOmp, so the managed models.yml must exist before the worker
+    // starts. ensureOmpCustomProvider is idempotent and refuses to clobber
+    // a file it does not own.
+    args.push("--profile", ensureOmpCustomProvider(provider).profile);
+  }
   // Pin the model roles for credentialed providers: agents.toml forbids
   // implicit model fallback on omp routes, so a role switch must not reach
   // another (possibly paid) model.

@@ -61,15 +61,17 @@ agent opencode kilo          # Kilo free models (OpenAI-compatible /v1)
 agent omp kilo               # Kilo free models through OMP's native provider
 agent claude requesty        # independent free path (org-wide 200/day, 20/min)
 agent opencode requesty
+agent omp requesty           # same allowance via omp_custom models.yml
 agent opencode ovhcloud      # anonymous: NO credential, 2 req/min
+agent omp ovhcloud           # anonymous via models.yml `auth: none`, 2 req/min
 agent omp groq               # Groq free tier (8k tokens/min: OMP only)
 ```
 
 | route | default model | credential | limit that matters |
 |---|---|---|---|
 | `claude.kilo`, `opencode.kilo`, `omp.kilo` | `nvidia/nemotron-3-ultra-550b-a55b:free` | Infisical `KILO_API_KEY`, `require_infisical` | 200 req/hour anonymous; per-upstream limits |
-| `claude.requesty`, `opencode.requesty` | `nvidia/nemotron-3-ultra-550b-a55b` | Infisical `REQUESTY_API_KEY`, `require_infisical` | 200 req/day, 20 req/min per organization (all free models combined) |
-| `opencode.ovhcloud` | `gpt-oss-120b` | **none** (`anonymous = true`) | 2 req/min per IP and per model |
+| `claude.requesty`, `opencode.requesty`, `omp.requesty` | `nvidia/nemotron-3-ultra-550b-a55b` | Infisical `REQUESTY_API_KEY`, `require_infisical` | 200 req/day, 20 req/min per organization (all free models combined) |
+| `opencode.ovhcloud`, `omp.ovhcloud` | `gpt-oss-120b` | **none** (`anonymous = true`) | 2 req/min per IP and per model |
 | `omp.groq` | `openai/gpt-oss-120b` | Infisical `GROQ_API_KEY`, `require_infisical` | 8,000 tokens/min (binding), 1,000 req/day |
 
 Selectable alternatives: on `kilo`, `--model kilo-auto/free` (free-model
@@ -87,17 +89,19 @@ evaluation).
   OpenCode turn's system prompt plus tool definitions alone requests
   ~9.9–10.7k tokens, so every real turn is rejected with 429 before a
   response. OMP's smaller prompt stays under it and completes real tasks.
-- **No `claude.ovhcloud` / `omp.ovhcloud`.** The endpoint is
+- **No `claude.ovhcloud`.** The endpoint is
   OpenAI-compatible only (`POST /v1/messages` → 404), and the Anthropic
   adapter must send an auth token — with a credential-free endpoint Claude
   Code would fall back to its own claude.ai login and silently leave the
   route. The adapter rejects `anonymous` providers instead of letting that
-  happen. OMP has no native `ovhcloud` provider, and its credential ladder has
-  no proven credential-free contract, so no `omp.ovhcloud` route exists
-  either.
-- **No `omp.requesty`.** OMP has no native `requesty` or `ovhcloud`
-  provider id (`Unknown provider "requesty"`), and adding one would require
-  a local `models.yml` endpoint override, which this design does not allow.
+  happen.
+- **`omp.ovhcloud` / `omp.requesty` exist only via `omp_custom`.** OMP has
+  no native provider id for either, so the launcher generates a managed
+  `models.yml` under a `dotfiles-omp-<provider>` profile and passes
+  `--profile`. For OVHcloud the file declares `auth: none` — that IS the
+  credential-free contract the native-provider path could not provide. For
+  credentialed providers `apiKey` names the credential *env var*; the value
+  is never written to the file.
 - **No route at all for SiliconFlow.** Its key
   exists in Infisical but the account is not entitled: the key is valid only on the international host, where
   the free chat IDs answer 402/403. This is an account action, not a launcher
@@ -120,7 +124,28 @@ opencode_base_url = "https://api.kilo.ai/api/gateway/v1"
                                  # block (requires opencode_npm; defaults to base_url).
                                  # Claude Code appends /v1/messages itself, so its
                                  # ANTHROPIC_BASE_URL must be the bare origin.
+
+[providers.requesty]
+omp_custom = true               # OMP has no native `requesty` provider id:
+                                 # the launcher writes a managed models.yml
+                                 # under ~/.omp/profiles/dotfiles-omp-requesty/
+                                 # and starts OMP with `--profile`.
+omp_api = "openai-completions"  # optional; defaults to this. Must be one of
+                                 # OMP's documented wire protocols.
+[providers.requesty.omp_models."nvidia/nemotron-3-ultra-550b-a55b"]
+context = 1048576               # per-model contextWindow/maxTokens for the
+output = 65536                  # generated models.yml; falls back to the
+                                # opencode_models limits when absent.
 ```
+
+`omp_custom` requires `base_url` (the OpenAI-compatible spelling —
+`opencode_base_url` when set), a non-empty `models` list, and either a
+credential env/secret name or `anonymous = true`. `omp_id`, when present,
+must equal the provider key. The generated `models.yml` is byte-verified on
+every launch: a file the launcher did not write is never overwritten, and a
+post-plan tamper fails the pre-spawn guard. Ambient `OMP_PROFILE` /
+`PI_*` overrides are rejected on `omp_custom` routes because the launcher
+passes `--profile` explicitly.
 
 `agent check` validates both, plus that a provider declaring `opencode_npm`
 is reachable from at least one `opencode` route (otherwise the custom-provider
@@ -241,13 +266,17 @@ not usable.
 OpenAI-compatible `/v1` surface (OpenCode custom provider via
 `opencode_npm` + `opencode_base_url`) and an Anthropic-protocol
 `/v1/messages` surface at the bare origin (Claude Code appends the path
-itself). Same account budget on both routes; still explicit opt-in only.
-There is no `omp.logfare` — OMP has no native `logfare` provider id and
-`models.yml` endpoint overrides are outside this design.
+itself). `omp.logfare` reaches the same `/v1` surface through `omp_custom`
+(managed `models.yml`, `apiKey = LOGFARE_API_KEY`). Same account budget on
+all three routes; still explicit opt-in only.
+
+`omp.requesty`, `omp.modelscope` and `omp.ovhcloud` likewise run through
+`omp_custom` profiles; their live response/tool-call verification is still
+pending and the route notes say so.
 
 The 2026-11-17 audit of every other provider × harness gap (including why
-`claude.mistral`, `opencode.opencode-go`, `claude.groq`,
-`claude.ovhcloud`, `claude.zen` and `omp.requesty` cannot exist) is in
+`claude.mistral`, `opencode.opencode-go`, `claude.groq` and
+`claude.ovhcloud` cannot exist) is in
 [provider-route-expansion-2026-11-17](research/provider-route-expansion-2026-11-17.md).
 
 ## Policy Controls

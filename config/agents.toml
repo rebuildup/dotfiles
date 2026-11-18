@@ -243,9 +243,10 @@ models = ["deepseek-v4.1-flash", "mimo-v2.6-flash"]
 # (OpenCode reads the key from that env var); no secret value ever enters
 # config content or argv.
 #
-# There is deliberately no `omp.logfare` route: OMP has no native `logfare`
-# provider id and a local models.yml endpoint override is outside this
-# design, so the omp adapter cannot reach this provider.
+# `omp.logfare` exists via omp_custom: OMP has no native `logfare` provider
+# id, so the launcher generates a models.yml under the launcher-owned
+# `dotfiles-omp-logfare` profile (apiKey = LOGFARE_API_KEY env name) and
+# starts OMP with `--profile`.
 [providers.logfare]
 label = "Logfare"
 base_url = "https://logfare.ai"
@@ -255,6 +256,7 @@ default_model = "deepseek-v4.1-flash-1017"
 models = ["deepseek-v4.1-flash-1017", "glm-5.3"]
 opencode_npm = "@ai-sdk/openai-compatible"
 opencode_base_url = "https://logfare.ai/v1"
+omp_custom = true
 
 # Mistral Education / Pro plan; Code > Vibe CLI PLAN key stored in Infisical
 # as MISTRAL_API_KEY. Never use a pay-as-you-go API key here by accident.
@@ -435,6 +437,9 @@ models = [
 ]
 opencode_npm = "@ai-sdk/openai-compatible"
 opencode_base_url = "https://router.requesty.ai/v1"
+# omp.requesty runs through the launcher-owned models.yml profile
+# (dotfiles-omp-requesty); OMP has no native requesty provider id.
+omp_custom = true
 
 [providers.requesty.opencode_models."nvidia/nemotron-3-ultra-550b-a55b"]
 tool_call = true
@@ -485,6 +490,11 @@ limit = { context = 262144, output = 8192 }
 label = "OVHcloud AI Endpoints (anonymous free tier)"
 base_url = "https://oai.endpoints.kepler.ai.cloud.ovh.net/v1"
 anonymous = true
+# omp.ovhcloud runs through models.yml `auth: none` under the
+# dotfiles-omp-ovhcloud profile — the credential-free contract that the
+# native-provider path could not provide. The 2 req/min anonymous budget
+# still applies at runtime.
+omp_custom = true
 default_model = "gpt-oss-120b"
 models = ["gpt-oss-120b", "gpt-oss-20b", "Meta-Llama-3_3-70B-Instruct"]
 opencode_npm = "@ai-sdk/openai-compatible"
@@ -573,6 +583,9 @@ models = [
   "moonshotai/Kimi-K3.1-Pro",
 ]
 opencode_npm = "@ai-sdk/openai-compatible"
+# omp.modelscope runs through the launcher-owned models.yml profile
+# (dotfiles-omp-modelscope); OMP has no native modelscope provider id.
+omp_custom = true
 opencode_base_url = "https://api-inference.modelscope.ai/v1"
 
 # Per-model capability/limit metadata for opencode adapter
@@ -760,9 +773,12 @@ note = "OMP resolves the native DeepSeek provider; both provider ids (deepseek-f
 [routes."omp.minimax"]
 note = "Default is the officially released MiniMax-M3.1-Flash. OMP selects the explicit model id; MiniMax-M3 remains selectable with --model. Live call reached the provider but the M Plan account returned HTTP 429 Token Plan limit on 2026-11-04, so response/tool success is unverified; no fallback."
 
-# OMP route requires OMP native ModelScope provider support (not yet available).
-# [routes."omp.modelscope"]
-# note = "ModelScope International through OMP native provider (requires OMP to add modelscope to its provider catalog). Free models with email-verified account."
+[routes."omp.logfare"]
+default_model = "deepseek-v4.1-flash-1017"
+note = "Logfare via omp_custom models.yml (OpenAI-compatible https://logfare.ai/v1, apiKey = LOGFARE_API_KEY env name under the dotfiles-omp-logfare profile). Same account budget as claude/opencode.logfare: 5,000 req/day, 6 concurrent, never a fallback target and never selected implicitly. Needs Infisical LOGFARE_API_KEY plus the /consent training opt-in. Live verification pending."
+
+[routes."omp.modelscope"]
+note = "ModelScope International via omp_custom models.yml (OpenAI-compatible /v1, apiKey = MODELSCOPE_API_KEY env). Free models with email-verified account. Real response + tool call verified 2026-11-18 on Qwen/Qwen3.8-27B via the opencode route; omp route pending live verification."
 
 [routes."dsh.deepseek"]
 note = "Passthrough: dsh keeps its own native DeepSeek provider and auth (unverified here)."
@@ -804,9 +820,17 @@ note = "Requesty free models via the Anthropic-compatible gateway at the bare or
 default_model = "nvidia/nemotron-3-ultra-550b-a55b"
 note = "Requesty free models via the OpenAI-compatible /v1 surface. Real response + tools + edits verified 2026-11-13 on three free ids."
 
+[routes."omp.requesty"]
+default_model = "nvidia/nemotron-3-ultra-550b-a55b"
+note = "Requesty free models via omp_custom models.yml (OpenAI-compatible /v1, apiKey = REQUESTY_API_KEY env name under the dotfiles-omp-requesty profile; require_infisical). Same organization-wide free allowance as claude/opencode.requesty: 200 req/day, 20 req/min for a new organization. Live verification pending."
+
 [routes."opencode.ovhcloud"]
 default_model = "gpt-oss-120b"
-note = "Anonymous free tier: NO credential of any kind (anonymous = true). 2 req/min per IP and per model, so an agentic turn that needs more than a couple of requests hits 429 and must stop. Real response + tools + edits verified 2026-11-13. No claude/omp route: the endpoint is OpenAI-compatible only and OMP has no credential-free contract."
+note = "Anonymous free tier: NO credential of any kind (anonymous = true). 2 req/min per IP and per model, so an agentic turn that needs more than a couple of requests hits 429 and must stop. Real response + tools + edits verified 2026-11-13. No claude route: the endpoint is OpenAI-compatible only and the Anthropic adapter requires a credential."
+
+[routes."omp.ovhcloud"]
+default_model = "gpt-oss-120b"
+note = "OVHcloud anonymous free tier via omp_custom models.yml `auth: none` under the dotfiles-omp-ovhcloud profile — the credential-free contract. Same 2 req/min per IP+model budget: an agentic turn will hit 429 quickly and the classified rate-limit verdict must stop it, not retry silently. Live verification pending."
 
 [routes."omp.groq"]
 default_model = "openai/gpt-oss-120b"

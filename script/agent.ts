@@ -37,6 +37,7 @@
  */
 
 import { Database } from "bun:sqlite";
+import { createHash } from "node:crypto";
 import { basename, delimiter, dirname, join } from "node:path";
 import {
   accessSync,
@@ -226,12 +227,30 @@ export interface Provider {
   // `/v1` but the Anthropic adapter must use the bare origin (it appends
   // `/v1/messages` itself). Absent = use `base_url`.
   opencode_base_url: string | null;
+  // OMP custom provider (models.yml under a launcher-owned `--profile`).
+  // Used when OMP has no native provider id for this endpoint: the launcher
+  // generates ~/.omp/profiles/dotfiles-omp-<key>/agent/models.yml from this
+  // provider's config and starts OMP with `--profile`. `apiKey` in that file
+  // references the credential env NAME only — never a value.
+  omp_custom: boolean;
+  // Wire protocol for the generated models.yml entry (`api` field). Absent
+  // defaults to "openai-completions".
+  omp_api: string | null;
+  // Per-model context/output contract for the generated models.yml entries.
+  // Falls back to opencode_models.limit when an entry is absent there.
+  omp_models: Record<string, OmpModelSpec>;
 }
 
 /** OpenCode model entry built from config: tool support + enforced limits. */
 interface OcModelSpec {
   tool_call: boolean;
   limit: { context: number; output: number };
+}
+
+/** OMP models.yml model limits: context window and max output tokens. */
+interface OmpModelSpec {
+  context: number;
+  output: number;
 }
 
 export interface Harness {
@@ -271,7 +290,15 @@ interface Plan {
   // always inject this route's credential from Infisical (no ambient fast path)
   require_infisical: boolean;
   // OMP credential/endpoint override guard, re-checked immediately before spawn
-  omp_guard: { providerId: string; envName: string } | null;
+  omp_guard: {
+    providerId: string;
+    envName: string;
+    // omp_custom routes: the launcher-owned profile agent dir, its managed
+    // models.yml path, and the sha256 the file must still match.
+    agentDir: string | null;
+    modelsPath: string | null;
+    modelsSha256: string | null;
+  } | null;
   drop: string[];
   baseline: string[] | null; // null = current process env
 }
@@ -381,6 +408,59 @@ function parseOcModels(
   return specs;
 }
 
+/**
+ * Parse a provider's optional `omp_models` table for OMP custom providers:
+ * one strict entry per model (`context` + `output` token limits). Returns
+ * null when the table is absent.
+ */
+function parseOmpModels(
+  table: Record<string, unknown>,
+  where: string
+): Record<string, OmpModelSpec> | null {
+  const raw = table["omp_models"];
+  if (raw === undefined || raw === null) return null;
+  if (!isPlainObject(raw)) {
+    throw new AgentError(`${where}: 'omp_models' must be a table of model entries`);
+  }
+  const specs: Record<string, OmpModelSpec> = {};
+  for (const [modelId, entryValue] of Object.entries(raw)) {
+    const entryWhere = `${where}.omp_models.'${modelId}'`;
+    if (!isPlainObject(entryValue)) {
+      throw new AgentError(`${entryWhere}: table expected`);
+    }
+    const unknown = Object.keys(entryValue).filter((k) => k !== "context" && k !== "output");
+    if (unknown.length > 0) {
+      throw new AgentError(`${entryWhere}: unknown key '${unknown[0]}'`);
+    }
+    for (const key of ["context", "output"] as const) {
+      const value = entryValue[key];
+      if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
+        throw new AgentError(`${entryWhere}: '${key}' must be a positive integer`);
+      }
+    }
+    specs[modelId] = {
+      context: entryValue["context"] as number,
+      output: entryValue["output"] as number,
+    };
+  }
+  return specs;
+}
+
+// Wire protocols OMP's models.yml `api` field accepts (docs: custom models &
+// providers). Kept explicit so a typo fails at config load, not at first
+// request.
+const OMP_CUSTOM_APIS = new Set([
+  "openai-completions",
+  "openai-responses",
+  "openai-codex-responses",
+  "azure-openai-responses",
+  "anthropic-messages",
+  "bedrock-converse-stream",
+  "google-generative-ai",
+  "google-gemini-cli",
+  "google-vertex",
+]);
+
 export function loadConfig(path?: string): Config {
   const configPathResolved = path || configPath();
   let text: string;
@@ -468,6 +548,51 @@ export function loadConfig(path?: string): Config {
     }
     const opencode_npm = optionalStr(table, "opencode_npm", where);
     const opencode_models = parseOcModels(table, where);
+    const ompCustom = table["omp_custom"] ?? false;
+    if (typeof ompCustom !== "boolean") {
+      throw new AgentError(`${where}: 'omp_custom' must be a boolean`);
+    }
+    const ompApi = optionalStr(table, "omp_api", where);
+    const ompModels = parseOmpModels(table, where);
+    const ompIdRaw = optionalStr(table, "omp_id", where);
+    if (ompApi !== null && !OMP_CUSTOM_APIS.has(ompApi)) {
+      throw new AgentError(
+        `${where}: unknown omp_api '${ompApi}' (expected one of ${[...OMP_CUSTOM_APIS].join(", ")})`
+      );
+    }
+    if (!ompCustom && (ompApi !== null || ompModels !== null)) {
+      throw new AgentError(
+        `${where}: omp_api/omp_models require omp_custom = true`
+      );
+    }
+    if (ompCustom) {
+      if (!optionalStr(table, "base_url", where)) {
+        throw new AgentError(`${where}: omp_custom = true requires base_url`);
+      }
+      if (models.length === 0) {
+        throw new AgentError(`${where}: omp_custom = true requires a models list`);
+      }
+      if (ompIdRaw !== null && ompIdRaw !== key) {
+        // The models.yml provider id IS the config key; a divergent omp_id
+        // would launch a selector the generated file does not define.
+        throw new AgentError(
+          `${where}: omp_custom = true requires omp_id to equal the provider key '${key}' (or be omitted)`
+        );
+      }
+      if (!anonymous && !env) {
+        throw new AgentError(
+          `${where}: omp_custom = true requires a credential (secret/env name) or anonymous = true`
+        );
+      }
+      if (ompModels) {
+        const extra = Object.keys(ompModels).filter((id) => !models.includes(id));
+        if (extra.length > 0) {
+          throw new AgentError(
+            `${where}: omp_models entry '${extra[0]}' is not in models [${models.join(", ")}]`
+          );
+        }
+      }
+    }
     if (opencode_models && !opencode_npm) {
       throw new AgentError(
         `${where}: opencode_models requires opencode_npm (a custom-provider registration)`
@@ -513,12 +638,15 @@ export function loadConfig(path?: string): Config {
       require_model,
       models,
       opencode_id: optionalStr(table, "opencode_id", where) || key,
-      omp_id: optionalStr(table, "omp_id", where) || key,
+      omp_id: ompIdRaw || key,
       require_infisical,
       anonymous,
       opencode_npm,
       opencode_models: opencode_models ?? {},
       opencode_base_url: optionalStr(table, "opencode_base_url", where),
+      omp_custom: ompCustom,
+      omp_api: ompApi,
+      omp_models: ompModels ?? {},
     };
   }
   if (Object.keys(providers).length === 0) {
@@ -1468,6 +1596,128 @@ const OMP_DESTRUCTIVE_GUARD = "omp-destructive-guard.ts";
 const OMP_WORKER_OVERLAY = "omp-worker-overlay.yml";
 const OMP_WORKER_TOOLS = "read,bash,edit,write";
 
+// ---------------------------------------------------------------------------
+// OMP custom providers (models.yml under a launcher-owned --profile)
+// ---------------------------------------------------------------------------
+//
+// OMP has no native provider id for some OpenAI-compatible endpoints
+// (Logfare, Requesty, ModelScope, OVHcloud). OMP's documented extension point
+// is `<agentDir>/models.yml`, and `--profile <name>` isolates the whole agent
+// dir at ~/.omp/profiles/<name>/agent. The launcher therefore generates a
+// models.yml inside a `dotfiles-omp-<provider>` profile and launches OMP with
+// that profile: the file is launcher-managed (verified byte-identical on every
+// launch, never clobbered), the provider id is the config key, `apiKey`
+// references the credential env NAME (the value stays in the environment,
+// injected by script/with-secrets), and `auth: none` covers anonymous
+// endpoints — the credential-free contract native OMP routes lacked.
+
+const OMP_CUSTOM_PROFILE_PREFIX = "dotfiles-omp-";
+
+export function ompCustomProfileName(providerKey: string): string {
+  if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(providerKey)) {
+    throw new AgentError(
+      `provider key '${providerKey}' cannot name an OMP profile`,
+      EXIT_RUNTIME
+    );
+  }
+  return `${OMP_CUSTOM_PROFILE_PREFIX}${providerKey}`;
+}
+
+/** Agent dir OMP reads under `--profile dotfiles-omp-<key>`. */
+export function ompCustomAgentDir(providerKey: string): string {
+  return join(homedir(), ".omp", "profiles", ompCustomProfileName(providerKey), "agent");
+}
+
+/** OpenAI-compatible endpoint spelling for the generated models.yml. */
+function ompCustomBaseUrl(provider: Provider): string {
+  const url = provider.opencode_base_url ?? provider.base_url;
+  if (!url) {
+    throw new AgentError(
+      `provider '${provider.key}' omp_custom requires an OpenAI-compatible base URL`,
+      EXIT_RUNTIME
+    );
+  }
+  return url;
+}
+
+function ompModelLimits(provider: Provider, modelId: string): { contextWindow?: number; maxTokens?: number } {
+  const spec = provider.omp_models[modelId];
+  if (spec) return { contextWindow: spec.context, maxTokens: spec.output };
+  const oc = provider.opencode_models[modelId];
+  if (oc) return { contextWindow: oc.limit.context, maxTokens: oc.limit.output };
+  return {};
+}
+
+/** Deterministic models.yml content for an omp_custom provider. */
+export function renderOmpModelsYaml(provider: Provider): string {
+  if (!provider.omp_custom) {
+    throw new AgentError(`provider '${provider.key}' is not omp_custom`, EXIT_RUNTIME);
+  }
+  const lines: string[] = [
+    "# Managed by the dotfiles agent launcher (config/agents.toml). Do not edit.",
+    "providers:",
+    `  ${provider.key}:`,
+    `    baseUrl: ${JSON.stringify(ompCustomBaseUrl(provider))}`,
+  ];
+  if (provider.anonymous) {
+    lines.push('    auth: "none"');
+  } else {
+    const envName = provider.env ?? provider.secret;
+    if (!envName) {
+      throw new AgentError(
+        `provider '${provider.key}' omp_custom declares no credential env name`,
+        EXIT_RUNTIME
+      );
+    }
+    lines.push(`    apiKey: ${JSON.stringify(envName)}`);
+  }
+  lines.push(`    api: ${JSON.stringify(provider.omp_api ?? "openai-completions")}`);
+  lines.push("    models:");
+  for (const modelId of provider.models) {
+    const limits = ompModelLimits(provider, modelId);
+    lines.push(`      - id: ${JSON.stringify(modelId)}`);
+    if (limits.contextWindow !== undefined) lines.push(`        contextWindow: ${limits.contextWindow}`);
+    if (limits.maxTokens !== undefined) lines.push(`        maxTokens: ${limits.maxTokens}`);
+  }
+  return lines.join("\n") + "\n";
+}
+
+export interface OmpCustomLaunch {
+  profile: string;
+  agentDir: string;
+  modelsPath: string;
+  /** sha256 of the managed models.yml content, for the pre-spawn recheck. */
+  modelsSha256: string;
+}
+
+/**
+ * Ensure the launcher-managed models.yml exists and is byte-identical to
+ * what config declares. An existing file with different content is never
+ * overwritten: it is either user-owned or stale, and silently replacing it
+ * could redirect the credential or endpoint.
+ */
+export function ensureOmpCustomProvider(provider: Provider): OmpCustomLaunch {
+  const profile = ompCustomProfileName(provider.key);
+  const agentDir = ompCustomAgentDir(provider.key);
+  const modelsPath = join(agentDir, "models.yml");
+  const content = renderOmpModelsYaml(provider);
+  const modelsSha256 = createHash("sha256").update(content).digest("hex");
+  mkdirSync(agentDir, { recursive: true });
+  if (existsSync(modelsPath)) {
+    const existing = readFileSync(modelsPath, "utf8");
+    if (existing !== content) {
+      throw new AgentError(
+        `OMP custom provider models.yml (${modelsPath}) exists with different ` +
+          "content; it is launcher-managed — remove it or run native `omp`",
+        EXIT_RUNTIME
+      );
+    }
+  } else {
+    writeFileSync(modelsPath, content, { mode: 0o600 });
+  }
+  return { profile, agentDir, modelsPath, modelsSha256 };
+}
+
 /** Absolute real path of the destructive guard shipped next to this launcher.
  * It is loaded with --trusted-extension, which aborts when loading fails, so
  * a missing file must fail before a process starts. */
@@ -1534,14 +1784,35 @@ function insideHerdr(): boolean {
 
 function planOmp(plan: Plan, harness: Harness, provider: Provider, model: string | null): void {
   if (model === null) throw new AgentError("resolved no model for adapter omp");
-  if (provider.anonymous) {
+  const custom = provider.omp_custom;
+  if (provider.anonymous && !custom) {
     // OMP resolves its credential ladder from env/stored auth; an
     // anonymous route declares no credential env name and the launcher cannot
     // prove OMP sends no key. Fail closed rather than risk a paid path.
+    // omp_custom anonymous providers are exempt: the generated models.yml
+    // declares `auth: none`, which IS the credential-free contract.
     throw new AgentError(
       `provider '${provider.key}' is anonymous; OMP has no credential-free route ` +
-        "contract here, so no omp route may use it (use the opencode adapter)"
+        "contract here, so no omp route may use it unless omp_custom = true " +
+        "(models.yml auth: none)"
     );
+  }
+  let customLaunch: OmpCustomLaunch | null = null;
+  if (custom) {
+    customLaunch = ensureOmpCustomProvider(provider);
+    // The launcher passes --profile explicitly; an ambient profile/agent-dir
+    // override would move OMP to a different agent dir where the managed
+    // models.yml does not exist.
+    for (const key of OMP_REJECTED_ENV_KEYS) {
+      if (key in process.env) {
+        throw new AgentError(
+          `OMP ${key} is defined in the ambient environment for the ` +
+            `omp_custom '${provider.key}' route, which passes --profile ` +
+            `${customLaunch.profile} explicitly; unset it or run native \`omp\`.`,
+          EXIT_RUNTIME
+        );
+      }
+    }
   }
   const selector = `${provider.omp_id}/${model}`;
   const guardPath = ompDestructiveGuardPath();
@@ -1552,19 +1823,28 @@ function planOmp(plan: Plan, harness: Harness, provider: Provider, model: string
   // move a rate-limited free request to a paid model. The credential-source
   // checks below (dotenv/profile, broker, models.*, stored credentials) stay
   // require_infisical-only.
-  guardOmpImplicitSwitch(provider.omp_id);
+  guardOmpImplicitSwitch(provider.omp_id, customLaunch?.agentDir);
 
   const args: string[] = [
     "--provider", provider.omp_id,
     "--model", model,
   ];
+  if (customLaunch) {
+    args.push("--profile", customLaunch.profile);
+  }
   if (provider.require_infisical) {
     const envName = provider.env || provider.secret;
     if (!envName) {
       throw new AgentError(`provider '${provider.key}' declares no credential env name`);
     }
-    guardOmpCredentialSource(provider.omp_id, envName);
-    plan.omp_guard = { providerId: provider.omp_id, envName };
+    guardOmpCredentialSource(provider.omp_id, envName, customLaunch ?? undefined);
+    plan.omp_guard = {
+      providerId: provider.omp_id,
+      envName,
+      agentDir: customLaunch?.agentDir ?? null,
+      modelsPath: customLaunch?.modelsPath ?? null,
+      modelsSha256: customLaunch?.modelsSha256 ?? null,
+    };
     // Pin the model roles. --models only drives Ctrl+P cycling, so it is not
     // a security allowlist and is intentionally not passed.
     args.push(
@@ -1619,14 +1899,24 @@ function ompAgentDir(): string {
  * assignment is a conflict for an Infisical-backed route. Parsing is
  * line-oriented and never evaluates or expands values.
  */
-function readOmpDotenvAssignments(): Array<{ path: string; names: Set<string> }> {
+function readOmpDotenvAssignments(agentDir: string = ompAgentDir()): Array<{ path: string; names: Set<string> }> {
   const files: Array<{ path: string; names: Set<string> }> = [];
-  for (const path of [
+  const candidates = [
     join(process.cwd(), ".env"),
-    join(ompAgentDir(), ".env"),
+    join(agentDir, ".env"),
+  ];
+  // A named profile's agent dir sits one level below the profile root; OMP
+  // may also read a .env there. The default agent dir's parent IS ~/.omp,
+  // which is already covered by the fixed entries below.
+  const profileRoot = dirname(agentDir);
+  if (profileRoot !== join(homedir(), ".omp")) {
+    candidates.push(join(profileRoot, ".env"));
+  }
+  candidates.push(
     join(homedir(), ".omp", ".env"),
     join(homedir(), ".env"),
-  ]) {
+  );
+  for (const path of candidates) {
     let text: string;
     try {
       text = readFileSync(path, "utf8");
@@ -1757,12 +2047,16 @@ function ompImplicitSwitchRisk(config: Record<string, unknown>): string | null {
 
 /** Existing local OMP credential stores. XDG data relocates `agent.db` only
  * when the corresponding `omp` directory already exists. */
-function ompAuthDbPaths(): string[] {
-  const paths = [join(ompAgentDir(), "agent.db")];
-  const xdgData = process.env.XDG_DATA_HOME;
-  if (xdgData) {
-    const base = join(xdgData, "omp");
-    if (existsSync(base)) paths.push(join(base, "agent.db"));
+function ompAuthDbPaths(agentDir: string = ompAgentDir()): string[] {
+  const paths = [join(agentDir, "agent.db")];
+  // XDG relocation applies to the default agent dir only; a named profile's
+  // agent.db lives at a fixed path under ~/.omp/profiles.
+  if (agentDir === ompAgentDir()) {
+    const xdgData = process.env.XDG_DATA_HOME;
+    if (xdgData) {
+      const base = join(xdgData, "omp");
+      if (existsSync(base)) paths.push(join(base, "agent.db"));
+    }
   }
   return paths;
 }
@@ -1784,8 +2078,7 @@ function ompAuthDbPaths(): string[] {
  * alongside guardOmpCredentialSource, so those routes get plan-time plus
  * immediately-before-spawn coverage.
  */
-function guardOmpImplicitSwitch(providerId: string): void {
-  const agentDir = ompAgentDir();
+function guardOmpImplicitSwitch(providerId: string, agentDir: string = ompAgentDir()): void {
   const switchConfigs: Array<{ path: string; label: string; format: "yaml" | "json" }> = [
     { path: join(agentDir, "config.yml"), label: "config.yml", format: "yaml" },
     { path: join(agentDir, "config.yaml"), label: "config.yaml", format: "yaml" },
@@ -1828,9 +2121,13 @@ function guardOmpImplicitSwitch(providerId: string): void {
  * explicit `--smol/--slow/--plan` pinning on the route is the
  * defense-in-depth stop for those cases.
  */
-function guardOmpCredentialSource(providerId: string, envName: string): void {
-  const dotenv = readOmpDotenvAssignments();
-  const agentDir = ompAgentDir();
+function guardOmpCredentialSource(
+  providerId: string,
+  envName: string,
+  custom?: { agentDir: string; modelsPath: string; modelsSha256: string }
+): void {
+  const agentDir = custom?.agentDir ?? ompAgentDir();
+  const dotenv = readOmpDotenvAssignments(agentDir);
 
   // A. Reject relocated config/agent dir and profiles.
   for (const key of OMP_REJECTED_ENV_KEYS) {
@@ -1909,8 +2206,25 @@ function guardOmpCredentialSource(providerId: string, envName: string): void {
   // C. Reject local provider/model overrides. Both YAML spellings are checked
   // whenever present; the legacy JSON file is migrated by OMP only when no
   // YAML exists, but it can still take effect, so it is checked too.
+  // An omp_custom route's managed models.yml is exempt from the override
+  // rejection — it IS the provider definition — but only while it is still
+  // byte-identical to what the launcher generated (sha256 pinned at plan
+  // time, rechecked here before spawn).
   for (const name of ["models.yml", "models.yaml"]) {
     const path = join(agentDir, name);
+    if (custom && name === "models.yml" && path === custom.modelsPath) {
+      const actual = createHash("sha256")
+        .update(readFileSync(path, "utf8"))
+        .digest("hex");
+      if (actual !== custom.modelsSha256) {
+        throw new AgentError(
+          `OMP managed models.yml (${path}) changed since planning; refusing ` +
+            `to start the Infisical-backed '${envName}' route`,
+          EXIT_RUNTIME
+        );
+      }
+      continue;
+    }
     const models = readOmpMapping(path, name, "yaml");
     if (models !== null) rejectOmpProviderOverride(models, path, providerId, envName);
   }
@@ -1920,7 +2234,7 @@ function guardOmpCredentialSource(providerId: string, envName: string): void {
 
   // D. Reject stored credentials for the provider: a stored OAuth/login/API
   // key outranks the injected environment variable.
-  for (const dbPath of ompAuthDbPaths()) {
+  for (const dbPath of ompAuthDbPaths(agentDir)) {
     if (!existsSync(dbPath)) continue;
     let db: Database | null = null;
     try {
@@ -2059,6 +2373,9 @@ async function startViaWithSecrets(plan: Plan, baseline: string[]): Promise<numb
   if (plan.omp_guard) {
     payload.push("--omp-guard-id", plan.omp_guard.providerId);
     payload.push("--omp-guard-env", plan.omp_guard.envName);
+    if (plan.omp_guard.agentDir) payload.push("--omp-guard-agent-dir", plan.omp_guard.agentDir);
+    if (plan.omp_guard.modelsPath) payload.push("--omp-guard-models", plan.omp_guard.modelsPath);
+    if (plan.omp_guard.modelsSha256) payload.push("--omp-guard-models-sha", plan.omp_guard.modelsSha256);
   }
   payload.push("--", ...plan.command);
 
@@ -2233,6 +2550,9 @@ function cmdExec(argv: string[]): Promise<number> {
   let cred: Array<[string, string]> = [];
   let ompGuardId: string | null = null;
   let ompGuardEnv: string | null = null;
+  let ompGuardAgentDir: string | null = null;
+  let ompGuardModelsPath: string | null = null;
+  let ompGuardModelsSha: string | null = null;
   let command: string[] = [];
   let index = 0;
   while (index < argv.length) {
@@ -2264,6 +2584,12 @@ function cmdExec(argv: string[]): Promise<number> {
       ompGuardId = argv[index + 1];
     } else if (token === "--omp-guard-env") {
       ompGuardEnv = argv[index + 1];
+    } else if (token === "--omp-guard-agent-dir") {
+      ompGuardAgentDir = argv[index + 1];
+    } else if (token === "--omp-guard-models") {
+      ompGuardModelsPath = argv[index + 1];
+    } else if (token === "--omp-guard-models-sha") {
+      ompGuardModelsSha = argv[index + 1];
     } else {
       throw new AgentError(`__exec: unexpected token '${token}'`);
     }
@@ -2284,8 +2610,15 @@ function cmdExec(argv: string[]): Promise<number> {
     // OMP's own read, but the window is reduced to the final exec. The
     // omp_guard flags exist only on require_infisical routes, so the
     // implicit-switch recheck is too; other omp routes check at plan time.
-    guardOmpImplicitSwitch(ompGuardId);
-    guardOmpCredentialSource(ompGuardId, ompGuardEnv);
+    guardOmpImplicitSwitch(
+      ompGuardId,
+      ompGuardAgentDir ?? undefined
+    );
+    const customGuard =
+      ompGuardAgentDir && ompGuardModelsPath && ompGuardModelsSha
+        ? { agentDir: ompGuardAgentDir, modelsPath: ompGuardModelsPath, modelsSha256: ompGuardModelsSha }
+        : undefined;
+    guardOmpCredentialSource(ompGuardId, ompGuardEnv, customGuard);
   }
   const stage: ExecStagePlan = { command, keep, copy, unset, assign, require_cred: cred, drop, baseline };
   return finalize(stage as unknown as Plan);
