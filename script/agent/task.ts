@@ -39,6 +39,7 @@ import {
   promptAgent,
   readAgent,
   waitAgent,
+  getAgent,
   closePane,
   saveHerdrTaskMapping,
   type HerdrTaskMapping,
@@ -846,9 +847,18 @@ export async function startTaskAttempt(
     signal: FailureSignal,
     provider: Provider,
   ): Promise<FailureSignal> => {
-    const evidence = extractProviderFailureEvidence({ provider, cwd, sinceMs: evidenceSinceMs });
+    const evidence = extractProviderFailureEvidence({ provider, cwd, sinceMs: evidenceSinceMs, prompt });
     return evidence ?? signal;
   };
+  /**
+   * Herdr can report a prompt as delivered while the provider's LAST turn
+   * outcome was an error (the agent surfaces it as text, not a lifecycle
+   * failure). Scan the session for a qualifying final error outcome even on
+   * the "success" path: a real provider failure must classify and may
+   * advance fallback, never be mistaken for task success.
+   */
+  const lateProviderError = (provider: Provider): FailureSignal | null =>
+    extractProviderFailureEvidence({ provider, cwd, sinceMs: evidenceSinceMs, prompt });
   const primaryProvider = config.providers[attempt.route.provider];
 
   try {
@@ -874,6 +884,8 @@ export async function startTaskAttempt(
             return { success: false, error: enriched };
           }
           const output = await readWorkerOutput(attempt.herdrWorkerName!);
+          const late = primaryProvider ? lateProviderError(primaryProvider) : null;
+          if (late) return { success: false, error: late };
           return { success: true, result: { output, workerName: attempt.herdrWorkerName! } };
         }
 
@@ -919,14 +931,19 @@ export async function startTaskAttempt(
             // the serving worker (closing it here made collect read a dead
             // pane).
             const output = await readWorkerOutput(candidateAttempt.workerName);
-            outcome = {
-              success: true,
-              result: {
-                output,
-                workerName: candidateAttempt.workerName,
-                paneId: candidateAttempt.paneId,
-              },
-            };
+            const late = lateProviderError(candidateProvider);
+            if (late) {
+              outcome = { success: false, error: late };
+            } else {
+              outcome = {
+                success: true,
+                result: {
+                  output,
+                  workerName: candidateAttempt.workerName,
+                  paneId: candidateAttempt.paneId,
+                },
+              };
+            }
           }
         } finally {
           // Close the pane only when the candidate did NOT serve the task:
@@ -961,6 +978,10 @@ export async function startTaskAttempt(
         return { success: false, error: classifyFailure(enriched, new Date().toISOString()) };
       }
       const output = await readWorkerOutput(attempt.herdrWorkerName!);
+      const late = primaryProvider ? lateProviderError(primaryProvider) : null;
+      if (late) {
+        return { success: false, error: classifyFailure(late, new Date().toISOString()) };
+      }
       return { success: true, result: { output }, workerName: attempt.herdrWorkerName };
     }
   } catch (error) {
@@ -1080,9 +1101,17 @@ export function recordAttemptOutcome(
     };
 
     // Replace the attempt in place when it is already recorded (the dispatched
-    // attempt is saved up front); otherwise append it.
+    // attempt is saved up front); otherwise append it. A stale writer (an
+    // older generation object) must never overwrite a newer recorded state.
     const index = state.history.findIndex(a => a.id === attempt.id);
     if (index >= 0) {
+      if (state.history[index].generation > finished.generation) {
+        throw new ContractError(
+          "evidence",
+          `task '${taskId}': attempt generation moved to ${state.history[index].generation}; ` +
+            `refusing stale outcome write from generation ${finished.generation}`,
+        );
+      }
       state.history[index] = finished;
     } else {
       state.history.push(finished);
@@ -1265,16 +1294,16 @@ export async function resumeTaskAttempt(
   if (!attempt.herdrWorkerName) {
     throw new ContractError("state", `task '${taskId}' attempt has no worker to resume`);
   }
-  // Safety gate: prove the recorded worker is still reachable in Herdr
-  // before re-prompting. A dead/gone worker fails closed — resuming into
-  // nothing would silently drop the task.
-  try {
-    await waitAgent(attempt.herdrWorkerName, 5000);
-  } catch (error) {
+  // Safety gate: the worker must EXIST in Herdr, not merely fail to report
+  // "completed" — waitAgent's timeout path is indistinguishable from a live
+  // worker, so probe the agent record itself. A dead/gone worker fails
+  // closed: resuming into nothing would silently drop the task.
+  const agent = await getAgent(attempt.herdrWorkerName).catch(() => null);
+  if (agent === null) {
     throw new ContractError(
       "state",
-      `task '${taskId}' worker '${attempt.herdrWorkerName}' is unreachable; ` +
-        `re-dispatch with agent task run (${error instanceof Error ? error.message : String(error)})`,
+      `task '${taskId}' worker '${attempt.herdrWorkerName}' is not present in Herdr; ` +
+        "re-dispatch with agent task run",
     );
   }
   // Resume NEVER re-enters startTaskAttempt/executeWithFallback: that path
@@ -1285,7 +1314,10 @@ export async function resumeTaskAttempt(
   // fallback-profile tasks under the same contract.
   const evidenceSinceMs = Date.now();
   const promptTimeoutMs = opts?.timeoutMs ?? 300000;
-  const promptResult = await promptAgent(attempt.herdrWorkerName, prompt, {
+  // Resume is a new generation of the same attempt: fencing then refuses
+  // any outcome write still holding the pre-resume generation.
+  const resumed = { ...attempt, generation: attempt.generation + 1 };
+  const promptResult = await promptAgent(resumed.herdrWorkerName!, prompt, {
     wait: true,
     timeoutMs: promptTimeoutMs,
   });
@@ -1293,17 +1325,29 @@ export async function resumeTaskAttempt(
   if (signal) {
     // Same evidence contract as dispatch: real provider errorStatus from
     // the worker's OMP session, else the lifecycle signal stays unknown.
-    const provider = config.providers[attempt.route.provider];
+    const provider = config.providers[resumed.route.provider];
     const enriched = provider
-      ? (extractProviderFailureEvidence({ provider, cwd: process.cwd(), sinceMs: evidenceSinceMs }) ?? signal)
+      ? (extractProviderFailureEvidence({ provider, cwd: process.cwd(), sinceMs: evidenceSinceMs, prompt }) ?? signal)
       : signal;
     const error = classifyFailure(enriched, new Date().toISOString());
-    recordAttemptOutcome(taskId, attempt, { status: "failed", error });
-    return { taskId, attempt, success: false, error };
+    recordAttemptOutcome(taskId, resumed, { status: "failed", error });
+    return { taskId, attempt: resumed, success: false, error };
   }
-  const output = await readWorkerOutput(attempt.herdrWorkerName);
+  // Same late-error contract as dispatch: Herdr "delivered" is not proof the
+  // provider's last turn succeeded — a qualifying final error outcome in
+  // the session fails the resume, it does not pass silently.
+  const resumeProvider = config.providers[resumed.route.provider];
+  const late = resumeProvider
+    ? extractProviderFailureEvidence({ provider: resumeProvider, cwd: process.cwd(), sinceMs: evidenceSinceMs, prompt })
+    : null;
+  if (late) {
+    const error = classifyFailure(late, new Date().toISOString());
+    recordAttemptOutcome(taskId, resumed, { status: "failed", error });
+    return { taskId, attempt: resumed, success: false, error };
+  }
+  const output = await readWorkerOutput(resumed.herdrWorkerName!);
   const collected = await collectTaskAttempt(
-    { ...attempt, result: { output } },
+    { ...resumed, result: { output } },
     opts?.timeoutMs,
   );
   // Acceptance criteria re-verified on resume, same rule as dispatch:
@@ -1318,7 +1362,7 @@ export async function resumeTaskAttempt(
   const storedResult = isPlainObject(collected.result)
     ? { ...collected.result, ...(acceptance ? { acceptance } : {}) }
     : { value: collected.result, ...(acceptance ? { acceptance } : {}) };
-  recordAttemptOutcome(taskId, attempt, {
+  recordAttemptOutcome(taskId, resumed, {
     status: taskSucceeded ? "completed" : "failed",
     error: !collected.success
       ? collected.error
@@ -1335,7 +1379,7 @@ export async function resumeTaskAttempt(
         : undefined,
     result: storedResult,
   });
-  return { ...collected, ...(acceptance ? { acceptance } : {}) };
+  return { ...collected, attempt: resumed, ...(acceptance ? { acceptance } : {}) };
 }
 
 /**

@@ -21,11 +21,28 @@ let root: string;
 let cwd: string;
 const SINCE = Date.parse("2026-11-18T13:00:00.000Z");
 
-function sessionFile(events: object[], sessionCwd = cwd): string {
+const PROMPT = "fix the failing test";
+
+function userEvent(ts: number, text = PROMPT): object {
+  return {
+    type: "message_end",
+    message: { role: "user", content: [{ type: "text", text }], timestamp: ts },
+  };
+}
+
+function successEvent(ts: number): object {
+  return {
+    type: "message_end",
+    message: { role: "assistant", stopReason: "stop", provider: "groq", timestamp: ts },
+  };
+}
+
+function sessionFile(events: object[], sessionCwd = cwd, prompt = PROMPT): string {
   const dir = join(root, "proj");
   mkdirSync(dir, { recursive: true });
   const lines = [
     JSON.stringify({ type: "session", version: 3, id: "s1", timestamp: "2026-11-18T13:00:01.000Z", cwd: sessionCwd }),
+    JSON.stringify(userEvent(SINCE + 500, prompt)),
     ...events.map((e) => JSON.stringify(e)),
   ];
   const path = join(dir, `2026-11-18T13-00-01-000Z_s1.jsonl`);
@@ -54,7 +71,7 @@ describe("extractProviderFailureEvidence", () => {
   it("returns the real HTTP status from a qualifying provider error event", () => {
     sessionFile([errorEvent(SINCE + 1000, 401)]);
     const signal = extractProviderFailureEvidence({
-      provider: provider(), cwd, sinceMs: SINCE, sessionsRoot: root,
+      provider: provider(), cwd, sinceMs: SINCE, sessionsRoot: root, prompt: PROMPT,
     });
     expect(signal?.httpStatus).toBe(401);
     expect(signal?.exitCode).toBeNull();
@@ -64,7 +81,7 @@ describe("extractProviderFailureEvidence", () => {
   it("returns 429 evidence for a real rate-limit response", () => {
     sessionFile([errorEvent(SINCE + 1000, 429)]);
     const signal = extractProviderFailureEvidence({
-      provider: provider(), cwd, sinceMs: SINCE, sessionsRoot: root,
+      provider: provider(), cwd, sinceMs: SINCE, sessionsRoot: root, prompt: PROMPT,
     });
     expect(signal?.httpStatus).toBe(429);
   });
@@ -72,21 +89,21 @@ describe("extractProviderFailureEvidence", () => {
   it("ignores events older than the execution window", () => {
     sessionFile([errorEvent(SINCE - 60_000, 401)]);
     expect(extractProviderFailureEvidence({
-      provider: provider(), cwd, sinceMs: SINCE, sessionsRoot: root,
+      provider: provider(), cwd, sinceMs: SINCE, sessionsRoot: root, prompt: PROMPT,
     })).toBeNull();
   });
 
   it("ignores errors from a different provider id", () => {
     sessionFile([errorEvent(SINCE + 1000, 401, "kilo")]);
     expect(extractProviderFailureEvidence({
-      provider: provider(), cwd, sinceMs: SINCE, sessionsRoot: root,
+      provider: provider(), cwd, sinceMs: SINCE, sessionsRoot: root, prompt: PROMPT,
     })).toBeNull();
   });
 
   it("ignores sessions from a different working directory", () => {
     sessionFile([errorEvent(SINCE + 1000, 401)], "/some/other/cwd");
     expect(extractProviderFailureEvidence({
-      provider: provider(), cwd, sinceMs: SINCE, sessionsRoot: root,
+      provider: provider(), cwd, sinceMs: SINCE, sessionsRoot: root, prompt: PROMPT,
     })).toBeNull();
   });
 
@@ -96,7 +113,7 @@ describe("extractProviderFailureEvidence", () => {
       { type: "message_end", message: { stopReason: "error", provider: "groq", timestamp: SINCE + 2 } },
     ]);
     expect(extractProviderFailureEvidence({
-      provider: provider(), cwd, sinceMs: SINCE, sessionsRoot: root,
+      provider: provider(), cwd, sinceMs: SINCE, sessionsRoot: root, prompt: PROMPT,
     })).toBeNull();
   });
 
@@ -106,15 +123,43 @@ describe("extractProviderFailureEvidence", () => {
       errorEvent(SINCE + 2000, 429),
     ]);
     const signal = extractProviderFailureEvidence({
-      provider: provider(), cwd, sinceMs: SINCE, sessionsRoot: root,
+      provider: provider(), cwd, sinceMs: SINCE, sessionsRoot: root, prompt: PROMPT,
     });
     expect(signal?.httpStatus).toBe(429);
+  });
+
+  it("rejects evidence when the session holds a DIFFERENT prompt (concurrent worker)", () => {
+    sessionFile([errorEvent(SINCE + 1000, 401)], cwd, "a different task entirely");
+    expect(extractProviderFailureEvidence({
+      provider: provider(), cwd, sinceMs: SINCE, sessionsRoot: root, prompt: PROMPT,
+    })).toBeNull();
+  });
+
+  it("treats an error followed by a successful outcome as recovered, not failure", () => {
+    sessionFile([
+      errorEvent(SINCE + 1000, 429),
+      successEvent(SINCE + 2000),
+    ]);
+    expect(extractProviderFailureEvidence({
+      provider: provider(), cwd, sinceMs: SINCE, sessionsRoot: root, prompt: PROMPT,
+    })).toBeNull();
+  });
+
+  it("still reports an error that is the final outcome after earlier successes", () => {
+    sessionFile([
+      successEvent(SINCE + 500),
+      errorEvent(SINCE + 1000, 402),
+    ]);
+    const signal = extractProviderFailureEvidence({
+      provider: provider(), cwd, sinceMs: SINCE, sessionsRoot: root, prompt: PROMPT,
+    });
+    expect(signal?.httpStatus).toBe(402);
   });
 
   it("returns null when the sessions root does not exist", () => {
     expect(extractProviderFailureEvidence({
       provider: provider(), cwd, sinceMs: SINCE,
-      sessionsRoot: join(root, "nonexistent"),
+      sessionsRoot: join(root, "nonexistent"), prompt: PROMPT,
     })).toBeNull();
   });
 });

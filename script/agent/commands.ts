@@ -461,10 +461,12 @@ export async function cmdTask(config: Config, action: TaskAction): Promise<numbe
     console.log(redactJson({
       taskId: result.taskId,
       success: result.success,
+      ...(result.acceptance ? { acceptance: result.acceptance } : {}),
       ...(result.error ? { error: result.error } : {}),
       ...(result.result !== undefined ? { result: result.result } : {}),
     }));
-    return result.success ? 0 : EXIT_RUNTIME;
+    const accepted = result.acceptance === undefined || result.acceptance.verified;
+    return result.success && accepted ? 0 : EXIT_RUNTIME;
   }
   // sub === "run"
   const route = arg;
