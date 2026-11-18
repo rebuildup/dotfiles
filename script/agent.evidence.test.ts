@@ -156,6 +156,23 @@ describe("extractProviderFailureEvidence", () => {
     expect(signal?.httpStatus).toBe(402);
   });
 
+  it("ignores error outcomes from turns BEFORE the prompt in the same session", () => {
+    // Same session, earlier turn failed — but THIS prompt never produced
+    // an outcome, so there is no evidence for this attempt.
+    const dir = join(root, "proj");
+    mkdirSync(dir, { recursive: true });
+    const lines = [
+      JSON.stringify({ type: "session", version: 3, id: "s2", timestamp: "2026-11-18T13:00:01.000Z", cwd }),
+      JSON.stringify(userEvent(SINCE + 100, "an earlier unrelated prompt")),
+      JSON.stringify(errorEvent(SINCE + 200, 401)),
+      JSON.stringify(userEvent(SINCE + 900)),
+    ];
+    writeFileSync(join(dir, "2026-11-18T13-00-02-000Z_s2.jsonl"), lines.join("\n") + "\n");
+    expect(extractProviderFailureEvidence({
+      provider: provider(), cwd, sinceMs: SINCE, sessionsRoot: root, prompt: PROMPT,
+    })).toBeNull();
+  });
+
   it("returns null when the sessions root does not exist", () => {
     expect(extractProviderFailureEvidence({
       provider: provider(), cwd, sinceMs: SINCE,
