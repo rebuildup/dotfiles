@@ -96,10 +96,15 @@ export interface HerdrPane {
 export async function createWorkspace(
   cwd: string,
   label: string,
-  options: { noFocus?: boolean } = {}
+  options: { noFocus?: boolean; env?: Record<string, string> } = {}
 ): Promise<HerdrWorkspace> {
   const args = ["workspace", "create", "--cwd", cwd, "--label", label];
   if (options.noFocus) args.push("--no-focus");
+  // The pane's process inherits the Herdr server's environment, not the
+  // caller's, so a route credential has to be passed explicitly.
+  for (const [name, value] of Object.entries(options.env ?? {})) {
+    args.push("--env", `${name}=${value}`);
+  }
   
   const result = await herdrSpawn(args, cwd);
   if (result === null) {
@@ -208,10 +213,17 @@ export interface CreatePaneOptions {
   cwd?: string;
   split?: "horizontal" | "vertical";
   targetPaneId?: string;
+  /** Environment for the pane's process (e.g. the route credential). */
+  env?: Record<string, string>;
 }
 
 /**
  * Create a new pane in a workspace.
+ *
+ * `herdr pane split` answers with a pane_info object
+ * (`{pane: {pane_id, tab_id, ...}}`), so the ids are read from there and
+ * validated: a missing id would otherwise surface later as an unrelated
+ * "no worker name" failure.
  */
 export async function createPane(options: CreatePaneOptions): Promise<{ paneId: string; tabId: string }> {
   // First get the root pane of the workspace to split from
@@ -219,11 +231,16 @@ export async function createPane(options: CreatePaneOptions): Promise<{ paneId: 
   if (!workspace || !workspace.tabs.length || !workspace.tabs[0].panes.length) {
     throw new ContractError("state", `Workspace ${options.workspaceId} has no root pane to split`);
   }
-  const rootPaneId = workspace.tabs[0].panes[0].id;
+  const rootPaneId = options.targetPaneId ?? workspace.tabs[0].panes[0].id;
   
   const args = ["pane", "split", "--pane", rootPaneId, "--direction", options.split || "right"];
   if (options.label) args.push("--label", options.label);
   if (options.cwd) args.push("--cwd", options.cwd);
+  // The pane's process inherits the Herdr server's environment, so a route
+  // credential has to be passed explicitly.
+  for (const [name, value] of Object.entries(options.env ?? {})) {
+    args.push("--env", `${name}=${value}`);
+  }
   
   const result = await herdrSpawn(args);
   if (result === null) {
@@ -232,12 +249,26 @@ export async function createPane(options: CreatePaneOptions): Promise<{ paneId: 
   if (result.code !== 0) {
     throw new ContractError("state", `Herdr pane split failed: ${result.stderr}`);
   }
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(result.stdout.trim());
-    return parsed?.result ?? parsed;
+    parsed = JSON.parse(result.stdout.trim());
   } catch (error) {
     throw new ContractError("schema", `Failed to parse Herdr pane split output: ${error}`);
   }
+  // The CLI answers with an envelope: `{id, result: {pane: {...}}}`. Read the
+  // pane info from either the envelope or a bare object, and validate the id:
+  // a missing id would otherwise surface later as an unrelated "no worker
+  // name" failure.
+  const envelope = parsed as { result?: { pane?: unknown }; pane?: unknown } | null;
+  const raw = (envelope?.result?.pane ?? envelope?.pane) as
+    | { pane_id?: unknown; tab_id?: unknown }
+    | undefined;
+  const paneId = raw?.pane_id;
+  const tabId = raw?.tab_id;
+  if (typeof paneId !== "string" || !paneId) {
+    throw new ContractError("schema", "Herdr pane split output has no pane id");
+  }
+  return { paneId, tabId: typeof tabId === "string" ? tabId : "" };
 }
 
 /**
@@ -304,30 +335,50 @@ export async function startAgent(options: StartAgentOptions): Promise<{ agentNam
 
 /**
  * Send a prompt to an agent and optionally wait for response.
+ *
+ * The failure modes are distinguished, because they classify differently: an
+ * agent that refuses the prompt is an authorization failure, while a prompt
+ * that never reached a working/blocked state is a transport/timeout failure.
+ * Collapsing both into "blocked" misclassifies a stall as an auth failure.
  */
 export async function promptAgent(
   workerName: string,
   prompt: string,
   options: { wait?: boolean; timeoutMs?: number } = {}
-): Promise<{ response?: string; blocked?: boolean; stalled?: boolean }> {
+): Promise<{ response?: string; blocked?: boolean; stalled?: boolean; errorCode?: string }> {
   const args = ["agent", "prompt", workerName, prompt];
   if (options.wait) args.push("--wait");
   if (options.timeoutMs) args.push("--timeout", String(options.timeoutMs));
   
   const result = await herdrSpawn(args);
   if (result === null) {
-    return { blocked: true, response: "Herdr CLI not available" };
+    return { stalled: true, response: "Herdr CLI not available" };
   }
   if (result.code !== 0) {
+    // The CLI reports a structured error: {"error":{"code":"...","message":"..."}}.
+    let errorCode: string | undefined;
+    let message = result.stderr || "Agent prompt failed";
     try {
-      const parsed = JSON.parse(result.stdout.trim());
-      return parsed?.result ?? { blocked: true, response: result.stderr || "Agent prompt failed" };
+      const parsed = JSON.parse(result.stdout.trim()) as {
+        error?: { code?: unknown; message?: unknown };
+      };
+      if (typeof parsed.error?.code === "string") errorCode = parsed.error.code;
+      if (typeof parsed.error?.message === "string" && parsed.error.message) {
+        message = parsed.error.message;
+      }
     } catch {
-      return { blocked: true, response: result.stderr || "Agent prompt failed" };
+      // Not a JSON envelope: keep the stderr text.
     }
+    // A prompt rejected because the agent is blocked is an authorization
+    // refusal; a stalled prompt never reached a working state.
+    const blocked = errorCode === "agent_blocked";
+    const stalled = !blocked;
+    return { blocked, stalled, errorCode, response: message };
   }
   try {
     const parsed = JSON.parse(result.stdout.trim());
+    // On success the CLI answers with the agent state, not the answer: the
+    // agent's text lives in its terminal output (readAgent).
     return parsed?.result ?? { response: result.stdout.trim() };
   } catch {
     return { response: result.stdout.trim() };

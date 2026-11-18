@@ -1,34 +1,29 @@
 #!/usr/bin/env bun
 /**
- * Herdr dispatch / observe / collect for agent tasks (dotfiles#100, Epic#86 T014).
+ * Herdr dispatch / observe / collect for agent tasks (dotfiles#100, Epic #86 T014).
  *
- * Real Herdr integration replaces the previous simulation paths.
- * Task state is persisted to ~/.local/share/agent/tasks/<taskId>.json.
+ * Uses Herdr agent start with model flags for model selection,
+ * Herdr agent prompt for execution. Task state persisted to
+ * ~/.local/share/agent/tasks/<taskId>.json.
+ *
+ * A Herdr worker is started by the Herdr server and inherits ITS
+ * environment, so the route's credential is passed explicitly (see
+ * routeWorkerEnv). The dispatcher therefore runs under script/with-secrets so
+ * the credential is present in its own environment.
+ *
+ * Execution contract: [ADR-0019](../../docs/adr/ADR-0019.md).
  */
 
 import { ContractError, parseRouteId, formatRouteId, type RouteRef } from "./contract.ts";
-import {
-  FallbackProfile,
-  FallbackCandidate,
-  FallbackResolution,
-  ResolvedCandidate,
-  RejectedCandidate,
-  FallbackRejectionReason,
-  parseFallbackProfile,
-  resolveFallbackProfile,
-  buildFallbackCatalog,
-  mergeAttestations,
-  seedAttestationsFromCatalog,
-} from "./fallback.ts";
+import { FallbackCandidate, parseFallbackProfile } from "./fallback.ts";
 import {
   executeWithFallback,
+  FallbackExhaustedError,
   type ClassifiedError,
   type FailureSignal,
   classifyFailure,
-  type LimitCategory,
 } from "./fallback-exec.ts";
-import { loadConfig, type Config, type Route, type Provider, type Harness } from "../agent.ts";
-import { effectiveQuotaKey, loadCatalog, type Catalog } from "./catalog.ts";
+import { type Config, type Provider } from "../agent.ts";
 import { agentStateDir } from "./contract.ts";
 import {
   createWorkspace,
@@ -141,6 +136,50 @@ export function loadTaskState(taskId: string): {
 }
 
 // ---------------------------------------------------------------------------
+// Agent start options
+// ---------------------------------------------------------------------------
+
+function harnessToAgentKind(adapter: string): "claude" | "codex" | "opencode" | "omp" | "dsh" | "vibe" {
+  switch (adapter) {
+    case "anthropic": return "claude";
+    case "opencode": return "opencode";
+    case "omp": return "omp";
+    case "passthrough": return "dsh";
+    default: return "omp";
+  }
+}
+
+/**
+ * OMP agent arguments for a route's provider and model.
+ *
+ * The provider id OMP knows is the provider's `omp_id`, not the launcher
+ * route key: `openrouter-free` and `openrouter` share the native OMP id
+ * `openrouter`. Deriving it from config keeps the worker on the route's
+ * declared provider instead of a hand-maintained list that silently drifts
+ * (a missing entry starts the worker on OMP's default provider, i.e. a
+ * different account than the route authorized).
+ */
+export function buildAgentStartOptions(provider: Provider, model: string): string[] {
+  // OMP has no credential-free route contract, so an anonymous provider
+  // (e.g. OVHcloud) can never be started on the omp adapter.
+  if (provider.anonymous) {
+    throw new ContractError(
+      "state",
+      `provider '${provider.key}' is anonymous; OMP has no credential-free route contract, so no omp route may use it`,
+    );
+  }
+  const args = ["--", "--provider", provider.omp_id, "--model", model];
+  // Pin the model roles for credentialed providers: agents.toml forbids
+  // implicit model fallback on omp routes, so a role switch must not reach
+  // another (possibly paid) model.
+  if (provider.require_infisical) {
+    const selector = `${provider.omp_id}/${model}`;
+    args.push("--smol", selector, "--slow", selector, "--plan", selector);
+  }
+  return args;
+}
+
+// ---------------------------------------------------------------------------
 // Task dispatch
 // ---------------------------------------------------------------------------
 
@@ -160,6 +199,9 @@ export async function dispatchTask(
 
   // Validate model
   const provider = config.providers[route.provider];
+  if (!provider) {
+    throw new ContractError("identity", `Provider not configured: ${route.provider}`);
+  }
   const allowedModels = route.models ?? provider.models ?? [];
   if (!allowedModels.includes(descriptor.model)) {
     throw new ContractError("identity", `Model not allowed for route ${descriptor.route}: ${descriptor.model}`);
@@ -181,7 +223,10 @@ export async function dispatchTask(
   }
 
   // Create Herdr workspace for the task
-  const workspace = await createWorkspace(process.cwd(), `task-${descriptor.id.slice(0, 8)}`, { noFocus: true });
+  const workspace = await createWorkspace(process.cwd(), `task-${descriptor.id.slice(0, 8)}`, {
+    noFocus: true,
+    env: routeWorkerEnv(provider),
+  });
   const workspaceId = workspace.id;
 
   // Get the root pane (first pane of first tab) to start the agent
@@ -190,37 +235,53 @@ export async function dispatchTask(
   // Wait for the pane to be ready (shell prompt available)
   await new Promise(r => setTimeout(r, 2000));
   
-  // Start the agent in the root pane
-  const harness = config.harnesses[route.harness];
-  const agentKind = harness.adapter === "omp" ? "omp" :
-                    harness.adapter === "anthropic" ? "claude" :
-                    harness.adapter === "opencode" ? "opencode" :
-                    harness.adapter === "passthrough" ? "dsh" : "omp";
+  // Build worker name
+  const harnessKey = route.harness;
+  const harness = config.harnesses[harnessKey];
+  const agentKind = harnessToAgentKind(harness.adapter);
+  // The worker is started with OMP's --provider/--model flags, so the route's
+  // adapter must be omp. Starting an OMP worker for another adapter would
+  // run a different harness against the route's account.
+  if (agentKind !== "omp") {
+    throw new ContractError(
+      "state",
+      `task dispatch drives the omp adapter only; route '${descriptor.route}' uses adapter '${harness.adapter}'`,
+    );
+  }
+
+  const agentOptions = buildAgentStartOptions(provider, descriptor.model);
   
   const workerName = `worker-${descriptor.id.slice(0, 8)}-${route.harness}-${randomUUID().slice(0, 8)}`;
-  const startResult = await startAgent({ workerName, kind: agentKind, paneId: rootPaneId });
+  
+  // Start the agent in the root pane with model/provider flags via Herdr
+  const startResult = await startAgent({ 
+    workerName, 
+    kind: agentKind,  // OMP handles all model/provider flags via --provider/--model
+    paneId: rootPaneId,
+    options: agentOptions
+  });
+  const workerNameFinal = startResult.agentName;
 
   // Split pane for output (right side)
   const pane = await createPane({ workspaceId, cwd: process.cwd(), split: "right", noFocus: true });
-  const paneId = pane.pane.pane_id;
+  const paneId = pane.paneId;
 
   // Map the agent to the task
   const mapping: HerdrTaskMapping = {
     taskId: descriptor.id,
     workspaceId,
     paneId,
-    workerName: startResult.agentName,
+    workerName: workerNameFinal,
     createdAt: new Date().toISOString(),
     route: descriptor.route,
     model: descriptor.model,
   };
   saveHerdrTaskMapping(mapping);
 
-  const attemptId = randomUUID();
   const routeRef = parseRouteId(descriptor.route);
 
   const attempt: TaskAttempt = {
-    id: attemptId,
+    id: randomUUID(),
     taskId: descriptor.id,
     route: routeRef,
     model: descriptor.model,
@@ -228,9 +289,9 @@ export async function dispatchTask(
     attemptNumber: 1,
     startedAt: new Date().toISOString(),
     status: "running",
-    herdrPaneId: paneId,
+    herdrPaneId: rootPaneId,
     herdrWorkspaceId: workspaceId,
-    herdrWorkerName: startResult.agentName,
+    herdrWorkerName: workerNameFinal,
     generation: 1,
   };
 
@@ -245,58 +306,218 @@ export async function dispatchTask(
 }
 
 /**
- * Start the actual agent process in the Herdr pane.
- * This is called after dispatch to actually launch the harness.
+ * Raw failure evidence for a prompt that did not complete, in the shape
+ * `executeWithFallback` and `classifyFailure` consume. Null means the prompt
+ * produced a response.
+ */
+function promptFailureSignal(promptResult: { blocked?: boolean; stalled?: boolean; errorCode?: string }): FailureSignal | null {
+  if (promptResult.blocked) {
+    return { httpStatus: 403, exitCode: 403, failureKind: "forbidden", retryAfterMs: null, resetAt: null, usage: [], errorKind: "agent-blocked" };
+  }
+  if (promptResult.stalled) {
+    // The prompt never reached a working state: a transport/timeout failure,
+    // not an authorization one. The exact cause is preserved in errorKind so
+    // the classified reason stays distinguishable.
+    return {
+      httpStatus: 504,
+      exitCode: 124,
+      failureKind: "timeout",
+      retryAfterMs: null,
+      resetAt: null,
+      usage: [],
+      errorKind: promptResult.errorCode ? `agent-${promptResult.errorCode}` : "agent-stalled",
+    };
+  }
+  return null;
+}
+
+/**
+ * The environment a route's worker needs to authenticate.
+ *
+ * The launcher resolves a provider's credential from Infisical and injects it
+ * into the harness process. A Herdr worker is a separate process started by
+ * the Herdr server, so it inherits the SERVER's environment, not the
+ * dispatcher's: without the credential the worker starts, accepts the prompt
+ * and then fails with "No API key found for <provider>".
+ *
+ * The value is read from this process's environment, which the caller
+ * populates by running under script/with-secrets. A credentialed provider
+ * whose credential is absent is a hard failure: starting the worker anyway
+ * would burn a prompt on a guaranteed auth failure.
+ */
+function routeWorkerEnv(provider: Provider): Record<string, string> {
+  if (provider.anonymous) return {};
+  const envName = provider.env ?? provider.secret;
+  if (!envName) {
+    throw new ContractError("identity", `Provider '${provider.key}' declares no credential env name`);
+  }
+  const value = process.env[envName];
+  if (!value) {
+    throw new ContractError(
+      "state",
+      `credential '${envName}' for provider '${provider.key}' is not in the environment; ` +
+        "run the dispatcher under script/with-secrets so the credential is injected",
+    );
+  }
+  return { [envName]: value };
+}
+
+/**
+ * Start a worker for a fallback candidate in its own pane.
+ *
+ * The candidate's provider and model are pinned at start time (they cannot be
+ * changed on a running worker), so each candidate needs a fresh worker. The
+ * pane is created inside the attempt's workspace and closed afterwards.
+ */
+async function startCandidateWorker(
+  attempt: TaskAttempt,
+  workerName: string,
+  options: string[],
+  env: Record<string, string>,
+): Promise<{ workerName: string; paneId: string }> {
+  const workspaceId = attempt.herdrWorkspaceId;
+  if (!workspaceId) {
+    throw new ContractError("state", "No Herdr workspace in attempt");
+  }
+  const pane = await createPane({
+    workspaceId,
+    cwd: process.cwd(),
+    split: "right",
+    noFocus: true,
+    env,
+  });
+  // The pane must be at an interactive shell prompt before an agent can start.
+  await new Promise(r => setTimeout(r, 2000));
+  const startResult = await startAgent({
+    workerName,
+    kind: "omp",
+    paneId: pane.paneId,
+    options,
+  });
+  return { workerName: startResult.agentName, paneId: pane.paneId };
+}
+
+/** Close a candidate's pane so a failed candidate leaves no worker behind. */
+async function closeCandidateWorker(candidate: { workerName: string; paneId: string }): Promise<void> {
+  try {
+    await closePane(candidate.paneId);
+  } catch {
+    // A pane that is already gone needs no cleanup; never let cleanup mask
+    // the failure that caused the candidate to be abandoned.
+  }
+}
+
+/**
+ * The output a worker produced.
+ *
+ * `herdr agent prompt` reports the agent's STATE, not its answer: the text
+ * lives in the agent's terminal output, which is a screen dump containing the
+ * prompt, the agent's reply and the surrounding UI. It is returned raw, under
+ * an explicit name, so no caller mistakes it for a parsed answer.
+ */
+async function readWorkerOutput(workerName: string): Promise<string | undefined> {
+  try {
+    const read = await readAgent(workerName, { source: "recent", lines: 200 });
+    return read.output?.trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Send a prompt to the agent and handle retries/fallback.
+ *
+ * Returns the worker that served the request: the primary's own worker, or
+ * the fallback candidate's worker. Collection must read from that worker, or
+ * a candidate's answer would be collected from the primary's terminal.
  */
 export async function startTaskAttempt(
   config: Config,
   attempt: TaskAttempt,
   prompt: string
-): Promise<{ success: boolean; error?: ClassifiedError; result?: unknown }> {
-  if (!attempt.herdrWorkerName) {
-    throw new ContractError("state", "No Herdr worker name in attempt");
+): Promise<{ success: boolean; error?: ClassifiedError; result?: unknown; workerName?: string }> {
+  if (!attempt.herdrWorkerName || !attempt.herdrPaneId) {
+    throw new ContractError("state", "No Herdr worker name or pane in attempt");
   }
 
   try {
     // Use the fallback execution logic if a profile is available
     if (attempt.profileId) {
       const result = await executeWithFallback(config, attempt.profileId, async (routeRef, model, candidate) => {
-        // Build the agent command for the route
-        const routeKey = formatRouteId(routeRef);
-        const route = config.routes[routeKey];
-        if (!route) {
-          throw new ContractError("state", `Route not found for fallback candidate: ${routeKey}`);
+        // The primary attempt runs on the worker already started for this
+        // route. A CANDIDATE is a different route/model on the same harness,
+        // so it needs its own worker: the current one is pinned to the
+        // primary's provider and model, and re-prompting it would silently
+        // run the primary again instead of the candidate the profile
+        // authorized.
+        if (candidate === null) {
+          const promptResult = await promptAgent(attempt.herdrWorkerName!, prompt, { wait: true, timeoutMs: 300000 });
+          const signal = promptFailureSignal(promptResult);
+          if (signal) return { success: false, error: signal };
+          const output = await readWorkerOutput(attempt.herdrWorkerName!);
+          return { success: true, result: { output, workerName: attempt.herdrWorkerName! } };
         }
 
-        // Send the prompt with the resolved model via Herdr
-        // Note: the model is pinned by the launcher's environment setup
-        const promptResult = await promptAgent(attempt.herdrWorkerName!, prompt, { wait: true, timeoutMs: 300000 });
-        
-        if (promptResult.blocked) {
-          return { success: false, error: { category: "unknown", observedAt: new Date().toISOString(), resetAt: null, retryAfterMs: null, exhausted: false, reason: promptResult.response || "Agent blocked", quotaScopeKey: null } };
+        const candidateRoute = formatRouteId(routeRef);
+        const candidateProvider = config.providers[routeRef.provider];
+        if (!candidateProvider) {
+          throw new ContractError("identity", `Provider not configured: ${routeRef.provider}`);
         }
-        if (promptResult.stalled) {
-          return { success: false, error: { category: "network", observedAt: new Date().toISOString(), resetAt: null, retryAfterMs: 30000, exhausted: false, reason: "Agent prompt stalled", quotaScopeKey: null } };
+        const candidateHarness = config.harnesses[routeRef.harness];
+        if (!candidateHarness) {
+          throw new ContractError("identity", `Harness not configured: ${routeRef.harness}`);
+        }
+        if (harnessToAgentKind(candidateHarness.adapter) !== "omp") {
+          throw new ContractError(
+            "state",
+            `fallback candidate '${candidateRoute}' uses adapter '${candidateHarness.adapter}'; only the omp adapter is supported`,
+          );
         }
 
-        return { success: true, result: promptResult.response };
+        const workerName = `worker-${attempt.taskId.slice(0, 8)}-${routeRef.harness}-${randomUUID().slice(0, 8)}`;
+        const options = buildAgentStartOptions(candidateProvider, model);
+        const candidateAttempt = await startCandidateWorker(attempt, workerName, options, routeWorkerEnv(candidateProvider));
+
+        try {
+          const promptResult = await promptAgent(candidateAttempt.workerName, prompt, { wait: true, timeoutMs: 300000 });
+          const signal = promptFailureSignal(promptResult);
+          if (signal) return { success: false, error: signal };
+          // The output must be read before the pane is closed.
+          const output = await readWorkerOutput(candidateAttempt.workerName);
+          // The executor returns the taskFn's `result` verbatim, so the
+          // serving worker travels inside it.
+          return { success: true, result: { output, workerName: candidateAttempt.workerName } };
+        } finally {
+          await closeCandidateWorker(candidateAttempt);
+        }
       });
-      return { success: true, result: result.result };
+      const served = result.result as { output?: string; workerName?: string };
+      return { success: true, result: { output: served?.output }, workerName: served?.workerName };
     } else {
       // No fallback profile - single route execution
       const promptResult = await promptAgent(attempt.herdrWorkerName!, prompt, { wait: true, timeoutMs: 300000 });
-      
-      if (promptResult.blocked) {
-        return { success: false, error: { category: "unknown", observedAt: new Date().toISOString(), resetAt: null, retryAfterMs: null, exhausted: false, reason: promptResult.response || "Agent blocked", quotaScopeKey: null } };
-      }
-      if (promptResult.stalled) {
-        return { success: false, error: { category: "network", observedAt: new Date().toISOString(), resetAt: null, retryAfterMs: 30000, exhausted: false, reason: "Agent prompt stalled", quotaScopeKey: null } };
-      }
-
-      return { success: true, result: promptResult.response };
+      const signal = promptFailureSignal(promptResult);
+      if (signal) return { success: false, error: classifyFailure(signal, new Date().toISOString()) };
+      const output = await readWorkerOutput(attempt.herdrWorkerName!);
+      return { success: true, result: { output }, workerName: attempt.herdrWorkerName };
     }
   } catch (error) {
-    const signal: { message: string } = { message: error instanceof Error ? error.message : String(error) };
+    // Every candidate was exhausted: the executor already classified the
+    // failure, so keep that verdict instead of re-deriving "unknown" from a
+    // blank signal.
+    if (error instanceof FallbackExhaustedError && error.lastError) {
+      return { success: false, error: error.lastError };
+    }
+    // Any other error carries no structured evidence: fail closed as unknown.
+    const signal: FailureSignal = {
+      httpStatus: null,
+      failureKind: null,
+      exitCode: null,
+      retryAfterMs: null,
+      resetAt: null,
+      usage: [],
+      errorKind: "exception"
+    };
     const classified = classifyFailure(signal, new Date().toISOString());
     return { success: false, error: classified };
   }
@@ -351,7 +572,15 @@ export async function collectTaskAttempt(
       result: { output: readResult.output, completed: waitResult.completed, reason: waitResult.reason },
     };
   } catch (error) {
-    const signal: { message: string } = { message: error instanceof Error ? error.message : String(error) };
+    const signal: FailureSignal = { 
+      httpStatus: null, 
+      failureKind: null, 
+      exitCode: null, 
+      retryAfterMs: null, 
+      resetAt: null, 
+      usage: [], 
+      errorKind: "exception" 
+    };
     const classified = classifyFailure(signal, new Date().toISOString());
     return {
       taskId: attempt.taskId,
@@ -363,51 +592,39 @@ export async function collectTaskAttempt(
 }
 
 /**
- * Handle fallback for a failed attempt.
- * Returns the next attempt if fallback is possible, null if exhausted.
+ * Record the outcome of a finished attempt in the task state.
+ *
+ * The attempt history is the durable record of what was tried and how it
+ * failed: the classified reason travels with it, so a resumed task can tell a
+ * quota exhaustion from an auth failure without re-deriving it.
  */
-export async function handleFallback(
-  config: Config,
+export function recordAttemptOutcome(
   taskId: string,
-  failedAttempt: TaskAttempt,
-  error: ClassifiedError
-): Promise<TaskAttempt | null> {
+  attempt: TaskAttempt,
+  outcome: { status: "completed" | "failed" | "blocked"; error?: ClassifiedError; result?: unknown },
+): TaskAttempt | null {
   const state = loadTaskState(taskId);
   if (!state) return null;
 
-  // Check if we have a fallback profile
-  if (!failedAttempt.profileId) return null;
-
-  // Check if we've exhausted retries
-  const maxAttempts = state.descriptor.maxAttempts ?? 5;
-  const attemptNumber = failedAttempt.attemptNumber + 1;
-  if (attemptNumber > maxAttempts) return null;
-
-  // Check circuit breaker
-  const recentFailures = state.history.filter(a => a.status === "failed").slice(-3);
-  if (recentFailures.length >= 3) {
-    return null; // Circuit breaker open
-  }
-
-  // Try next fallback candidate via executeWithFallback logic
-  // For now, we just create a new attempt with incremented number
-  // The actual candidate switching happens inside executeWithFallback
-  const nextAttempt: TaskAttempt = {
-    ...failedAttempt,
-    id: randomUUID(),
-    attemptNumber,
-    startedAt: new Date().toISOString(),
-    status: "fallback",
-    fallbackCandidate: undefined, // Would be resolved from executeWithFallback
-    generation: failedAttempt.generation + 1,
+  const finished: TaskAttempt = {
+    ...attempt,
+    status: outcome.status,
+    error: outcome.error,
+    result: outcome.result,
   };
 
-  // Update state
-  state.history.push(nextAttempt);
-  state.currentAttempt = nextAttempt;
+  // Replace the attempt in place when it is already recorded (the dispatched
+  // attempt is saved up front); otherwise append it.
+  const index = state.history.findIndex(a => a.id === attempt.id);
+  if (index >= 0) {
+    state.history[index] = finished;
+  } else {
+    state.history.push(finished);
+  }
+  state.currentAttempt = finished;
   saveTaskState(taskId, state);
 
-  return nextAttempt;
+  return finished;
 }
 
 // ---------------------------------------------------------------------------
@@ -416,6 +633,12 @@ export async function handleFallback(
 
 /**
  * Run a task to completion with automatic fallback handling.
+ *
+ * The fallback profile's candidates are executed inside `startTaskAttempt`
+ * (each on its own worker, on its own route/model), so a failure there has
+ * already exhausted every authorized candidate. Re-dispatching the primary
+ * route would run the same exhausted provider again instead of the candidate
+ * the profile authorized.
  */
 export async function runTaskToCompletion(
   config: Config,
@@ -424,31 +647,35 @@ export async function runTaskToCompletion(
   // Dispatch the task
   const { attempt } = await dispatchTask(config, descriptor);
   
+  // Wait for agent to be ready
+  await waitAgent(attempt.herdrWorkerName!, 30000);
+  
   // Start the attempt
   const startResult = await startTaskAttempt(config, attempt, descriptor.prompt);
   
-  if (startResult.success) {
-    // Collect the result
-    return await collectTaskAttempt(attempt);
-  } else {
-    // Handle fallback
-    const nextAttempt = await handleFallback(config, descriptor.id, attempt, startResult.error!);
-    if (!nextAttempt) {
-      // No fallback available - collect the failure
-      return {
-        taskId: descriptor.id,
-        attempt,
-        success: false,
-        error: startResult.error,
-      };
-    }
-    
-    // Recursively try the next attempt
-    return await runTaskToCompletion(config, {
-      ...descriptor,
-      // The next attempt will use the fallback candidate from the profile
-    });
+  if (!startResult.success) {
+    // Every authorized candidate failed. The classified reason travels with
+    // the result, so the caller sees the real category (auth, quota, ...).
+    recordAttemptOutcome(descriptor.id, attempt, { status: "failed", error: startResult.error });
+    return {
+      taskId: descriptor.id,
+      attempt,
+      success: false,
+      error: startResult.error,
+    };
   }
+
+  // Collect from the worker that served the request: a fallback candidate
+  // runs on its own worker, and reading the primary's terminal would
+  // return the wrong output.
+  const serving = startResult.workerName ?? attempt.herdrWorkerName!;
+  const collected = await collectTaskAttempt({ ...attempt, herdrWorkerName: serving });
+  recordAttemptOutcome(descriptor.id, attempt, {
+    status: collected.success ? "completed" : "failed",
+    error: collected.error,
+    result: collected.result,
+  });
+  return collected;
 }
 
 /**

@@ -325,14 +325,37 @@ export const FALLBACK_MAX_RETRIES_PER_CANDIDATE = 2;
 export const FALLBACK_MAX_TOTAL_RETRIES = 5;
 
 /**
+ * Thrown when every usable candidate was exhausted. The classified failure is
+ * carried structurally (`lastError`) so a caller can act on the real category
+ * (auth, billing, quota-exhausted, ...) instead of re-deriving "unknown" from
+ * a blank signal.
+ */
+export class FallbackExhaustedError extends ContractError {
+  /** The last classified failure, or null when no candidate produced evidence. */
+  readonly lastError: ClassifiedError | null;
+
+  constructor(profileId: string, lastError: ClassifiedError | null) {
+    super("state", `All fallback candidates exhausted for profile ${profileId}. Last error: ${lastError?.category ?? "unknown"}`);
+    this.name = "FallbackExhaustedError";
+    this.lastError = lastError;
+  }
+}
+
+/**
  * Execute a task with same-harness fallback support.
- * Returns the result of the first successful candidate, or throws if all exhausted.
+ *
+ * The primary route is tried first, then the profile's candidates in order.
+ * Returns the result of the first attempt that succeeds, or throws when every
+ * attempt is exhausted.
+ *
+ * `candidate` is null for the primary attempt and set for a fallback
+ * candidate, so the caller can tell which one it is running.
  */
 export async function executeWithFallback(
   config: Config,
   profileId: string,
-  taskFn: (route: RouteRef, model: string, candidate: FallbackCandidate) => Promise<{ success: boolean; error?: FailureSignal; result?: any }>
-): Promise<{ route: RouteRef; model: string; candidate: FallbackCandidate; result: any }> {
+  taskFn: (route: RouteRef, model: string, candidate: FallbackCandidate | null) => Promise<{ success: boolean; error?: FailureSignal; result?: any }>
+): Promise<{ route: RouteRef; model: string; candidate: FallbackCandidate | null; result: any }> {
   // Load and validate profile
   const tomlText = readFileSync(config.path, "utf-8");
   const parsedToml = Bun.TOML.parse(tomlText) as Record<string, unknown>;
@@ -379,12 +402,34 @@ export async function executeWithFallback(
     circuitBreakerOpenedAt: null,
   };
 
-  // Try each candidate in order
-  for (let i = 0; i < resolution.usable.length; i++) {
+  // The primary route is tried FIRST: it is the route the task was requested
+  // on, and the candidates exist to continue it when the primary is
+  // unusable. Executing only the candidates would silently run a different
+  // provider than the task asked for.
+  const primaryRouteConfig = config.routes[profile.primaryRoute];
+  const primaryModel = primaryRouteConfig?.default_model ?? primaryRouteConfig?.models?.[0] ?? null;
+  if (!primaryModel) {
+    throw new ContractError(
+      "state",
+      `primary route '${profile.primaryRoute}' declares no model; refusing to guess one`,
+    );
+  }
+  state.primaryModel = primaryModel;
+
+  // The primary route, then the resolved candidates in order.
+  const attempts: Array<{ routeRef: RouteRef; model: string; candidate: FallbackCandidate | null }> = [
+    { routeRef: primaryRouteRef, model: primaryModel, candidate: null },
+    ...resolution.usable.map(c => ({
+      routeRef: c.routeRef,
+      model: c.candidate.model,
+      candidate: c.candidate,
+    })),
+  ];
+
+  // Try each attempt in order
+  for (let i = 0; i < attempts.length; i++) {
     state.currentCandidateIndex = i;
-    const candidate = resolution.usable[i];
-    const routeRef = candidate.routeRef;
-    const model = candidate.candidate.model;
+    const { routeRef, model, candidate } = attempts[i];
 
     // Check circuit breaker
     if (state.circuitBreakerOpen) {
@@ -400,31 +445,13 @@ export async function executeWithFallback(
 
     let candidateRetries = 0;
     while (candidateRetries <= FALLBACK_MAX_RETRIES_PER_CANDIDATE && state.retryCount < state.maxRetries) {
+      // Only the task call is guarded: an exception thrown by the task itself
+      // carries no structured evidence, so it is classified as unknown. The
+      // classification and the fail-fast decision below stay outside this
+      // guard, so a deliberate stop is never re-labelled as "unknown".
+      let outcome: { success: boolean; error?: FailureSignal; result?: any };
       try {
-        const result = await taskFn(routeRef, model, candidate.candidate);
-        if (result.success) {
-          return { route: routeRef, model, candidate: candidate.candidate, result: result.result };
-        }
-
-        // Task failed - classify error from structured evidence
-        const classified = classifyFailure(result.error ?? {}, new Date().toISOString());
-        state.lastError = classified;
-
-        // Handle based on category
-        const facts = CATEGORY_FACTS[classified.category];
-        
-        if (facts.transient && classified.retryAfterMs) {
-          // Rate limit with explicit retry-after: wait and retry
-          await sleep(Math.min(classified.retryAfterMs, 60000));
-          candidateRetries++;
-          state.retryCount++;
-          continue;
-        }
-
-        // Non-transient or no retry-after: move to next candidate
-        // Quota/billing/auth never auto-retry on same or another paid route
-        candidateRetries = FALLBACK_MAX_RETRIES_PER_CANDIDATE + 1;
-        
+        outcome = await taskFn(routeRef, model, candidate);
       } catch (error) {
         // Unexpected error - treat as unknown (fail closed)
         const classified: ClassifiedError = {
@@ -438,7 +465,39 @@ export async function executeWithFallback(
         };
         state.lastError = classified;
         candidateRetries = FALLBACK_MAX_RETRIES_PER_CANDIDATE + 1;
+        continue;
       }
+
+      if (outcome.success) {
+        return { route: routeRef, model, candidate, result: outcome.result };
+      }
+
+      // Task failed - classify error from structured evidence
+      const classified = classifyFailure(outcome.error ?? {}, new Date().toISOString());
+      state.lastError = classified;
+
+      // An unrecognized failure is not evidence that another candidate would
+      // fare better, and ADR-0017 forbids silently changing accounts,
+      // billing or executing a new mutable attempt on unknown facts. Stop
+      // here and report the failure instead of advancing.
+      if (classified.category === "unknown") {
+        throw new FallbackExhaustedError(profileId, classified);
+      }
+
+      // Handle based on category
+      const facts = CATEGORY_FACTS[classified.category];
+      
+      if (facts.transient && classified.retryAfterMs) {
+        // Rate limit with explicit retry-after: wait and retry
+        await sleep(Math.min(classified.retryAfterMs, 60000));
+        candidateRetries++;
+        state.retryCount++;
+        continue;
+      }
+
+      // Non-transient or no retry-after: move to next candidate
+      // Quota/billing/auth never auto-retry on same or another paid route
+      candidateRetries = FALLBACK_MAX_RETRIES_PER_CANDIDATE + 1;
     }
 
     // Check if we should open circuit breaker
@@ -449,8 +508,10 @@ export async function executeWithFallback(
     }
   }
 
-  // All candidates exhausted
-  throw new ContractError("state", `All fallback candidates exhausted for profile ${profileId}. Last error: ${state.lastError?.category ?? "unknown"}`);
+  // All candidates exhausted. The classified failure travels with the error so
+  // the caller keeps the real category (auth, billing, quota-exhausted, ...)
+  // rather than re-deriving "unknown" from a blank signal.
+  throw new FallbackExhaustedError(profileId, state.lastError);
 }
 
 function sleep(ms: number): Promise<void> {

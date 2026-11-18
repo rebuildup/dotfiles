@@ -185,7 +185,7 @@ config: {config_path}
 credentials: {with_secrets} (Infisical, process-scoped)
 `;
 
-class AgentError extends Error {
+export class AgentError extends Error {
   code: number;
   constructor(message: string, code: number = EXIT_USAGE) {
     super(message);
@@ -193,7 +193,7 @@ class AgentError extends Error {
   }
 }
 
-interface Provider {
+export interface Provider {
   key: string;
   label: string;
   base_url: string | null;
@@ -234,7 +234,7 @@ interface OcModelSpec {
   limit: { context: number; output: number };
 }
 
-interface Harness {
+export interface Harness {
   key: string;
   label: string;
   command: string;
@@ -242,7 +242,7 @@ interface Harness {
   env: Record<string, string>;
 }
 
-interface Route {
+export interface Route {
   key: string;
   harness: string;
   provider: string;
@@ -252,7 +252,7 @@ interface Route {
   note: string;
 }
 
-interface Config {
+export interface Config {
   path: string;
   drop_env: string[];
   providers: Record<string, Provider>;
@@ -381,7 +381,7 @@ function parseOcModels(
   return specs;
 }
 
-function loadConfig(path?: string): Config {
+export function loadConfig(path?: string): Config {
   const configPathResolved = path || configPath();
   let text: string;
   try {
@@ -2798,12 +2798,17 @@ async function main(argv: string[]): Promise<number> {
   return cmdRun(config, harnessKey, providerKey, model, passthru);
 }
 
-try {
-  process.exit(await main(process.argv.slice(2)));
-} catch (error) {
-  if (error instanceof AgentError) {
-    console.error(`${PROGRAM}: ${error.message}`);
-    process.exit(error.code);
+// Run the CLI only when this module is the process entry point. Other
+// modules (script/agent/*.ts) import the config surface above; without this
+// guard, importing them would execute the launcher and exit the process.
+if (import.meta.main) {
+  try {
+    process.exit(await main(process.argv.slice(2)));
+  } catch (error) {
+    if (error instanceof AgentError) {
+      console.error(`${PROGRAM}: ${error.message}`);
+      process.exit(error.code);
+    }
+    throw error;
   }
-  throw error;
 }
