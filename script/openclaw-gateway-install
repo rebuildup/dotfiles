@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# script/openclaw-gateway-install — converge the OpenClaw Gateway service.
+#
+# Idempotent: installs the systemd user unit via `openclaw gateway install`,
+# applies the dotfiles-owned systemd drop-in that runs the Gateway under
+# Infisical injection (script/with-secrets), enables lingering so the user
+# manager survives logout, and (re)starts the service.
+#
+# Requires: openclaw on PATH (mise), ~/.dotfiles checked out, Infisical access
+# for the calling user (ADR-0004 user session on workstations).
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+unit_dir="$HOME/.config/systemd/user"
+unit="$unit_dir/openclaw-gateway.service"
+dropin_dir="$unit/openclaw-gateway.service.d"
+
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || { printf 'missing required command: %s\n' "$1" >&2; exit 1; }
+}
+require_command openclaw
+require_command systemctl
+require_command loginctl
+
+# `openclaw gateway install` refuses group/world-writable unit dirs.
+mkdir -p "$unit_dir"
+chmod go-w "$HOME/.config" "$HOME/.config/systemd" "$unit_dir" 2>/dev/null || true
+
+if [[ ! -f "$unit" ]]; then
+  openclaw gateway install
+else
+  printf 'systemd unit already present: %s\n' "$unit"
+fi
+
+# The generated unit resolves gateway.auth.token SecretRefs from the process
+# environment; the drop-in routes ExecStart through Infisical so secrets are
+# injected without a human session. `openclaw gateway install --force` rewrites
+# the base unit but leaves drop-ins alone.
+mkdir -p "$dropin_dir"
+cat > "$dropin_dir/override.conf" <<EOF
+# Managed by rebuildup/dotfiles — runs the Gateway under Infisical injection
+# so SecretRef/env credentials resolve without a human session (ADR-0004).
+[Service]
+ExecStart=
+ExecStart=/bin/bash -lc 'export PATH="\$HOME/.local/bin:\$HOME/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin"; exec "\$HOME/.dotfiles/script/with-secrets" openclaw gateway --port 18789'
+EOF
+chmod 600 "$dropin_dir/override.conf" 2>/dev/null || true
+
+systemctl --user daemon-reload
+systemctl --user enable openclaw-gateway.service >/dev/null 2>&1 || true
+
+# Linger lets the systemd user manager (and this unit) start at boot without
+# an interactive login. Requires permission; on failure warn, not fail.
+if loginctl enable-linger "$USER" 2>/dev/null || sudo -n loginctl enable-linger "$USER" 2>/dev/null; then
+  printf 'linger enabled for %s\n' "$USER"
+else
+  printf 'WARN: could not enable linger; gateway will not auto-start before first login\n' >&2
+fi
+
+systemctl --user restart openclaw-gateway.service
+printf 'openclaw-gateway.service restarted; check: openclaw gateway status\n'

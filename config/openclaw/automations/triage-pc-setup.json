@@ -1,0 +1,24 @@
+{
+  "declarationKey": "rebuildup.triage.pc-setup",
+  "name": "triage-pc-setup",
+  "displayName": "pc-setup triage",
+  "description": "machine setup, mise, OS services",
+  "enabled": true,
+  "schedule": {
+    "kind": "cron",
+    "expr": "7 */3 * * *",
+    "stagger": "10m"
+  },
+  "payload": {
+    "kind": "agentTurn",
+    "session": "isolated",
+    "agent": "pc-setup",
+    "message": "Run the pc-setup standing-orders loop in AGENTS.md for repos rebuildup/pc-setup: restore state from GitHub (gh), pick at most one work unit, dispatch via agent/herdr per project-init, else NO_REPLY. Never use paid models.",
+    "model": "openrouter/nvidia/nemotron-3.5-lightning:free",
+    "fallbacks": [
+      "openrouter/cohere/north-mini-code:free",
+      "openrouter/google/gemma-4-31b-it:free"
+    ],
+    "noDeliver": true
+  }
+}
