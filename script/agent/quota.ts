@@ -113,11 +113,18 @@ export function assertQuotaUsage(value: unknown, where: string): QuotaUsage {
     throw new ContractError("schema", `${where}: observation carries no evidence-backed value`);
   }
   const evidence = usage.evidence;
+  if (!isPlainObject(evidence)) {
+    throw new ContractError(
+      "schema",
+      `${where}: 'evidence' must carry an ISO UTC 'at' and a live source (probe|live-e2e)`,
+    );
+  }
+  const evidenceAt = evidence["at"];
+  const evidenceSource = evidence["source"];
   if (
-    !isPlainObject(evidence) ||
-    typeof evidence["at"] !== "string" ||
-    !ISO_UTC.test(evidence["at"]) ||
-    (evidence["source"] !== "probe" && evidence["source"] !== "live-e2e")
+    typeof evidenceAt !== "string" ||
+    !ISO_UTC.test(evidenceAt) ||
+    (evidenceSource !== "probe" && evidenceSource !== "live-e2e")
   ) {
     throw new ContractError(
       "schema",
@@ -127,13 +134,20 @@ export function assertQuotaUsage(value: unknown, where: string): QuotaUsage {
   if (usage.provenance !== "measured") {
     throw new ContractError("schema", `${where}: live observations require provenance 'measured'`);
   }
-  if (evidence["sha"] !== undefined && evidence["sha"] !== null) {
-    if (typeof evidence["sha"] !== "string" || !/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(evidence["sha"])) {
+  const parsedEvidence: Evidence = { at: evidenceAt, source: evidenceSource };
+  const evidenceSha = evidence["sha"];
+  if (evidenceSha !== undefined && evidenceSha !== null) {
+    if (typeof evidenceSha !== "string" || !/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(evidenceSha)) {
       throw new ContractError("schema", `${where}: 'evidence.sha' must be a 40- or 64-hex digest`);
     }
+    parsedEvidence.sha = evidenceSha;
   }
-  if (evidence["note"] !== undefined && evidence["note"] !== null && typeof evidence["note"] !== "string") {
-    throw new ContractError("schema", `${where}: 'evidence.note' must be a string`);
+  const evidenceNote = evidence["note"];
+  if (evidenceNote !== undefined && evidenceNote !== null) {
+    if (typeof evidenceNote !== "string") {
+      throw new ContractError("schema", `${where}: 'evidence.note' must be a string`);
+    }
+    parsedEvidence.note = evidenceNote;
   }
   return {
     window: usage.window as QuotaWindow,
@@ -143,7 +157,7 @@ export function assertQuotaUsage(value: unknown, where: string): QuotaUsage {
     used,
     resetAt,
     provenance: "measured",
-    evidence: evidence as unknown as Evidence,
+    evidence: parsedEvidence,
   };
 }
 

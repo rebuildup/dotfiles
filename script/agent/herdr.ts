@@ -614,10 +614,13 @@ export function loadHerdrTaskMapping(taskId: string): HerdrTaskMapping | null {
   try {
     const raw: unknown = JSON.parse(readFileSync(path, "utf-8"));
     if (!isPlainObject(raw)) return null;
+    const mapping = {} as Record<keyof HerdrTaskMapping, string>;
     for (const key of ["taskId", "workspaceId", "paneId", "workerName", "createdAt", "route", "model"] as const) {
-      if (typeof raw[key] !== "string") return null;
+      const value = raw[key];
+      if (typeof value !== "string") return null;
+      mapping[key] = value;
     }
-    return raw as unknown as HerdrTaskMapping;
+    return mapping;
   } catch {
     return null;
   }

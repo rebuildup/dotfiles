@@ -42,10 +42,9 @@ export function withSecretsPath(): string {
 // Execution (child process with inherited stdio; no execve in Bun)
 // ---------------------------------------------------------------------------
 
-const SIGNAL_NUMBERS: Record<string, number> = osConstants.signals as unknown as Record<
-  string,
-  number
->;
+const SIGNAL_NUMBERS: Record<string, number> = Object.fromEntries(
+  Object.entries(osConstants.signals),
+);
 
 /** A Windows batch shim (.cmd/.bat, e.g. npm's cmd-shim output) cannot be
  * started by CreateProcess/Bun.spawn directly; it needs cmd.exe. */
@@ -126,7 +125,7 @@ export async function runInherited(cmd: string[], env?: Record<string, string | 
       process.removeListener(signal, handler);
     }
   }
-  const signalCode = (child as unknown as { signalCode?: string | null }).signalCode;
+  const signalCode = child.signalCode;
   if (signalCode) {
     const number = SIGNAL_NUMBERS[signalCode];
     return number ? 128 + number : 1;

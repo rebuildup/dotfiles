@@ -147,6 +147,8 @@ const SOLO_CLASSES: readonly TaskClass[] = ["mechanical", "localized"];
 
 const DURABILITIES: readonly Durability[] = ["observational", "mutable", "durable"];
 
+const LANDING_CLASSES: readonly LandingClass[] = ["ticket", "release"];
+
 /** Valid landing targets: `main`, a `release-x-y-z` line, or an issue branch. */
 const TARGET_BRANCH_RE =
   /^(main|release-\d+-\d+-\d+|\d+)$/;
@@ -205,11 +207,22 @@ function requireNonNegativeInt(value: unknown, field: string): number {
   return value;
 }
 
+function requireOneOf<T extends string>(
+  value: unknown,
+  allowed: readonly T[],
+  field: string,
+): T {
+  if (typeof value !== "string" || !(allowed as readonly string[]).includes(value)) {
+    throw new ContractError("schema", `preflight: unknown ${field} '${String(value)}'`);
+  }
+  return value as T;
+}
+
 function validateStructure(
   request: unknown,
   limits: unknown,
   knownAuthorities: readonly string[],
-): ValidatedRequest {
+): { request: ValidatedRequest; limits: HardLimits } {
   if (!isPlainObject(request)) {
     throw new ContractError("schema", "preflight: request must be an object");
   }
@@ -235,52 +248,48 @@ function validateStructure(
   if (!isPlainObject(request.task)) {
     throw new ContractError("schema", "preflight: request.task must be an object");
   }
-  requireString(request.task.id, "task.id");
-  if (!TASK_CLASSES.includes(request.task.taskClass as TaskClass)) {
-    throw new ContractError("schema", `preflight: unknown taskClass '${request.task.taskClass}'`);
-  }
-  if (!DURABILITIES.includes(request.task.durability as Durability)) {
-    throw new ContractError(
-      "schema",
-      `preflight: unknown durability '${request.task.durability}'`,
-    );
-  }
+  const task: TaskDescriptor = {
+    id: requireString(request.task.id, "task.id"),
+    taskClass: requireOneOf(request.task.taskClass, TASK_CLASSES, "taskClass"),
+    durability: requireOneOf(request.task.durability, DURABILITIES, "durability"),
+  };
 
   // Numeric request fields: exact integers, non-negative; workers positive.
-  requireNonNegativeFinite(request.estimatedCostUsd, "request.estimatedCostUsd");
-  for (const key of [
-    "estimatedDurationMs",
-    "networkCalls",
-    "externalWrites",
-    "spawnDepth",
-  ] as const) {
-    requireNonNegativeInt(request[key], `request.${key}`);
-  }
-  if (typeof request.workers !== "number" || !Number.isInteger(request.workers) || request.workers < 1) {
+  const estimatedCostUsd = requireNonNegativeFinite(
+    request.estimatedCostUsd,
+    "request.estimatedCostUsd",
+  );
+  const estimatedDurationMs = requireNonNegativeInt(
+    request.estimatedDurationMs,
+    "request.estimatedDurationMs",
+  );
+  const networkCalls = requireNonNegativeInt(request.networkCalls, "request.networkCalls");
+  const externalWrites = requireNonNegativeInt(request.externalWrites, "request.externalWrites");
+  const spawnDepth = requireNonNegativeInt(request.spawnDepth, "request.spawnDepth");
+  const workers = request.workers;
+  if (typeof workers !== "number" || !Number.isInteger(workers) || workers < 1) {
     throw new ContractError("schema", "preflight: 'request.workers' must be a positive integer");
   }
 
   // Boolean request fields: real booleans only, `'yes'`/`1`/`undefined` die here.
-  for (const key of [
-    "sandboxed",
-    "repoTrusted",
-    "nativeDelegation",
-    "secretsGranted",
-    "authorizedByUser",
-    "dependencyDagPresent",
-  ] as const) {
-    requireBoolean(request[key], `request.${key}`);
-  }
+  const sandboxed = requireBoolean(request.sandboxed, "request.sandboxed");
+  const repoTrusted = requireBoolean(request.repoTrusted, "request.repoTrusted");
+  const nativeDelegation = requireBoolean(request.nativeDelegation, "request.nativeDelegation");
+  const secretsGranted = requireBoolean(request.secretsGranted, "request.secretsGranted");
+  const authorizedByUser = requireBoolean(request.authorizedByUser, "request.authorizedByUser");
+  const dependencyDagPresent = requireBoolean(
+    request.dependencyDagPresent,
+    "request.dependencyDagPresent",
+  );
 
   // Reviewer: null (no reviewer) or a non-empty trimmed string.
-  if (request.reviewer !== null) {
-    requireString(request.reviewer, "request.reviewer");
-  }
+  const reviewer =
+    request.reviewer === null
+      ? null
+      : requireString(request.reviewer, "request.reviewer");
 
   // Landing class: exact enum.
-  if (request.landingClass !== "ticket" && request.landingClass !== "release") {
-    throw new ContractError("schema", `preflight: unknown landingClass '${request.landingClass}'`);
-  }
+  const landingClass = requireOneOf(request.landingClass, LANDING_CLASSES, "landingClass");
 
   // Target branch: `main`, a `release-x-y-z` line, or an issue-number branch.
   const branch = request.targetBranch;
@@ -291,45 +300,44 @@ function validateStructure(
     );
   }
 
-  // Numeric limit fields: non-negative integers.
-  requireNonNegativeFinite(limits.maxCostUsd, "limits.maxCostUsd");
-  for (const key of [
-    "maxWorkers",
-    "maxDurationMs",
-    "maxNetworkCalls",
-    "maxExternalWrites",
-    "maxSpawnDepth",
-  ] as const) {
-    requireNonNegativeInt(limits[key], `limits.${key}`);
-  }
-
-  // Boolean limit fields: real booleans.
-  for (const key of [
-    "allowNativeDelegation",
-    "allowSecretAccess",
-    "requireTrustedRepo",
-  ] as const) {
-    requireBoolean(limits[key], `limits.${key}`);
-  }
+  // Numeric limit fields: non-negative integers; booleans are real booleans.
+  // Field order matches the original sequential validation order.
+  const lim: HardLimits = {
+    maxCostUsd: requireNonNegativeFinite(limits.maxCostUsd, "limits.maxCostUsd"),
+    maxWorkers: requireNonNegativeInt(limits.maxWorkers, "limits.maxWorkers"),
+    maxDurationMs: requireNonNegativeInt(limits.maxDurationMs, "limits.maxDurationMs"),
+    maxNetworkCalls: requireNonNegativeInt(limits.maxNetworkCalls, "limits.maxNetworkCalls"),
+    maxExternalWrites: requireNonNegativeInt(limits.maxExternalWrites, "limits.maxExternalWrites"),
+    maxSpawnDepth: requireNonNegativeInt(limits.maxSpawnDepth, "limits.maxSpawnDepth"),
+    allowNativeDelegation: requireBoolean(
+      limits.allowNativeDelegation,
+      "limits.allowNativeDelegation",
+    ),
+    allowSecretAccess: requireBoolean(limits.allowSecretAccess, "limits.allowSecretAccess"),
+    requireTrustedRepo: requireBoolean(limits.requireTrustedRepo, "limits.requireTrustedRepo"),
+  };
 
   return {
-    task: request.task as unknown as TaskDescriptor,
-    principal: requireString(request.principal, "request.principal"),
-    workers: request.workers as number,
-    estimatedCostUsd: request.estimatedCostUsd as number,
-    estimatedDurationMs: request.estimatedDurationMs as number,
-    networkCalls: request.networkCalls as number,
-    externalWrites: request.externalWrites as number,
-    spawnDepth: request.spawnDepth as number,
-    sandboxed: request.sandboxed as boolean,
-    repoTrusted: request.repoTrusted as boolean,
-    nativeDelegation: request.nativeDelegation as boolean,
-    secretsGranted: request.secretsGranted as boolean,
-    authorizedByUser: request.authorizedByUser as boolean,
-    landingClass: request.landingClass as LandingClass,
-    targetBranch: request.targetBranch as string,
-    reviewer: request.reviewer === null ? null : requireString(request.reviewer, "request.reviewer"),
-    dependencyDagPresent: request.dependencyDagPresent as boolean,
+    request: {
+      task,
+      principal: requireString(request.principal, "request.principal"),
+      workers,
+      estimatedCostUsd,
+      estimatedDurationMs,
+      networkCalls,
+      externalWrites,
+      spawnDepth,
+      sandboxed,
+      repoTrusted,
+      nativeDelegation,
+      secretsGranted,
+      authorizedByUser,
+      landingClass,
+      targetBranch: branch,
+      reviewer,
+      dependencyDagPresent,
+    },
+    limits: lim,
   };
 }
 
@@ -345,8 +353,7 @@ export function preflight(
   limits: unknown,
   knownAuthorities: readonly string[],
 ): PreflightDecision {
-  const v = validateStructure(request, limits, knownAuthorities);
-  const lim = limits as HardLimits;
+  const { request: v, limits: lim } = validateStructure(request, limits, knownAuthorities);
 
   const checks: CheckResult[] = [];
   const reasons: string[] = [];
