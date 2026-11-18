@@ -496,7 +496,13 @@ export async function waitAgent(
     const reason = herdrStr(env["reason"]);
     return { completed: env["completed"], ...(reason !== undefined ? { reason } : {}) };
   }
-  const status = herdrStr(env["status"]);
+  // Real `agent wait` output nests the state: result.agent.agent_status.
+  // Reading only top-level "status" made every finished worker report
+  // completed:false — observed live on herdr 0.9.5 (RC smoke, #173).
+  const nested = isPlainObject(env["agent"]) ? env["agent"] : null;
+  const status = herdrStr(env["status"])
+    ?? herdrStr(env["agent_status"])
+    ?? (nested !== null ? herdrStr(nested["agent_status"]) : undefined);
   return { completed: status === "done" || status === "idle", ...(status !== undefined ? { reason: status } : {}) };
 }
 
