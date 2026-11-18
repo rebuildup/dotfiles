@@ -45,6 +45,8 @@ import {
 } from "./herdr.ts";
 import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { withFileLock } from "./attempts.ts";
+import { extractProviderFailureEvidence } from "./evidence.ts";
 import { randomUUID } from "node:crypto";
 
 // ---------------------------------------------------------------------------
@@ -552,11 +554,14 @@ export async function dispatchTask(
     generation: 1,
   };
 
-  // Save initial state
-  saveTaskState(descriptor.id, {
-    descriptor,
-    history: [attempt],
-    currentAttempt: attempt,
+  // Save initial state under the same per-task lock as outcome writes, so a
+  // racing resume/status cannot interleave a read-modify-write.
+  withTaskLock(descriptor.id, () => {
+    saveTaskState(descriptor.id, {
+      descriptor,
+      history: [attempt],
+      currentAttempt: attempt,
+    });
   });
 
   return { taskId: descriptor.id, attempt };
@@ -817,7 +822,7 @@ export async function startTaskAttempt(
   config: Config,
   attempt: TaskAttempt,
   prompt: string,
-  opts?: { timeoutMs?: number }
+  opts?: { timeoutMs?: number; evidenceSinceMs?: number }
 ): Promise<{ success: boolean; error?: ClassifiedError; result?: unknown; workerName?: string; paneId?: string }> {
   // --timeout propagates to every prompt wait in this attempt (primary and
   // each fallback candidate); the default matches the previous fixed bound.
@@ -825,6 +830,26 @@ export async function startTaskAttempt(
   if (!attempt.herdrWorkerName || !attempt.herdrPaneId) {
     throw new ContractError("state", "No Herdr worker name or pane in attempt");
   }
+
+  // Provider evidence window: session events count only at/after this
+  // execution began, so a stale failure from an earlier run can never be
+  // attributed to this attempt.
+  const evidenceSinceMs = opts?.evidenceSinceMs ?? Date.now();
+  const cwd = process.cwd();
+  /**
+   * Upgrade a lifecycle-derived failure signal with REAL provider evidence
+   * (OMP session errorStatus) when the worker's session recorded an actual
+   * HTTP failure. Returns the lifecycle signal unchanged when no evidence
+   * exists — unknown stays unknown, never a guessed status.
+   */
+  const withProviderEvidence = async (
+    signal: FailureSignal,
+    provider: Provider,
+  ): Promise<FailureSignal> => {
+    const evidence = extractProviderFailureEvidence({ provider, cwd, sinceMs: evidenceSinceMs });
+    return evidence ?? signal;
+  };
+  const primaryProvider = config.providers[attempt.route.provider];
 
   try {
     // Use the fallback execution logic if a profile is available
@@ -842,7 +867,12 @@ export async function startTaskAttempt(
         if (candidate === null) {
           const promptResult = await promptAgent(attempt.herdrWorkerName!, prompt, { wait: true, timeoutMs: promptTimeoutMs });
           const signal = promptFailureSignal(promptResult);
-          if (signal) return { success: false, error: signal };
+          if (signal) {
+            const enriched = primaryProvider
+              ? await withProviderEvidence(signal, primaryProvider)
+              : signal;
+            return { success: false, error: enriched };
+          }
           const output = await readWorkerOutput(attempt.herdrWorkerName!);
           return { success: true, result: { output, workerName: attempt.herdrWorkerName! } };
         }
@@ -879,7 +909,10 @@ export async function startTaskAttempt(
           const promptResult = await promptAgent(candidateAttempt.workerName, prompt, { wait: true, timeoutMs: promptTimeoutMs });
           const signal = promptFailureSignal(promptResult);
           if (signal) {
-            outcome = { success: false, error: signal };
+            outcome = {
+              success: false,
+              error: await withProviderEvidence(signal, candidateProvider),
+            };
           } else {
             // The output must be read before the pane is closed — and on
             // success the pane stays OPEN until collectTaskAttempt has read
@@ -921,7 +954,12 @@ export async function startTaskAttempt(
       // No fallback profile - single route execution
       const promptResult = await promptAgent(attempt.herdrWorkerName!, prompt, { wait: true, timeoutMs: promptTimeoutMs });
       const signal = promptFailureSignal(promptResult);
-      if (signal) return { success: false, error: classifyFailure(signal, new Date().toISOString()) };
+      if (signal) {
+        const enriched = primaryProvider
+          ? await withProviderEvidence(signal, primaryProvider)
+          : signal;
+        return { success: false, error: classifyFailure(enriched, new Date().toISOString()) };
+      }
       const output = await readWorkerOutput(attempt.herdrWorkerName!);
       return { success: true, result: { output }, workerName: attempt.herdrWorkerName };
     }
@@ -1027,28 +1065,39 @@ export function recordAttemptOutcome(
   attempt: TaskAttempt,
   outcome: { status: "completed" | "failed" | "blocked"; error?: ClassifiedError; result?: unknown },
 ): TaskAttempt | null {
-  const state = loadTaskState(taskId);
-  if (!state) return null;
+  // Load-modify-save runs under the per-task file lock so a concurrent
+  // status read + outcome write (or two racing resumes) cannot lose an
+  // update; the atomic rename inside saveTaskState covers crash mid-write.
+  return withTaskLock(taskId, () => {
+    const state = loadTaskState(taskId);
+    if (!state) return null;
 
-  const finished: TaskAttempt = {
-    ...attempt,
-    status: outcome.status,
-    error: outcome.error,
-    result: outcome.result,
-  };
+    const finished: TaskAttempt = {
+      ...attempt,
+      status: outcome.status,
+      error: outcome.error,
+      result: outcome.result,
+    };
 
-  // Replace the attempt in place when it is already recorded (the dispatched
-  // attempt is saved up front); otherwise append it.
-  const index = state.history.findIndex(a => a.id === attempt.id);
-  if (index >= 0) {
-    state.history[index] = finished;
-  } else {
-    state.history.push(finished);
-  }
-  state.currentAttempt = finished;
-  saveTaskState(taskId, state);
+    // Replace the attempt in place when it is already recorded (the dispatched
+    // attempt is saved up front); otherwise append it.
+    const index = state.history.findIndex(a => a.id === attempt.id);
+    if (index >= 0) {
+      state.history[index] = finished;
+    } else {
+      state.history.push(finished);
+    }
+    state.currentAttempt = finished;
+    saveTaskState(taskId, state);
 
-  return finished;
+    return finished;
+  });
+}
+
+/** Serialize mutations of one task's state file (read-modify-write CAS). */
+function withTaskLock<T>(taskId: string, fn: () => T): T {
+  taskStatePath(taskId); // validates the id before it reaches a path
+  return withFileLock(join(TASK_STATE_DIR, `${taskId}.lock`), fn);
 }
 
 // ---------------------------------------------------------------------------
@@ -1126,7 +1175,10 @@ export async function runTaskToCompletion(
   // runs on its own worker, and reading the primary's terminal would
   // return the wrong output.
   const serving = startResult.workerName ?? attempt.herdrWorkerName!;
-  const collected = await collectTaskAttempt({ ...attempt, herdrWorkerName: serving });
+  const collected = await collectTaskAttempt(
+    { ...attempt, herdrWorkerName: serving },
+    descriptor.timeoutMs,
+  );
   // Acceptance criteria are verified against the workspace AFTER collect,
   // independently of worker success: a completed worker with failing
   // criteria is NOT a completed task.
@@ -1134,13 +1186,38 @@ export async function runTaskToCompletion(
     ? await verifyAcceptanceCriteria(
         descriptor.acceptanceCriteria,
         process.cwd(),
-        descriptor.timeoutMs ?? 120000,
+        Math.min(descriptor.timeoutMs ?? 120000, 120000),
       )
     : undefined;
-  recordAttemptOutcome(descriptor.id, attempt, {
-    status: collected.success ? "completed" : "failed",
-    error: collected.error,
-    result: collected.result,
+  // Durable status must agree with the CLI verdict: worker success alone is
+  // NOT task completion when declared acceptance criteria failed. The
+  // acceptance report is persisted inside the attempt result so `task
+  // status`, history and any later resume all see the same outcome.
+  const accepted = acceptance === undefined || acceptance.verified;
+  const taskSucceeded = collected.success && accepted;
+  const storedResult = isPlainObject(collected.result)
+    ? { ...collected.result, ...(acceptance ? { acceptance } : {}) }
+    : { value: collected.result, ...(acceptance ? { acceptance } : {}) };
+  const outcomeError: ClassifiedError | undefined = !collected.success
+    ? collected.error
+    : !accepted
+      ? {
+          category: "unknown",
+          observedAt: new Date().toISOString(),
+          resetAt: null,
+          retryAfterMs: null,
+          exhausted: false,
+          reason: "worker completed but acceptance criteria were not verified",
+          quotaScopeKey: null,
+        }
+      : undefined;
+  // Record against the SERVING worker: after a fallback the candidate's
+  // worker — not the primary's — produced the result, and resume/status
+  // must target the worker that actually holds the session.
+  recordAttemptOutcome(descriptor.id, { ...attempt, herdrWorkerName: serving }, {
+    status: taskSucceeded ? "completed" : "failed",
+    error: outcomeError,
+    result: storedResult,
   });
   // A fallback candidate ran on its own pane: close it only AFTER collect
   // has read the serving worker. The primary's root pane is never closed
@@ -1158,13 +1235,15 @@ export async function runTaskToCompletion(
 /**
  * Resume an interrupted task by re-prompting its EXISTING worker.
  *
- * Conservative by design: only single-route attempts (no fallback profile)
- * are resumable this way — re-running executeWithFallback could re-dispatch
- * an already-exhausted primary or spin up duplicate candidate workers, which
- * is exactly the double-side-effect case the fencing/journal work exists to
- * prevent. Profile tasks must be re-dispatched explicitly instead.
- * The worker keeps its own session context, so a "continue" prompt resumes
- * in place rather than replaying the original instruction.
+ * Conservative by design: resume re-prompts the SAME worker recorded on
+ * the attempt — it never re-enters dispatch or candidate selection, so no
+ * duplicate worker, prompt replay, or side-effect re-execution can occur.
+ * This holds for single-route and fallback-profile tasks alike: after a
+ * candidate served, the recorded worker IS the candidate's. The worker
+ * keeps its own session context, so a "continue" prompt resumes in place
+ * rather than replaying the original instruction. Acceptance criteria are
+ * re-verified and durable status follows the same worker-success AND
+ * acceptance-verified rule as dispatch.
  */
 export async function resumeTaskAttempt(
   config: Config,
@@ -1183,33 +1262,80 @@ export async function resumeTaskAttempt(
   if (attempt.status === "completed") {
     throw new ContractError("state", `task '${taskId}' already completed`);
   }
-  if (attempt.profileId) {
-    throw new ContractError(
-      "policy",
-      `task '${taskId}' used fallback profile '${attempt.profileId}'; ` +
-        "resume would re-run candidate dispatch. Re-dispatch with " +
-        "`agent task run --fallback` instead.",
-    );
-  }
   if (!attempt.herdrWorkerName) {
     throw new ContractError("state", `task '${taskId}' attempt has no worker to resume`);
   }
-  const startResult = await startTaskAttempt(config, attempt, prompt, opts);
-  if (!startResult.success) {
-    recordAttemptOutcome(taskId, attempt, { status: "failed", error: startResult.error });
-    return { taskId, attempt, success: false, error: startResult.error };
+  // Safety gate: prove the recorded worker is still reachable in Herdr
+  // before re-prompting. A dead/gone worker fails closed — resuming into
+  // nothing would silently drop the task.
+  try {
+    await waitAgent(attempt.herdrWorkerName, 5000);
+  } catch (error) {
+    throw new ContractError(
+      "state",
+      `task '${taskId}' worker '${attempt.herdrWorkerName}' is unreachable; ` +
+        `re-dispatch with agent task run (${error instanceof Error ? error.message : String(error)})`,
+    );
   }
-  const serving = startResult.workerName ?? attempt.herdrWorkerName;
+  // Resume NEVER re-enters startTaskAttempt/executeWithFallback: that path
+  // would re-dispatch the primary or spin up duplicate candidate workers —
+  // exactly the double-side-effect case fencing exists to prevent. The
+  // existing worker keeps its own session (provider/model/tool context),
+  // so a continue prompt resumes in place for single-route AND
+  // fallback-profile tasks under the same contract.
+  const evidenceSinceMs = Date.now();
+  const promptTimeoutMs = opts?.timeoutMs ?? 300000;
+  const promptResult = await promptAgent(attempt.herdrWorkerName, prompt, {
+    wait: true,
+    timeoutMs: promptTimeoutMs,
+  });
+  const signal = promptFailureSignal(promptResult);
+  if (signal) {
+    // Same evidence contract as dispatch: real provider errorStatus from
+    // the worker's OMP session, else the lifecycle signal stays unknown.
+    const provider = config.providers[attempt.route.provider];
+    const enriched = provider
+      ? (extractProviderFailureEvidence({ provider, cwd: process.cwd(), sinceMs: evidenceSinceMs }) ?? signal)
+      : signal;
+    const error = classifyFailure(enriched, new Date().toISOString());
+    recordAttemptOutcome(taskId, attempt, { status: "failed", error });
+    return { taskId, attempt, success: false, error };
+  }
+  const output = await readWorkerOutput(attempt.herdrWorkerName);
   const collected = await collectTaskAttempt(
-    { ...attempt, herdrWorkerName: serving },
+    { ...attempt, result: { output } },
     opts?.timeoutMs,
   );
+  // Acceptance criteria re-verified on resume, same rule as dispatch:
+  // worker success without verified criteria is not task completion.
+  const persisted = loadTaskState(taskId);
+  const criteria = persisted?.descriptor.acceptanceCriteria ?? [];
+  const acceptance = collected.success && criteria.length
+    ? await verifyAcceptanceCriteria(criteria, process.cwd(), Math.min(opts?.timeoutMs ?? 120000, 120000))
+    : undefined;
+  const accepted = acceptance === undefined || acceptance.verified;
+  const taskSucceeded = collected.success && accepted;
+  const storedResult = isPlainObject(collected.result)
+    ? { ...collected.result, ...(acceptance ? { acceptance } : {}) }
+    : { value: collected.result, ...(acceptance ? { acceptance } : {}) };
   recordAttemptOutcome(taskId, attempt, {
-    status: collected.success ? "completed" : "failed",
-    error: collected.error,
-    result: collected.result,
+    status: taskSucceeded ? "completed" : "failed",
+    error: !collected.success
+      ? collected.error
+      : !accepted
+        ? {
+            category: "unknown",
+            observedAt: new Date().toISOString(),
+            resetAt: null,
+            retryAfterMs: null,
+            exhausted: false,
+            reason: "worker completed but acceptance criteria were not verified",
+            quotaScopeKey: null,
+          }
+        : undefined,
+    result: storedResult,
   });
-  return collected;
+  return { ...collected, ...(acceptance ? { acceptance } : {}) };
 }
 
 /**

@@ -265,12 +265,28 @@ with failing criteria exits non-zero.
 **`--timeout`.** Bounds every prompt wait (primary, each fallback
 candidate, and resume); it does not change the worker's own runtime.
 
-**`agent task resume`.** Re-prompts the *existing* worker of a
-single-route (non-fallback) attempt with a continue instruction — the
-worker keeps its session context, so no instruction is replayed and no
-new candidate worker is spawned. Attempts that used a fallback profile
-are refused: re-running candidate dispatch could duplicate side effects;
-re-dispatch explicitly with `agent task run --fallback` instead.
+**`agent task resume`.** Re-prompts the *recorded* worker of an attempt
+with a continue instruction — for single-route and fallback-profile tasks
+alike (after a candidate served, the recorded worker IS the candidate's).
+It never re-enters dispatch or candidate selection, so no duplicate
+worker, prompt replay, or side-effect re-execution can occur; the worker
+keeps its session context. Before re-prompting, the worker's Herdr
+liveness is probed — an unreachable worker fails closed and the task
+must be re-dispatched. Acceptance criteria are re-verified on resume and
+the durable status follows the same worker-success AND
+acceptance-verified rule as dispatch: a completed worker with failing
+criteria is recorded `failed`, never `completed`.
+
+**Provider failure evidence.** Herdr lifecycle states never produce an
+HTTP status. When a prompt fails, the task path additionally scans the
+worker provider's OMP session JSONL (`~/.omp[/profiles/<p>]/agent/
+sessions/`) for `stopReason:"error"` events carrying a real integer
+`errorStatus` (400–599) that match the provider id, working directory,
+and the current execution window. A qualifying event upgrades the
+signal's `httpStatus` — and only that — so `classifyFailure` derives the
+category (auth/billing/rate-limit/...) from actual provider evidence. No
+qualifying event means the lifecycle `unknown` verdict stands and
+fallback does not advance.
 
 Each profile declares `global_max_spend = 0`, so the resolver's spend checks
 can never authorise paid usage. Candidates are `billing = "free"` and are
