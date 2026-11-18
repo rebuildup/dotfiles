@@ -54,7 +54,9 @@ import {
   ContractError,
   REDACTED,
   agentStateDir,
+  errnoCode,
   expectFields,
+  isOneOf,
   isPlainObject,
   looksLikeSecretValue,
   parseEnvelope,
@@ -233,7 +235,7 @@ export function parseResourceLease(raw: unknown, where: string): ResourceLease {
     }
   }
   const kind = payload["kind"];
-  if (typeof kind !== "string" || !RESOURCE_KINDS.includes(kind as ResourceKind)) {
+  if (!isOneOf(kind, RESOURCE_KINDS)) {
     throw new ContractError("schema", `${where}: unknown resource kind`);
   }
   const resourceId = parseResourceId(payload["resourceId"], `${where}.resourceId`);
@@ -248,7 +250,7 @@ export function parseResourceLease(raw: unknown, where: string): ResourceLease {
   if (Date.parse(expiresAt) <= Date.parse(acquiredAt)) {
     throw new ContractError("schema", `${where}: expiresAt must be after acquiredAt`);
   }
-  return { kind: kind as ResourceKind, resourceId, generation, owner, workspace, acquiredAt, expiresAt, released };
+  return { kind, resourceId, generation, owner, workspace, acquiredAt, expiresAt, released };
 }
 
 /** A lease read from disk must agree with the resource it was read for. */
@@ -437,7 +439,7 @@ export class ResourceLeaseStore {
       linkSync(tmp, target);
     } catch (error) {
       rmSync(tmp, { force: true });
-      if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+      if (errnoCode(error) === "EEXIST") return false;
       throw error;
     }
     rmSync(tmp, { force: true }); // unlink the temp side of the hard link
@@ -635,7 +637,7 @@ export function parseWorkspaceRecord(raw: unknown, where: string): WorkspaceReco
   const id = parseResourceId(payload["id"], `${where}.id`);
   const ref = requireImmutableRef(payload["ref"], `${where}.ref`);
   const backend = payload["backend"];
-  if (typeof backend !== "string" || !BACKENDS.includes(backend as WorkspaceBackend)) {
+  if (!isOneOf(backend, BACKENDS)) {
     throw new ContractError("schema", `${where}: unknown backend`);
   }
   const path = requireStr(payload, "path", where);
@@ -656,7 +658,7 @@ export function parseWorkspaceRecord(raw: unknown, where: string): WorkspaceReco
   }
   expectFields(envRaw, ["os", "wsl", "arch"], `${where}.env`);
   const os = envRaw["os"];
-  if (typeof os !== "string" || !OS_VALUES.includes(os as MachineOS)) {
+  if (!isOneOf(os, OS_VALUES)) {
     throw new ContractError("schema", `${where}.env.os: unknown OS`);
   }
   const wsl = requireBool(envRaw, "wsl", `${where}.env`);
@@ -668,11 +670,11 @@ export function parseWorkspaceRecord(raw: unknown, where: string): WorkspaceReco
   return {
     id,
     ref,
-    backend: backend as WorkspaceBackend,
+    backend,
     path,
     targetDir,
     status,
-    env: { os: os as MachineOS, wsl, arch },
+    env: { os, wsl, arch },
     createdAt,
   };
 }
@@ -729,7 +731,7 @@ export function createWorkspace(opts: unknown): WorkspaceRecord {
   }
   expectFields(envRaw, ["os", "wsl", "arch"], "createWorkspace.env");
   const os = envRaw["os"];
-  if (typeof os !== "string" || !OS_VALUES.includes(os as MachineOS)) {
+  if (!isOneOf(os, OS_VALUES)) {
     throw new ContractError("schema", "createWorkspace.env.os: unknown OS");
   }
   const wsl = requireBool(envRaw, "wsl", "createWorkspace.env");
@@ -738,7 +740,7 @@ export function createWorkspace(opts: unknown): WorkspaceRecord {
   }
   const arch = parseArch(envRaw["arch"], "createWorkspace.env.arch");
   const now = requireEpochMs(opts["now"], "createWorkspace.now");
-  const env = { os: os as MachineOS, wsl, arch };
+  const env = { os, wsl, arch };
 
   const path = join(rootDir, id);
   const record: WorkspaceRecord = {
@@ -759,7 +761,7 @@ export function createWorkspace(opts: unknown): WorkspaceRecord {
   try {
     fd = openSync(recordPath, "wx");
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+    if (errnoCode(error) === "EEXIST") {
       throw new ContractError("state", `workspace '${id}' already exists`);
     }
     throw error;

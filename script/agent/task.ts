@@ -14,14 +14,15 @@
  * Execution contract: [ADR-0019](../../docs/adr/ADR-0019.md).
  */
 
-import { ContractError, isPlainObject, parseRouteId, formatRouteId, parseTomlTable, requireStr, stringList, type RouteRef } from "./contract.ts";
-import { type FallbackCandidate, parseFallbackProfile } from "./fallback.ts";
+import { ContractError, isOneOf, isPlainObject, parseRouteId, formatRouteId, parseTomlTable, requireStr, stringList, type RouteRef } from "./contract.ts";
+import { type FallbackCandidate, parseFallbackProfile, validateBilling, validateCredential, validateScope } from "./fallback.ts";
 import {
   executeWithFallback,
   FallbackExhaustedError,
   type ClassifiedError,
   type FailureSignal,
   classifyFailure,
+  LIMIT_CATEGORIES,
 } from "./fallback-exec.ts";
 import {
   ompNeedsManagedProfile,
@@ -215,8 +216,12 @@ function reqNullableNum(raw: Record<string, unknown>, key: string, where: string
 /** Persisted ClassifiedError: LimitClassification fields plus quotaScopeKey. */
 function parseStoredError(raw: unknown, where: string): ClassifiedError {
   if (!isPlainObject(raw)) throw new ContractError("schema", `${where}: error must be an object`);
-  if (typeof raw["category"] !== "string" || typeof raw["observedAt"] !== "string"
-      || typeof raw["reason"] !== "string" || typeof raw["exhausted"] !== "boolean") {
+  const category = raw["category"];
+  const observedAt = raw["observedAt"];
+  const reason = raw["reason"];
+  const exhausted = raw["exhausted"];
+  if (!isOneOf(category, LIMIT_CATEGORIES) || typeof observedAt !== "string"
+      || typeof reason !== "string" || typeof exhausted !== "boolean") {
     throw new ContractError("schema", `${where}: error classification fields invalid`);
   }
   const quotaScopeKey = raw["quotaScopeKey"] ?? null;
@@ -224,12 +229,12 @@ function parseStoredError(raw: unknown, where: string): ClassifiedError {
     throw new ContractError("schema", `${where}: quotaScopeKey must be a string or null`);
   }
   return {
-    category: raw["category"] as ClassifiedError["category"],
-    observedAt: raw["observedAt"] as string,
+    category,
+    observedAt,
     resetAt: reqNullableStr(raw, "resetAt", where),
     retryAfterMs: reqNullableNum(raw, "retryAfterMs", where),
-    exhausted: raw["exhausted"] as boolean,
-    reason: raw["reason"] as string,
+    exhausted,
+    reason,
     quotaScopeKey,
   };
 }
@@ -237,20 +242,22 @@ function parseStoredError(raw: unknown, where: string): ClassifiedError {
 /** Persisted FallbackCandidate: enum members are re-validated at exec time. */
 function parseStoredCandidate(raw: unknown, where: string): FallbackCandidate {
   if (!isPlainObject(raw)) throw new ContractError("schema", `${where}: fallbackCandidate must be an object`);
-  for (const key of ["route", "model", "billing", "credential", "scope"] as const) {
-    if (typeof raw[key] !== "string") {
+  const str = (key: string): string => {
+    const v = raw[key];
+    if (typeof v !== "string") {
       throw new ContractError("schema", `${where}: fallbackCandidate.${key} must be a string`);
     }
-  }
+    return v;
+  };
   const note = optNullableStr(raw, "note");
   const expiresAt = optNullableStr(raw, "expiresAt");
   const maxSpend = optNullableNum(raw, "maxSpend");
   return {
-    route: raw["route"] as string,
-    model: raw["model"] as string,
-    billing: raw["billing"] as FallbackCandidate["billing"],
-    credential: raw["credential"] as FallbackCandidate["credential"],
-    scope: raw["scope"] as FallbackCandidate["scope"],
+    route: str("route"),
+    model: str("model"),
+    billing: validateBilling(str("billing"), `${where}.fallbackCandidate.billing`),
+    credential: validateCredential(str("credential"), `${where}.fallbackCandidate.credential`),
+    scope: validateScope(str("scope"), `${where}.fallbackCandidate.scope`),
     ...(maxSpend !== undefined ? { maxSpend } : {}),
     ...(expiresAt !== undefined ? { expiresAt } : {}),
     ...(note !== undefined ? { note } : {}),
@@ -271,31 +278,37 @@ function parseStoredRoute(raw: unknown, where: string): RouteRef {
 function parseStoredAttempt(raw: unknown, where: string): TaskAttempt {
   if (!isPlainObject(raw)) throw new ContractError("schema", `${where}: attempt must be an object`);
   const status = raw["status"];
-  if (typeof status !== "string" || !ATTEMPT_STATUSES.includes(status as TaskAttempt["status"])) {
+  if (!isOneOf(status, ATTEMPT_STATUSES)) {
     throw new ContractError("schema", `${where}: invalid attempt status`);
   }
-  for (const key of ["attemptNumber", "generation"] as const) {
+  const finiteNum = (key: string): number => {
     const v = raw[key];
     if (typeof v !== "number" || !Number.isFinite(v)) {
       throw new ContractError("schema", `${where}: ${key} must be a finite number`);
     }
-  }
+    return v;
+  };
   const error = raw["error"];
   const candidate = raw["fallbackCandidate"];
+  const profileId = optStr(raw, "profileId");
+  const herdrPaneId = optStr(raw, "herdrPaneId");
+  const herdrWorkspaceId = optStr(raw, "herdrWorkspaceId");
+  const herdrWorkerName = optStr(raw, "herdrWorkerName");
+  const credentialScope = optStr(raw, "credentialScope");
   return {
     id: requireStr(raw, "id", where),
     taskId: requireStr(raw, "taskId", where),
     route: parseStoredRoute(raw["route"], where),
     model: requireStr(raw, "model", where),
-    attemptNumber: raw["attemptNumber"] as number,
+    attemptNumber: finiteNum("attemptNumber"),
     startedAt: requireStr(raw, "startedAt", where),
-    status: status as TaskAttempt["status"],
-    generation: raw["generation"] as number,
-    ...(optStr(raw, "profileId") !== undefined ? { profileId: optStr(raw, "profileId")! } : {}),
-    ...(optStr(raw, "herdrPaneId") !== undefined ? { herdrPaneId: optStr(raw, "herdrPaneId")! } : {}),
-    ...(optStr(raw, "herdrWorkspaceId") !== undefined ? { herdrWorkspaceId: optStr(raw, "herdrWorkspaceId")! } : {}),
-    ...(optStr(raw, "herdrWorkerName") !== undefined ? { herdrWorkerName: optStr(raw, "herdrWorkerName")! } : {}),
-    ...(optStr(raw, "credentialScope") !== undefined ? { credentialScope: optStr(raw, "credentialScope")! } : {}),
+    status,
+    generation: finiteNum("generation"),
+    ...(profileId !== undefined ? { profileId } : {}),
+    ...(herdrPaneId !== undefined ? { herdrPaneId } : {}),
+    ...(herdrWorkspaceId !== undefined ? { herdrWorkspaceId } : {}),
+    ...(herdrWorkerName !== undefined ? { herdrWorkerName } : {}),
+    ...(credentialScope !== undefined ? { credentialScope } : {}),
     ...(candidate != null ? { fallbackCandidate: parseStoredCandidate(candidate, `${where}.fallbackCandidate`) } : {}),
     ...(error != null ? { error: parseStoredError(error, `${where}.error`) } : {}),
     ...(raw["result"] !== undefined ? { result: raw["result"] } : {}),
@@ -305,7 +318,7 @@ function parseStoredAttempt(raw: unknown, where: string): TaskAttempt {
 function parseStoredDescriptor(raw: unknown, where: string): TaskDescriptor {
   if (!isPlainObject(raw)) throw new ContractError("schema", `${where}: descriptor must be an object`);
   const cls = raw["class"];
-  if (cls !== undefined && (typeof cls !== "string" || !TASK_CLASSES.includes(cls as TaskClass))) {
+  if (cls !== undefined && !isOneOf(cls, TASK_CLASSES)) {
     throw new ContractError("schema", `${where}: invalid task class`);
   }
   const maxAttempts = raw["maxAttempts"];
@@ -327,7 +340,7 @@ function parseStoredDescriptor(raw: unknown, where: string): TaskDescriptor {
     model: requireStr(raw, "model", where),
     prompt: requireStr(raw, "prompt", where),
     ...(profileId !== undefined ? { profileId } : {}),
-    ...(cls !== undefined ? { class: cls as TaskClass } : {}),
+    ...(cls !== undefined ? { class: cls } : {}),
     ...(maxAttempts !== undefined ? { maxAttempts } : {}),
     ...(acceptanceCriteria !== undefined ? { acceptanceCriteria: stringList(acceptanceCriteria, where, "acceptanceCriteria") } : {}),
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
@@ -745,6 +758,16 @@ function credentialScopeFor(config: Config, providerKey: string): string {
  * scope ran, how it failed (classified), and which worker served it —
  * enough to resume or audit without Herdr state.
  */
+/** Read the worker identity/output fields out of an unknown executor result. */
+function servedWorker(result: unknown): { output?: string; workerName?: string; paneId?: string } | null {
+  if (!isPlainObject(result)) return null;
+  const pick = (key: string): string | undefined => {
+    const v = result[key];
+    return typeof v === "string" ? v : undefined;
+  };
+  return { output: pick("output"), workerName: pick("workerName"), paneId: pick("paneId") };
+}
+
 function recordCandidateAttempt(
   parent: TaskAttempt,
   record: {
@@ -760,7 +783,7 @@ function recordCandidateAttempt(
 ): void {
   const state = loadTaskState(parent.taskId);
   if (!state) return;
-  const served = record.result as { workerName?: string; paneId?: string; output?: string } | null;
+  const served = servedWorker(record.result);
   const attempt: TaskAttempt = {
     id: randomUUID(),
     taskId: parent.taskId,
@@ -887,7 +910,7 @@ export async function startTaskAttempt(
         primaryModel: attempt.model,
         onAttempt: (record) => recordCandidateAttempt(attempt, record, credentialScopeFor(config, record.route.provider)),
       });
-      const served = result.result as { output?: string; workerName?: string; paneId?: string };
+      const served = servedWorker(result.result);
       return {
         success: true,
         result: { output: served?.output },

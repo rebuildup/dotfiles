@@ -25,6 +25,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, relative, sep } from "node:path";
+import { errorMessage, isPlainObject } from "./contract";
 
 export type PolicyLayer =
   | "constitution"
@@ -131,7 +132,7 @@ function sha256(content: string): string {
 function readIfPresent(
   repoRoot: string,
   rel: string,
-): { present: boolean; content: string | null } {
+): { present: true; content: string } | { present: false; content: null } {
   const path = join(repoRoot, ...rel.split("/"));
   if (!existsSync(path)) return { present: false, content: null };
   return { present: true, content: readFileSync(path, "utf8") };
@@ -158,7 +159,7 @@ function source(
     layer,
     path: rel,
     present: read.present,
-    sha256: read.present ? sha256(read.content as string) : null,
+    sha256: read.present ? sha256(read.content) : null,
   };
 }
 
@@ -310,11 +311,8 @@ function resolveLock(
   const read = readIfPresent(repoRoot, LOCK_PATH);
   if (!read.present) return { lock: null, facts: [] };
   try {
-    const parsed: unknown = JSON.parse(read.content as string);
-    const skillsRaw =
-      parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
-        ? (parsed as Record<string, unknown>)["skills"]
-        : undefined;
+    const parsed: unknown = JSON.parse(read.content);
+    const skillsRaw = isPlainObject(parsed) ? parsed["skills"] : undefined;
     if (
       skillsRaw === null ||
       typeof skillsRaw !== "object" ||
@@ -337,8 +335,8 @@ function resolveLock(
     const skills: Record<string, LockEntry> = {};
     const dropped: string[] = [];
     for (const [name, entry] of Object.entries(skillsRaw)) {
-      if (entry !== null && typeof entry === "object" && !Array.isArray(entry)) {
-        skills[name] = entry as LockEntry;
+      if (isPlainObject(entry)) {
+        skills[name] = entry;
       } else {
         dropped.push(name);
       }
@@ -359,7 +357,7 @@ function resolveLock(
         {
           kind: "skills-lock-invalid",
           severity: "conflict",
-          detail: `${LOCK_PATH} is not valid JSON: ${(error as Error).message}`,
+          detail: `${LOCK_PATH} is not valid JSON: ${errorMessage(error)}`,
         },
       ],
     };

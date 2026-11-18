@@ -26,6 +26,7 @@
 
 import {
   ContractError,
+  isOneOf,
   isPlainObject,
   isStale,
   parseAttested,
@@ -35,7 +36,7 @@ import {
   type Evidence,
   type Provenance,
 } from "./contract";
-import { effectiveQuotaKey, type Catalog, type PricingKind } from "./catalog";
+import { effectiveQuotaKey, type Catalog, type PricingKind, type RateLimits } from "./catalog";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -64,16 +65,12 @@ export interface QuotaUsage {
   evidence: Evidence;
 }
 
-const WINDOWS: readonly string[] = ["minute", "hour", "day", "week", "month", "rolling"];
-const METRICS: readonly string[] = ["requests", "tokens", "concurrency"];
+const WINDOWS: readonly QuotaWindow[] = ["minute", "hour", "day", "week", "month", "rolling"];
+const METRICS: readonly QuotaMetric[] = ["requests", "tokens", "concurrency"];
 /** Header suffixes that name a concrete window (anything else is ignored). */
-const WINDOW_SUFFIX: Record<string, true> = {
-  minute: true,
-  hour: true,
-  day: true,
-  week: true,
-  month: true,
-};
+const CONCRETE_WINDOWS: readonly QuotaWindow[] = ["minute", "hour", "day", "week", "month"];
+const COUNT_KINDS = ["limit", "remaining"] as const;
+const COUNT_METRICS = ["requests", "tokens"] as const;
 
 const ISO_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/;
 
@@ -90,29 +87,32 @@ export function assertQuotaUsage(value: unknown, where: string): QuotaUsage {
   if (!isPlainObject(value)) {
     throw new ContractError("schema", `${where}: object expected`);
   }
-  const usage = value as Partial<QuotaUsage>;
-  if (typeof usage.window !== "string" || !WINDOWS.includes(usage.window)) {
-    throw new ContractError("schema", `${where}: invalid window '${String(usage.window)}'`);
+  const window = value["window"];
+  if (!isOneOf(window, WINDOWS)) {
+    throw new ContractError("schema", `${where}: invalid window '${String(window)}'`);
   }
-  if (usage.metric !== null && usage.metric !== undefined) {
-    if (!METRICS.includes(usage.metric)) {
-      throw new ContractError("schema", `${where}: invalid metric '${String(usage.metric)}'`);
+  const metricRaw = value["metric"];
+  let metric: QuotaMetric | null = null;
+  if (metricRaw !== null && metricRaw !== undefined) {
+    if (!isOneOf(metricRaw, METRICS)) {
+      throw new ContractError("schema", `${where}: invalid metric '${String(metricRaw)}'`);
     }
+    metric = metricRaw;
   }
-  const limit = checkCount(usage.limit, where, "limit");
-  const remaining = checkCount(usage.remaining, where, "remaining");
-  const used = checkCount(usage.used, where, "used");
+  const limit = checkCount(value["limit"], where, "limit");
+  const remaining = checkCount(value["remaining"], where, "remaining");
+  const used = checkCount(value["used"], where, "used");
   let resetAt: string | null = null;
-  if (usage.resetAt !== undefined && usage.resetAt !== null) {
-    if (typeof usage.resetAt !== "string" || !ISO_UTC.test(usage.resetAt)) {
+  if (value["resetAt"] !== undefined && value["resetAt"] !== null) {
+    if (typeof value["resetAt"] !== "string" || !ISO_UTC.test(value["resetAt"])) {
       throw new ContractError("schema", `${where}: 'resetAt' must be an ISO 8601 UTC timestamp`);
     }
-    resetAt = usage.resetAt;
+    resetAt = value["resetAt"];
   }
   if (limit === null && remaining === null && used === null && resetAt === null) {
     throw new ContractError("schema", `${where}: observation carries no evidence-backed value`);
   }
-  const evidence = usage.evidence;
+  const evidence = value["evidence"];
   if (!isPlainObject(evidence)) {
     throw new ContractError(
       "schema",
@@ -131,7 +131,7 @@ export function assertQuotaUsage(value: unknown, where: string): QuotaUsage {
       `${where}: 'evidence' must carry an ISO UTC 'at' and a live source (probe|live-e2e)`,
     );
   }
-  if (usage.provenance !== "measured") {
+  if (value["provenance"] !== "measured") {
     throw new ContractError("schema", `${where}: live observations require provenance 'measured'`);
   }
   const parsedEvidence: Evidence = { at: evidenceAt, source: evidenceSource };
@@ -150,8 +150,8 @@ export function assertQuotaUsage(value: unknown, where: string): QuotaUsage {
     parsedEvidence.note = evidenceNote;
   }
   return {
-    window: usage.window as QuotaWindow,
-    metric: (usage.metric ?? null) as QuotaMetric | null,
+    window,
+    metric,
     limit,
     remaining,
     used,
@@ -346,18 +346,19 @@ export function parseRateLimitHeaders(
     let match = /^x-ratelimit-(limit|remaining)-([a-z]+)$/.exec(name);
     if (match) {
       const [, kind, suffix] = match;
-      if (WINDOW_SUFFIX[suffix]) {
-        countInto(name, kind as "limit" | "remaining", suffix as QuotaWindow, "requests");
-      } else if (suffix === "requests" || suffix === "tokens") {
-        countInto(name, kind as "limit" | "remaining", "rolling", suffix);
+      if (!isOneOf(kind, COUNT_KINDS)) continue;
+      if (isOneOf(suffix, CONCRETE_WINDOWS)) {
+        countInto(name, kind, suffix, "requests");
+      } else if (isOneOf(suffix, COUNT_METRICS)) {
+        countInto(name, kind, "rolling", suffix);
       }
       continue;
     }
     match = /^x-ratelimit-reset-([a-z]+)$/.exec(name);
     if (match) {
       const [, suffix] = match;
-      if (WINDOW_SUFFIX[suffix]) resetInto(name, suffix as QuotaWindow, "requests");
-      else if (suffix === "requests" || suffix === "tokens") resetInto(name, "rolling", suffix);
+      if (isOneOf(suffix, CONCRETE_WINDOWS)) resetInto(name, suffix, "requests");
+      else if (isOneOf(suffix, COUNT_METRICS)) resetInto(name, "rolling", suffix);
       continue;
     }
     // Bare x-ratelimit-(limit|remaining|reset): window length not stated.
@@ -365,15 +366,16 @@ export function parseRateLimitHeaders(
     if (match) {
       const [, kind] = match;
       if (kind === "reset") resetInto(name, "rolling", "requests");
-      else countInto(name, kind as "limit" | "remaining", "rolling", "requests");
+      else if (isOneOf(kind, COUNT_KINDS)) countInto(name, kind, "rolling", "requests");
       continue;
     }
     // Anthropic-style: anthropic-ratelimit-(requests|tokens)-(limit|remaining|reset)
     match = /^anthropic-ratelimit-(requests|tokens)-(limit|remaining|reset)$/.exec(name);
     if (match) {
       const [, metric, kind] = match;
-      if (kind === "reset") resetInto(name, "rolling", metric as QuotaMetric);
-      else countInto(name, kind as "limit" | "remaining", "rolling", metric as QuotaMetric);
+      if (!isOneOf(metric, COUNT_METRICS)) continue;
+      if (kind === "reset") resetInto(name, "rolling", metric);
+      else if (isOneOf(kind, COUNT_KINDS)) countInto(name, kind, "rolling", metric);
       continue;
     }
   }
@@ -579,8 +581,9 @@ export interface QuotaReport {
 }
 
 export interface QuotaReportOptions {
-  /** Live observations to include (e.g. from parseQuotaResponse). */
-  live?: readonly QuotaUsage[];
+  /** Live observations to include (e.g. from parseQuotaResponse). Each entry
+   * is validated with assertQuotaUsage; malformed ones drop fail-closed. */
+  live?: readonly unknown[];
   /** Reference time (ms epoch); defaults to Date.now(). */
   now?: number;
   /** Freshness window for CATALOG facts; defaults to contract
@@ -598,7 +601,14 @@ export interface QuotaReportOptions {
  */
 export const LIVE_MAX_AGE_MS = 10 * 60 * 1000;
 
-const WINDOW_BY_FIELD: Record<string, QuotaWindow> = {
+const RATE_LIMIT_FIELDS: readonly (keyof RateLimits)[] = [
+  "per_minute",
+  "per_hour",
+  "per_day",
+  "per_month",
+];
+
+const WINDOW_BY_FIELD: Record<keyof RateLimits, QuotaWindow> = {
   per_minute: "minute",
   per_hour: "hour",
   per_day: "day",
@@ -651,15 +661,15 @@ export function quotaReport(catalog: Catalog, routeId: string, options: QuotaRep
   const rateLimits = route?.rate_limits ?? provider?.rate_limits ?? null;
   const documented: DocumentedLimit[] = [];
   if (rateLimits && freshAttestation(rateLimits, { now, maxAgeMs })) {
-    const limits = rateLimits.value as Record<string, unknown>;
-    for (const [field, window] of Object.entries(WINDOW_BY_FIELD)) {
+    const limits = rateLimits.value;
+    for (const field of RATE_LIMIT_FIELDS) {
       const value = limits[field];
       if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
         documented.push({
-          window,
+          window: WINDOW_BY_FIELD[field],
           metric: "requests",
           value,
-          evidence: rateLimits.evidence as Evidence,
+          evidence: rateLimits.evidence,
         });
       }
     }
@@ -669,8 +679,8 @@ export function quotaReport(catalog: Catalog, routeId: string, options: QuotaRep
   const routeConcurrency = route?.concurrency ?? null;
   if (routeConcurrency && freshAttestation(routeConcurrency, { now, maxAgeMs })) {
     concurrency = {
-      value: routeConcurrency.value as number,
-      evidence: routeConcurrency.evidence as Evidence,
+      value: routeConcurrency.value,
+      evidence: routeConcurrency.evidence,
     };
   }
 
@@ -702,7 +712,7 @@ export function quotaReport(catalog: Catalog, routeId: string, options: QuotaRep
   if (restrictionAtt && restrictionAtt.status === "restricted" && restrictionAtt.note) {
     let evidence: Evidence | null = null;
     try {
-      evidence = parseAttested(restrictionAtt as Attested<null>, "quotaReport.restriction").evidence;
+      evidence = parseAttested(restrictionAtt, "quotaReport.restriction").evidence;
     } catch {
       evidence = null; // fail-closed: malformed block is never shown
     }

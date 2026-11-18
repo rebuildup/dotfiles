@@ -74,11 +74,11 @@ const GH_CLI = "gh";
 
 /** Raw stdout/stderr text of a successful child process. */
 async function readProc(
-  proc: Bun.Subprocess,
+  proc: Bun.ReadableSubprocess,
 ): Promise<{ stdout: string; stderr: string; code: number }> {
   const [stdout, stderr, code] = await Promise.all([
-    new Response(proc.stdout as ReadableStream).text(),
-    new Response(proc.stderr as ReadableStream).text(),
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
     proc.exited,
   ]);
   return { stdout, stderr, code };
@@ -384,9 +384,9 @@ export async function reconcileTicket(
   }
 
   // Determine checks status: every reported check must be concluded SUCCESS.
+  const rollup = prDetails?.statusCheckRollup ?? [];
   const checksGreen =
-    (prDetails?.statusCheckRollup?.length ?? 0) > 0 &&
-    prDetails!.statusCheckRollup!.every((c) => c.conclusion === "SUCCESS");
+    rollup.length > 0 && rollup.every((c) => c.conclusion === "SUCCESS");
 
   // Check review status
   const reviewApproved =
@@ -518,9 +518,9 @@ export async function landTicketPR(
   }
 
   // Check required checks
+  const rollup = pr.statusCheckRollup ?? [];
   const checksGreen =
-    (pr.statusCheckRollup?.length ?? 0) > 0 &&
-    pr.statusCheckRollup!.every((c) => c.conclusion === "SUCCESS");
+    rollup.length > 0 && rollup.every((c) => c.conclusion === "SUCCESS");
   if (!checksGreen) {
     throw new ContractError("state", "Required checks not green");
   }

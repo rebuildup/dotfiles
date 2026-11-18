@@ -122,14 +122,20 @@ function optionalStr(data: Record<string, unknown>, key: string, where: string):
 }
 
 function stringList(value: unknown, where: string, key: string): string[] {
-  if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || !item)) {
+  if (!Array.isArray(value)) {
     throw new AgentError(`${where}: '${key}' must be a list of non-empty strings`);
   }
-  const list = value as string[];
+  const list: string[] = [];
+  for (const item of value) {
+    if (typeof item !== "string" || item === "") {
+      throw new AgentError(`${where}: '${key}' must be a list of non-empty strings`);
+    }
+    list.push(item);
+  }
   if (new Set(list).size !== list.length) {
     throw new AgentError(`${where}: '${key}' contains duplicate entries`);
   }
-  return [...list];
+  return list;
 }
 
 /**
@@ -207,15 +213,16 @@ function parseOmpModels(
     if (unknown.length > 0) {
       throw new AgentError(`${entryWhere}: unknown key '${unknown[0]}'`);
     }
-    for (const key of ["context", "output"] as const) {
+    const positiveInt = (key: "context" | "output"): number => {
       const value = entryValue[key];
       if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
         throw new AgentError(`${entryWhere}: '${key}' must be a positive integer`);
       }
-    }
+      return value;
+    };
     specs[modelId] = {
-      context: entryValue["context"] as number,
-      output: entryValue["output"] as number,
+      context: positiveInt("context"),
+      output: positiveInt("output"),
     };
   }
   return specs;
@@ -446,12 +453,15 @@ export function loadConfig(path?: string): Config {
       );
     }
     const envTable = table["env"] ?? {};
-    if (!isPlainObject(envTable) || Object.values(envTable).some((v) => typeof v !== "string")) {
+    if (!isPlainObject(envTable)) {
       throw new AgentError(`${where}: env must map string -> string (names only)`);
     }
     const env: Record<string, string> = {};
     for (const [name, value] of Object.entries(envTable)) {
-      env[name] = value as string;
+      if (typeof value !== "string") {
+        throw new AgentError(`${where}: env must map string -> string (names only)`);
+      }
+      env[name] = value;
     }
     if (adapter === "anthropic") {
       const required = [

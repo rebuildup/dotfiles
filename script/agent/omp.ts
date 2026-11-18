@@ -18,7 +18,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { isPlainObject } from "./contract.ts";
+import { errnoCode, errorMessage, isPlainObject } from "./contract.ts";
 import { AgentError, EXIT_RUNTIME } from "./errors.ts";
 import type { Harness, Provider } from "./config.ts";
 import type { Plan } from "./plan.ts";
@@ -465,8 +465,8 @@ function readOmpDotenvAssignments(agentDir: string = ompAgentDir()): Array<{ pat
     } catch (error) {
       // Only ENOENT proves "no dotenv override". Any other error means the
       // credential source cannot be verified, so the route must not start.
-      if ((error as NodeJS.ErrnoException)?.code === "ENOENT") continue;
-      const detail = error instanceof Error ? error.message : String(error);
+      if (errnoCode(error) === "ENOENT") continue;
+      const detail = errorMessage(error);
       throw new AgentError(
         `cannot read OMP dotenv file (${path}): ${detail}; refusing to start ` +
           "because the credential source cannot be verified",
@@ -499,8 +499,8 @@ function readOmpMapping(
   try {
     text = readFileSync(path, "utf8");
   } catch (error) {
-    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return null;
-    const detail = error instanceof Error ? error.message : String(error);
+    if (errnoCode(error) === "ENOENT") return null;
+    const detail = errorMessage(error);
     throw new AgentError(
       `cannot read OMP ${label} (${path}): ${detail}; refusing to start because ` +
         "the credential source cannot be verified",
@@ -805,7 +805,7 @@ export function guardOmpCredentialSource(
       }
     } catch (error) {
       if (error instanceof AgentError) throw error;
-      const detail = error instanceof Error ? error.message : String(error);
+      const detail = errorMessage(error);
       throw new AgentError(
         `cannot verify the OMP credential store (${dbPath}): ${detail}; refusing ` +
           "to start because the credential source cannot be verified",

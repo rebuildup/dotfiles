@@ -79,7 +79,7 @@ function parseTaskArgs(argv: string[]): Action {
         "usage: agent task resume <task-id> [--prompt <text>] [--timeout <ms>]"
       );
     }
-    const opts = { prompt: null as string | null, timeoutMs: null as number | null };
+    const opts: TaskResumeOptions = { prompt: null, timeoutMs: null };
     const rest = argv.slice(2);
     for (let i = 0; i < rest.length; i++) {
       const token = rest[i];
@@ -113,8 +113,9 @@ function parseTaskArgs(argv: string[]): Action {
         "[--prompt <text>] [--accept <criteria>]..."
     );
   }
-  const opts = { model: null as string | null, fallback: null as string | null,
-    prompt: null as string | null, accept: [] as string[], timeoutMs: null as number | null };
+  const opts: TaskRunOptions = {
+    model: null, fallback: null, prompt: null, accept: [], timeoutMs: null,
+  };
   const rest = argv.slice(2);
   for (let i = 0; i < rest.length; i++) {
     const token = rest[i];
@@ -145,6 +146,24 @@ function parseTaskArgs(argv: string[]): Action {
   return ["task", "run", route, opts];
 }
 
+export interface TaskRunOptions {
+  model: string | null;
+  fallback: string | null;
+  prompt: string | null;
+  accept: string[];
+  timeoutMs: number | null;
+}
+
+export interface TaskResumeOptions {
+  prompt: string | null;
+  timeoutMs: number | null;
+}
+
+export type TaskAction =
+  | ["task", "run", string, TaskRunOptions]
+  | ["task", "status", string]
+  | ["task", "resume", string, TaskResumeOptions];
+
 export type Action =
   | ["help", boolean]
   | ["version"]
@@ -155,15 +174,7 @@ export type Action =
   | ["native", string, string[]]
   | ["run", string, string, string | null, string[]]
   | ["fallback", string, boolean]  // profile-id, json
-  | ["task", "run", string, {
-      model: string | null;
-      fallback: string | null;
-      prompt: string | null;
-      accept: string[];
-      timeoutMs: number | null;
-    }]
-  | ["task", "status", string]
-  | ["task", "resume", string, { prompt: string | null; timeoutMs: number | null }];
+  | TaskAction
 export function parseArgs(argv: string[]): Action {
   // Parse argv without touching the config.
   const head = argv[0];

@@ -35,6 +35,7 @@ import {
   toJson,
   ContractError,
   REDACTED,
+  isOneOf,
   isPlainObject,
   looksLikeSecretValue,
   type Attested,
@@ -187,7 +188,7 @@ function declaredFacts(d: Declared | undefined): Declared {
   const bool = (v: unknown): boolean | undefined => (typeof v === "boolean" ? v : undefined);
   if (d === undefined) return {};
   return {
-    os: OS_VALUES.includes(d.os as MachineOS) ? (d.os as MachineOS) : undefined,
+    os: isOneOf(d.os, OS_VALUES) ? d.os : undefined,
     arch: str(d.arch),
     hostId: str(d.hostId),
     cpuCores: num(d.cpuCores, MAX_CPU_CORES),
@@ -336,25 +337,29 @@ export function loadDeclared(path?: string): Record<string, Declared> {
   const raw: unknown = JSON.parse(readFileSync(file, "utf8"));
   if (!isPlainObject(raw)) throw new Error(`${basename(file)}: object expected`);
   const out: Record<string, Declared> = {};
-  const strKeys = ["os", "arch", "hostId"] as const;
   const numKeys = ["cpuCores", "ramBytes", "gpuVramBytes"] as const;
   for (const [id, entry] of Object.entries(raw)) {
     if (!isPlainObject(entry)) throw new Error(`${basename(file)}: '${id}' must be an object`);
     const d: Declared = {};
-    for (const k of strKeys) {
+    const osValue = entry["os"];
+    if (osValue !== undefined) {
+      if (!isOneOf(osValue, OS_VALUES)) throw new Error(`${basename(file)}: '${id}.os' must be a MachineOS value`);
+      d.os = osValue;
+    }
+    for (const k of ["arch", "hostId"] as const) {
       const v = entry[k];
       if (v !== undefined && typeof v !== "string") throw new Error(`${basename(file)}: '${id}.${k}' must be a string`);
-      if (v !== undefined) (d as Record<string, unknown>)[k] = v;
+      if (v !== undefined) d[k] = v;
     }
     for (const k of numKeys) {
       const v = entry[k];
       if (v !== undefined && (typeof v !== "number" || !Number.isFinite(v))) throw new Error(`${basename(file)}: '${id}.${k}' must be a finite number`);
-      if (v !== undefined) (d as Record<string, unknown>)[k] = v;
+      if (v !== undefined) d[k] = v;
     }
     for (const k of ["hasGpu", "gui"] as const) {
       const v = entry[k];
       if (v !== undefined && typeof v !== "boolean") throw new Error(`${basename(file)}: '${id}.${k}' must be a boolean`);
-      if (v !== undefined) (d as Record<string, unknown>)[k] = v;
+      if (v !== undefined) d[k] = v;
     }
     out[id] = d;
   }
@@ -626,8 +631,10 @@ export function evaluate(machine: Machine, c: PlacementConstraints, groups: Host
     else if (!ok(f.value)) hard.push(`${label} ${detail(f.value)}`);
     else why.push(`${label} ok`);
   };
-  if (c.os?.length) need("os", machine.os, (v) => c.os!.includes(v), (v) => `${v} not in ${c.os!.join(",")}`);
-  if (c.arch?.length) need("arch", machine.arch, (v) => c.arch!.includes(v), (v) => `${v} not in ${c.arch!.join(",")}`);
+  const requiredOs = c.os;
+  if (requiredOs?.length) need("os", machine.os, (v) => requiredOs.includes(v), (v) => `${v} not in ${requiredOs.join(",")}`);
+  const requiredArch = c.arch;
+  if (requiredArch?.length) need("arch", machine.arch, (v) => requiredArch.includes(v), (v) => `${v} not in ${requiredArch.join(",")}`);
 
   const res = (label: string, min: number | undefined, pick: (r: MachineResources) => number | null) => {
     if (min === undefined) return;

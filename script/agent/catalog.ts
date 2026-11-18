@@ -32,14 +32,17 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   ContractError,
+  isOneOf,
   isPlainObject,
   parseAttested,
   parseModelId,
   parseRouteId,
+  QUOTA_SCOPE_KINDS,
   parseTomlTable,
   quotaScopeKey,
   requireBool,
   requireStr,
+  splitRouteKey,
   stringList,
   type Attested,
   type QuotaScope,
@@ -171,7 +174,7 @@ function checkRateLimits(value: unknown, where: string): RateLimits {
     throw new ContractError("schema", `${where}: value must be a table`);
   }
   const allowed = ["per_minute", "per_hour", "per_day", "per_month"] as const;
-  const unknown = Object.keys(value).filter((k) => !allowed.includes(k as never));
+  const unknown = Object.keys(value).filter((k) => !isOneOf(k, allowed));
   if (unknown.length > 0) {
     throw new ContractError("schema", `${where}: unknown window '${unknown[0]}'`);
   }
@@ -258,12 +261,14 @@ function attestedField<T>(
   return out;
 }
 
+const PRICING_KINDS: readonly PricingKind[] = ["free", "subscription", "metered", "unknown"];
+
 function parsePricingKind(raw: unknown, where: string): PricingKind {
   if (raw === undefined || raw === null) return "unknown";
-  if (typeof raw !== "string" || !["free", "subscription", "metered", "unknown"].includes(raw)) {
+  if (!isOneOf(raw, PRICING_KINDS)) {
     throw new ContractError("schema", `${where}: invalid pricing kind '${String(raw)}'`);
   }
-  return raw as PricingKind;
+  return raw;
 }
 
 function parseQuotaScope(raw: unknown, where: string): QuotaScope | null {
@@ -275,8 +280,12 @@ function parseQuotaScope(raw: unknown, where: string): QuotaScope | null {
   if (unknown.length > 0) {
     throw new ContractError("schema", `${where}: unknown field '${unknown[0]}'`);
   }
+  const kind = requireStr(raw, "scope", where);
+  if (!isOneOf(kind, QUOTA_SCOPE_KINDS)) {
+    throw new ContractError("schema", `${where}.scope: invalid quota scope kind '${kind}'`);
+  }
   const scope: QuotaScope = {
-    kind: requireStr(raw, "scope", where) as QuotaScope["kind"],
+    kind,
     id: requireStr(raw, "id", where),
   };
   quotaScopeKey(scope); // validates kind and id; throws otherwise
@@ -456,9 +465,7 @@ export function loadCatalog(configFile?: string): Catalog {
     const table = routesSection[routeKey];
     if (!isPlainObject(table)) return [];
     if (Array.isArray(table["models"])) {
-      return (table["models"] as unknown[]).filter(
-        (m): m is string => typeof m === "string",
-      );
+      return table["models"].filter((m): m is string => typeof m === "string");
     }
     // The provider is part of the route key (`<harness>.<provider>`).
     const dot = routeKey.indexOf(".");
@@ -519,7 +526,7 @@ export function loadCatalog(configFile?: string): Catalog {
  */
 export function effectiveQuotaKey(catalog: Catalog, routeId: string): string | null {
   parseRouteId(routeId);
-  const [, providerKey] = routeId.split(".") as [string, string];
+  const [, providerKey] = splitRouteKey(routeId);
   const scope = catalog.routes[routeId]?.quota ?? catalog.providers[providerKey]?.quota ?? null;
   return scope ? quotaScopeKey(scope) : null;
 }
@@ -548,6 +555,6 @@ export function modelEntry(
 ): ModelCatalogEntry | null {
   parseRouteId(routeId);
   parseModelId(model);
-  const [, providerKey] = routeId.split(".") as [string, string];
+  const [, providerKey] = splitRouteKey(routeId);
   return catalog.providers[providerKey]?.models[model] ?? null;
 }

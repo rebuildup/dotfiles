@@ -13,7 +13,7 @@
  * `blocked` decision, it never degrades to an admission.
  */
 
-import { ContractError, isPlainObject } from "./contract.ts";
+import { ContractError, isOneOf, isPlainObject } from "./contract.ts";
 
 // ---------------------------------------------------------------------------
 // Task classification
@@ -212,10 +212,10 @@ function requireOneOf<T extends string>(
   allowed: readonly T[],
   field: string,
 ): T {
-  if (typeof value !== "string" || !(allowed as readonly string[]).includes(value)) {
+  if (!isOneOf(value, allowed)) {
     throw new ContractError("schema", `preflight: unknown ${field} '${String(value)}'`);
   }
-  return value as T;
+  return value;
 }
 
 function validateStructure(

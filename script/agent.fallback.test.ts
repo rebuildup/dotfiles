@@ -199,7 +199,7 @@ function makeStaleAttestation(
   });
 }
 
-const MOCK_ATTESTATIONS = new Map<string, Attested<{ status: VerificationStatus; provenance: Provenance; evidence: Evidence }>>([
+const MOCK_ATTESTATIONS: CatalogAttestationMap = new Map([
   ["omp.openrouter#z-ai/glm-5.3-flash", makeAttestation("verified-live", "measured")],
   ["omp.openrouter-free#nvidia/nemotron-3-ultra-550b-a55b:free", makeAttestation("verified-live", "measured")],
   ["omp.deepseek#deepseek-flash", makeAttestation("restricted", "measured")], // 402 restricted

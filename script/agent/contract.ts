@@ -370,14 +370,18 @@ function checkEvidence(evidence: Evidence, where: string): void {
 }
 
 /** Parse an Evidence object from untrusted data (read path). */
-function parseEvidence(raw: unknown, where: string): Evidence {
+export function parseEvidence(raw: unknown, where: string): Evidence {
   if (!isPlainObject(raw)) {
     throw new ContractError("schema", `${where}: object expected`);
   }
   expectFields(raw, ["at", "source", "sha", "note"], where);
+  const source = requireStr(raw, "source", where);
+  if (!isKeyOf(source, SOURCE_FLAGS)) {
+    throw new ContractError("evidence", `${where}: invalid evidence source '${source}'`);
+  }
   const evidence: Evidence = {
     at: requireStr(raw, "at", where),
-    source: requireStr(raw, "source", where) as EvidenceSource,
+    source,
   };
   const sha = optionalStr(raw, "sha", where);
   if (sha !== null) evidence.sha = sha;
@@ -530,18 +534,26 @@ export function parseAttested<T = unknown>(raw: unknown, where: string): Atteste
       ? null
       : parseEvidence(evidenceRaw, `${where}.evidence`);
   const note = optionalStr(raw, "note", where) ?? undefined;
+  const status = requireStr(raw, "status", where);
+  if (!isKeyOf(status, STATUS_FLAGS)) {
+    throw new ContractError("schema", `${where}: invalid status '${status}'`);
+  }
+  const provenance = requireStr(raw, "provenance", where);
+  if (!isKeyOf(provenance, PROVENANCE_FLAGS)) {
+    throw new ContractError("schema", `${where}: invalid provenance '${provenance}'`);
+  }
   const shape: AttestationShape = {
     value: raw["value"],
-    status: requireStr(raw, "status", where),
-    provenance: requireStr(raw, "provenance", where),
+    status,
+    provenance,
     evidence,
     note,
   };
   validateAttestation(shape, where);
   const att: Attested<T> = {
     value: shape.value as T,
-    status: shape.status as VerificationStatus,
-    provenance: shape.provenance as Provenance,
+    status,
+    provenance,
     evidence,
   };
   if (note !== undefined) att.note = note;
@@ -646,6 +658,13 @@ export function requireUsable<T>(att: Attested<T>, options: UsableOptions = {}):
  */
 export type QuotaScopeKind = "account" | "api-key" | "plan" | "machine";
 
+export const QUOTA_SCOPE_KINDS: readonly QuotaScopeKind[] = [
+  "account",
+  "api-key",
+  "plan",
+  "machine",
+];
+
 export interface QuotaScope {
   kind: QuotaScopeKind;
   /** Stable non-secret label of the scoped entity. */
@@ -654,12 +673,7 @@ export interface QuotaScope {
 
 /** Dedupe key for a quota scope (`<kind>:<id>`); equal keys = same allowance. */
 export function quotaScopeKey(scope: QuotaScope): string {
-  if (
-    scope.kind !== "account" &&
-    scope.kind !== "api-key" &&
-    scope.kind !== "plan" &&
-    scope.kind !== "machine"
-  ) {
+  if (!isOneOf(scope.kind, QUOTA_SCOPE_KINDS)) {
     throw new ContractError("schema", `invalid quota scope kind '${scope.kind}'`);
   }
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(scope.id)) {
@@ -784,11 +798,11 @@ export function toJson(value: unknown): string {
 
 function sortKeys(value: unknown): unknown {
   if (value instanceof Date) return value;
-  if (typeof value !== "object" || value === null) return value;
   if (Array.isArray(value)) return value.map(sortKeys);
+  if (!isPlainObject(value)) return value;
   const out: Record<string, unknown> = {};
   for (const key of Object.keys(value).sort()) {
-    assignSafe(out, key, sortKeys((value as Record<string, unknown>)[key]));
+    assignSafe(out, key, sortKeys(value[key]));
   }
   return out;
 }
@@ -815,15 +829,28 @@ export function isOneOf<T extends string>(value: unknown, allowed: readonly T[])
   return typeof value === "string" && allowed.some((member) => member === value);
 }
 
+/** Membership guard over a `Record<T, …>` key set; narrows to `T`. */
+export function isKeyOf<T extends string>(
+  value: unknown,
+  keys: Record<T, unknown>,
+): value is T {
+  return typeof value === "string" && value in keys;
+}
+
 /** Human-readable message for an unknown thrown value. */
 export function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  if (error instanceof Error) return error.message;
+  if (isPlainObject(error)) {
+    const message = error["message"];
+    if (typeof message === "string") return message;
+  }
+  return String(error);
 }
 
 /** `code` property of an ErrnoException-style error, when present. */
 export function errnoCode(error: unknown): string | undefined {
-  if (typeof error === "object" && error !== null && "code" in error) {
-    const code = (error as { code?: unknown }).code;
+  if (isPlainObject(error)) {
+    const code = error["code"];
     return typeof code === "string" ? code : undefined;
   }
   return undefined;
@@ -942,14 +969,20 @@ export function optionalInt(
 }
 
 export function stringList(value: unknown, where: string, key: string): string[] {
-  if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || !item)) {
+  if (!Array.isArray(value)) {
     throw new ContractError("schema", `${where}: '${key}' must be a list of non-empty strings`);
   }
-  const list = value as string[];
+  const list: string[] = [];
+  for (const item of value) {
+    if (typeof item !== "string" || item === "") {
+      throw new ContractError("schema", `${where}: '${key}' must be a list of non-empty strings`);
+    }
+    list.push(item);
+  }
   if (new Set(list).size !== list.length) {
     throw new ContractError("schema", `${where}: '${key}' contains duplicate entries`);
   }
-  return [...list];
+  return list;
 }
 
 // ---------------------------------------------------------------------------

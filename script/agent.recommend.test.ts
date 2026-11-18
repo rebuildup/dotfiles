@@ -265,12 +265,12 @@ describe("input validation", () => {
     expect(() =>
       run({
         probes: [
-          probeReport("h.cheap", "m-cheap", [{ layer: "credential", status: "bogus" }]),
+          probeReport("h.cheap", "m-cheap", [{ layer: "credential-present", status: "bogus" }]),
         ],
       }),
     ).toThrow(ContractError);
     expect(() =>
-      run({ probes: [probeReport("h.cheap", "m-cheap", [{ layer: "credential", status: "pass" }], "not-a-date")] }),
+      run({ probes: [probeReport("h.cheap", "m-cheap", [{ layer: "credential-present", status: "pass" }], "not-a-date")] }),
     ).toThrow(ContractError);
   });
 
@@ -512,8 +512,8 @@ describe("capacity failures are availability, never quality", () => {
     const result = run({
       probes: [
         probeReport("h.cheap", "m-cheap", [
-          { layer: "credential", status: "pass" },
-          { layer: "wire", status: "fail", failure: "auth" },
+          { layer: "credential-present", status: "pass" },
+          { layer: "provider-reachable", status: "fail", failure: "auth" },
         ]),
       ],
     });
@@ -526,7 +526,7 @@ describe("capacity failures are availability, never quality", () => {
 
   test("stale probe evidence -> conditional (state unknown), never recommended", () => {
     const result = run({
-      probes: [probeReport("h.cheap", "m-cheap", [{ layer: "credential", status: "pass" }], "2026-11-05T00:00:00Z")],
+      probes: [probeReport("h.cheap", "m-cheap", [{ layer: "credential-present", status: "pass" }], "2026-11-05T00:00:00Z")],
       records: [rec({ route: "h.cheap", model: "m-cheap", task: "task-fix-1", cost: { amount: 0.02 } })],
       maxAgeMs: 60 * 60 * 1000, // probe report is >1h old relative to NOW
     });
