@@ -518,7 +518,7 @@ export function attest<T>(input: {
  * JSON, fixtures, foreign modules). Enforces the same matrix as `attest` —
  * including unknown-field rejection — and returns a normalized Attested.
  */
-export function parseAttested(raw: unknown, where: string): Attested<unknown> {
+export function parseAttested<T = unknown>(raw: unknown, where: string): Attested<T> {
   if (!isPlainObject(raw)) {
     throw new ContractError("schema", `${where}: object expected`);
   }
@@ -537,8 +537,8 @@ export function parseAttested(raw: unknown, where: string): Attested<unknown> {
     note,
   };
   validateAttestation(shape, where);
-  const att: Attested<unknown> = {
-    value: shape.value,
+  const att: Attested<T> = {
+    value: shape.value as T,
     status: shape.status as VerificationStatus,
     provenance: shape.provenance as Provenance,
     evidence,

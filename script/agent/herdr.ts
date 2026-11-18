@@ -105,6 +105,7 @@ export async function createWorkspace(
   for (const [name, value] of Object.entries(options.env ?? {})) {
     args.push("--env", `${name}=${value}`);
   }
+  if (options.noFocus) args.push("--no-focus");
   
   const result = await herdrSpawn(args, cwd);
   if (result === null) {
@@ -174,16 +175,29 @@ export async function getWorkspace(workspaceId: string): Promise<HerdrWorkspace 
     const paneResult = await herdrSpawn(["pane", "list", "--workspace", workspaceId]);
     let panes: HerdrPane[] = [];
     if (paneResult && paneResult.code === 0) {
-      const paneParsed = JSON.parse(paneResult.stdout.trim());
+      const paneParsed: unknown = JSON.parse(paneResult.stdout.trim());
+      const rawPanes = (paneParsed as { result?: { panes?: unknown } } | null)?.result?.panes;
+      if (rawPanes !== undefined && rawPanes !== null && !Array.isArray(rawPanes)) {
+        throw new ContractError("schema", "Herdr pane list: 'panes' must be an array");
+      }
       // Map pane_id to id for our interface
-      panes = (paneParsed?.result?.panes ?? []).map((p: any) => ({
-        id: p.pane_id,
-        label: "pane",
-        agentName: undefined,
-        agentKind: undefined,
-        status: p.agent_status as "idle" | "working" | "blocked" | "done" | "unknown",
-        cwd: p.cwd,
-      }));
+      panes = (rawPanes ?? []).map((p) => {
+        const pane = p as { pane_id?: unknown; agent_status?: unknown; cwd?: unknown };
+        if (typeof pane.pane_id !== "string" || pane.pane_id === "") {
+          throw new ContractError("schema", "Herdr pane list: pane entry has no pane_id");
+        }
+        const status = typeof pane.agent_status === "string" ? pane.agent_status : "unknown";
+        return {
+          id: pane.pane_id,
+          label: "pane",
+          agentName: undefined,
+          agentKind: undefined,
+          status: (["idle", "working", "blocked", "done", "unknown"] as const).includes(status as never)
+            ? (status as HerdrPane["status"])
+            : "unknown",
+          cwd: typeof pane.cwd === "string" ? pane.cwd : undefined,
+        };
+      });
     }
     
     // Build tabs structure
@@ -211,10 +225,13 @@ export interface CreatePaneOptions {
   workspaceId: string;
   label?: string;
   cwd?: string;
-  split?: "horizontal" | "vertical";
+  /** `herdr pane split --direction` accepts exactly these values. */
+  split?: "right" | "down";
   targetPaneId?: string;
   /** Environment for the pane's process (e.g. the route credential). */
   env?: Record<string, string>;
+  /** Pass `--no-focus` so the new pane does not steal focus. */
+  noFocus?: boolean;
 }
 
 /**
@@ -241,6 +258,7 @@ export async function createPane(options: CreatePaneOptions): Promise<{ paneId: 
   for (const [name, value] of Object.entries(options.env ?? {})) {
     args.push("--env", `${name}=${value}`);
   }
+  if (options.noFocus) args.push("--no-focus");
   
   const result = await herdrSpawn(args);
   if (result === null) {

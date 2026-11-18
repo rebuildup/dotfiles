@@ -94,8 +94,6 @@ describe("Task state persistence", () => {
         model: "zai-glm-5-3-flash",
         prompt: "test prompt",
         acceptanceCriteria: ["criteria 1"],
-        dependencies: [],
-        metadata: {},
       },
       history: [],
       currentAttempt: null,
@@ -126,8 +124,6 @@ describe("dispatchTask", () => {
       model: "zai-glm-5-3-flash",
       prompt: "test prompt",
       acceptanceCriteria: ["test passes"],
-      dependencies: [],
-      metadata: {},
     };
     const config = {
       ...MOCK_CONFIG,
@@ -145,8 +141,6 @@ describe("dispatchTask", () => {
       model: "not-an-allowed-model",
       prompt: "test prompt",
       acceptanceCriteria: [],
-      dependencies: [],
-      metadata: {},
     };
 
     await expect(dispatchTask(MOCK_CONFIG, descriptor)).rejects.toThrow(/Model not allowed/);
@@ -160,8 +154,6 @@ describe("dispatchTask", () => {
       model: "some-model",
       prompt: "test",
       acceptanceCriteria: [],
-      dependencies: [],
-      metadata: {},
     };
     
     await expect(dispatchTask(MOCK_CONFIG, descriptor)).rejects.toThrow("Route not configured");
@@ -175,8 +167,6 @@ describe("dispatchTask", () => {
       model: "invalid-model",
       prompt: "test",
       acceptanceCriteria: [],
-      dependencies: [],
-      metadata: {},
     };
     
     await expect(dispatchTask(MOCK_CONFIG, descriptor)).rejects.toThrow("Model not allowed");
@@ -198,8 +188,6 @@ describe("Task state management", () => {
         model: "zai-glm-5-3-flash",
         prompt: "test",
         acceptanceCriteria: [],
-        dependencies: [],
-        metadata: {},
       },
       history: [
         {
@@ -209,7 +197,7 @@ describe("Task state management", () => {
           model: "zai-glm-5-3-flash",
           attemptNumber: 1,
           startedAt: new Date().toISOString(),
-          status: "running",
+          status: "running" as const,
           generation: 1,
         },
       ],
@@ -220,7 +208,7 @@ describe("Task state management", () => {
         model: "zai-glm-5-3-flash",
         attemptNumber: 1,
         startedAt: new Date().toISOString(),
-        status: "running",
+        status: "running" as const,
         generation: 1,
       },
     };
@@ -244,8 +232,6 @@ describe("Task state management", () => {
         model: "zai-glm-5-3-flash",
         prompt: "test",
         acceptanceCriteria: [],
-        dependencies: [],
-        metadata: {},
       },
       history: [
         {
@@ -255,8 +241,7 @@ describe("Task state management", () => {
           model: "zai-glm-5-3-flash",
           attemptNumber: 1,
           startedAt: new Date().toISOString(),
-          endedAt: new Date().toISOString(),
-          status: "completed",
+          status: "completed" as const,
           generation: 1,
           result: { success: true },
         },
@@ -268,8 +253,7 @@ describe("Task state management", () => {
         model: "zai-glm-5-3-flash",
         attemptNumber: 1,
         startedAt: new Date().toISOString(),
-        endedAt: new Date().toISOString(),
-        status: "completed",
+        status: "completed" as const,
         generation: 1,
         result: { success: true },
       },
@@ -290,8 +274,6 @@ describe("Task state management", () => {
         model: "zai-glm-5-3-flash",
         prompt: "test",
         acceptanceCriteria: [],
-        dependencies: [],
-        metadata: {},
       },
       history: [
         {
@@ -301,10 +283,9 @@ describe("Task state management", () => {
           model: "zai-glm-5-3-flash",
           attemptNumber: 1,
           startedAt: new Date().toISOString(),
-          endedAt: new Date().toISOString(),
-          status: "failed",
+          status: "failed" as const,
           generation: 1,
-          error: { class: "billing", message: "Payment required" },
+          error: { category: "billing" as const, observedAt: new Date().toISOString(), resetAt: null, retryAfterMs: null, exhausted: false, reason: "Payment required", quotaScopeKey: null },
         },
       ],
       currentAttempt: {
@@ -314,10 +295,9 @@ describe("Task state management", () => {
         model: "zai-glm-5-3-flash",
         attemptNumber: 1,
         startedAt: new Date().toISOString(),
-        endedAt: new Date().toISOString(),
-        status: "failed",
+        status: "failed" as const,
         generation: 1,
-        error: { class: "billing", message: "Payment required" },
+        error: { category: "billing" as const, observedAt: new Date().toISOString(), resetAt: null, retryAfterMs: null, exhausted: false, reason: "Payment required", quotaScopeKey: null },
       },
     };
     
@@ -356,7 +336,6 @@ describe("collectTaskAttempt", () => {
       model: "zai-glm-5-3-flash",
       attemptNumber: 1,
       startedAt: new Date().toISOString(),
-      endedAt: new Date().toISOString(),
       status: "completed" as const,
       generation: 1,
     };
@@ -390,15 +369,13 @@ describe("recordAttemptOutcome", () => {
         model: "zai-glm-5-3-flash",
         prompt: "test",
         acceptanceCriteria: [],
-        dependencies: [],
-        metadata: {},
       },
       history: [attempt],
       currentAttempt: attempt,
     });
 
     const recorded = recordAttemptOutcome("test-fallback-1", attempt, {
-      status: "failed",
+      status: "failed" as const,
       error: {
         category: "auth",
         observedAt: new Date().toISOString(),
@@ -441,15 +418,13 @@ describe("recordAttemptOutcome", () => {
         model: "zai-glm-5-3-flash",
         prompt: "test",
         acceptanceCriteria: [],
-        dependencies: [],
-        metadata: {},
       },
       history: [attempt],
       currentAttempt: attempt,
     });
 
     const recorded = recordAttemptOutcome("test-completed-1", attempt, {
-      status: "completed",
+      status: "completed" as const,
       result: { output: "done" },
     });
 
@@ -481,11 +456,11 @@ describe("getTaskStatus", () => {
 
   it("returns correct status for each state", () => {
     const states = [
-      { status: "running" as const, expected: "running" },
-      { status: "completed" as const, expected: "completed" },
-      { status: "failed" as const, expected: "failed" },
-      { status: "blocked" as const, expected: "blocked" },
-      { status: "fallback" as const, expected: "awaiting-fallback" },
+      { status: "running" as const, expected: "running" as const },
+      { status: "completed" as const, expected: "completed" as const },
+      { status: "failed" as const, expected: "failed" as const },
+      { status: "blocked" as const, expected: "blocked" as const },
+      { status: "fallback" as const, expected: "awaiting-fallback" as const },
     ];
     
     for (const { status, expected } of states) {
@@ -497,8 +472,6 @@ describe("getTaskStatus", () => {
           model: "zai-glm-5-3-flash",
           prompt: "test",
           acceptanceCriteria: [],
-          dependencies: [],
-          metadata: {},
         },
         history: [{
           id: "attempt-1",
@@ -507,7 +480,6 @@ describe("getTaskStatus", () => {
           model: "zai-glm-5-3-flash",
           attemptNumber: 1,
           startedAt: new Date().toISOString(),
-          endedAt: new Date().toISOString(),
           status,
           generation: 1,
         }],
@@ -554,6 +526,9 @@ describe("buildAgentStartOptions", () => {
     opencode_npm: null,
     opencode_models: {},
     opencode_base_url: null,
+    omp_custom: false,
+    omp_api: null,
+    omp_models: {},
     ...over,
   });
 

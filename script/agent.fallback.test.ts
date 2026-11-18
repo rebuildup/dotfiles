@@ -19,6 +19,8 @@ import {
   type FallbackProfile,
   type FallbackCandidate,
   type CatalogLike,
+  type CatalogAttestationMap,
+  type CatalogAttestationValue,
 } from "./agent/fallback.ts";
 import { ContractError } from "./agent/contract.ts";
 import { attest, type Attested, type Evidence, type VerificationStatus, type Provenance, type EvidenceSource } from "./agent/contract.ts";
@@ -107,7 +109,7 @@ const MOCK_CATALOG: CatalogLike = {
     "omp.openrouter-free": { provider: "openrouter-free", models: ["nvidia/nemotron-3-ultra-550b-a55b:free"], require_model: true },
     "omp.deepseek": { provider: "deepseek", models: ["deepseek-flash", "deepseek-v4-pro"] },
     "omp.minimax": { provider: "minimax", models: ["MiniMax-M3.1-Flash"] },
-    "omp.opencode-go": { provider: "opencode-go", models: ["mimo-v2.6-flash", "deepseek-v4.1-flash"], require_infisical: true },
+    "omp.opencode-go": { provider: "opencode-go", models: ["mimo-v2.6-flash", "deepseek-v4.1-flash"] },
     // Free-tier routes from ADR-0018, used by the billing/scope cases below.
     "omp.kilo": { provider: "kilo", models: ["nvidia/nemotron-3-ultra-550b-a55b:free"] },
     "omp.groq": { provider: "groq", models: ["openai/gpt-oss-120b"] },
@@ -805,7 +807,7 @@ describe("seedAttestationsFromCatalog", () => {
     };
     const map = seedAttestationsFromCatalog(facts);
     expect(map.size).toBe(2);
-    expect(map.get("omp.kilo#m-a")?.value.status).toBe("verified-live");
+    expect(map.get("omp.kilo#m-a")?.value?.status).toBe("verified-live");
     expect(map.get("omp.kilo#m-b")?.provenance).toBe("measured");
   });
 
@@ -826,7 +828,7 @@ describe("seedAttestationsFromCatalog", () => {
       },
     };
     const map = seedAttestationsFromCatalog(facts);
-    expect(map.get("opencode.ovhcloud#gpt-oss-120b")?.value.status).toBe("restricted");
+    expect(map.get("opencode.ovhcloud#gpt-oss-120b")?.value?.status).toBe("restricted");
   });
 
   it("leaves a route without e2e/restriction absent (genuinely unknown)", () => {
@@ -857,7 +859,7 @@ describe("seedAttestationsFromCatalog", () => {
       }),
     );
     const merged = mergeAttestations(durable, local);
-    expect(merged.get("omp.kilo#m")?.value.status).toBe("restricted");
+    expect(merged.get("omp.kilo#m")?.value?.status).toBe("restricted");
   });
 
   it("an OLDER local observation must not replace newer committed evidence", () => {
@@ -881,7 +883,7 @@ describe("seedAttestationsFromCatalog", () => {
         },
       },
     });
-    expect(durable.get("omp.kilo#m")?.value.status).toBe("restricted");
+    expect(durable.get("omp.kilo#m")?.value?.status).toBe("restricted");
     const local = new Map<string, Attested<{ status: VerificationStatus; provenance: Provenance; evidence: Evidence }>>();
     local.set(
       "omp.kilo#m",
@@ -897,7 +899,7 @@ describe("seedAttestationsFromCatalog", () => {
       }),
     );
     const merged = mergeAttestations(durable, local);
-    expect(merged.get("omp.kilo#m")?.value.status).toBe("restricted");
+    expect(merged.get("omp.kilo#m")?.value?.status).toBe("restricted");
   });
 
   it("a timestamp tie keeps the committed entry", () => {
@@ -919,7 +921,7 @@ describe("seedAttestationsFromCatalog", () => {
     );
     // Tie keeps the committed entry, which is identifiable by its own note.
     const merged = mergeAttestations(durable, local);
-    expect(merged.get("omp.kilo#m")?.value.status).toBe("verified-live");
+    expect(merged.get("omp.kilo#m")?.value?.status).toBe("verified-live");
     expect(merged.get("omp.kilo#m")?.note).toBeUndefined();
   });
 
@@ -1048,6 +1050,7 @@ describe("FallbackRejectionReason contract", () => {
       "billing-boundary-crossed": true,
       "billing-unknown": true,
       "provider-restricted": true,
+      "harness-mismatch": true,
       "primary-quota-unknown": true,
       "spend-cap-invalid": true,
       "spend-cap-exceeded": true,
@@ -1070,6 +1073,7 @@ describe("FallbackRejectionReason contract", () => {
         "billing-unknown",
         "credential-mismatch",
         "expired",
+        "harness-mismatch",
         "model-not-allowed",
         "primary-quota-unknown",
         "provider-restricted",
@@ -1280,19 +1284,19 @@ describe("mergeAttestations: severity beats recency", () => {
     const day = "2026-11-04T00:00:00Z";
     const durable = new Map([["r#m", att("verified-live", day)]]);
     const local = new Map([["r#m", att("restricted", day)]]);
-    expect(mergeAttestations(durable, local).get("r#m")?.value.status).toBe("restricted");
+    expect(mergeAttestations(durable, local).get("r#m")?.value?.status).toBe("restricted");
   });
 
   it("a local restriction is never cleared by a newer verified observation", () => {
     const durable = new Map([["r#m", att("restricted", "2026-11-04T00:00:00Z")]]);
     const local = new Map([["r#m", att("verified-live", "2026-11-05T00:00:00Z")]]);
-    expect(mergeAttestations(durable, local).get("r#m")?.value.status).toBe("restricted");
+    expect(mergeAttestations(durable, local).get("r#m")?.value?.status).toBe("restricted");
   });
 
   it("a newer unrestricted observation still replaces an older one", () => {
     const durable = new Map([["r#m", att("verified-live", "2026-11-04T00:00:00Z")]]);
     const local = new Map([["r#m", att("restricted", "2026-11-05T00:00:00Z")]]);
-    expect(mergeAttestations(durable, local).get("r#m")?.value.status).toBe("restricted");
+    expect(mergeAttestations(durable, local).get("r#m")?.value?.status).toBe("restricted");
   });
 });
 
@@ -1350,18 +1354,18 @@ describe("attestation shapes with a null value", () => {
       evidence: ev("2026-11-13T00:00:00Z"),
       note: "429",
     };
-    const durable = new Map([["r#m", attest(restrictedNullValue)]]);
-    const local = new Map([["r#m", attest(restrictedNullValue)]]);
+    const durable: CatalogAttestationMap = new Map([["r#m", attest<CatalogAttestationValue>(restrictedNullValue)]]);
+    const local: CatalogAttestationMap = new Map([["r#m", attest<CatalogAttestationValue>(restrictedNullValue)]]);
     expect(() => mergeAttestations(durable, local)).not.toThrow();
     expect(mergeAttestations(durable, local).get("r#m")?.status).toBe("restricted");
   });
 
   it("a newer unrestricted local entry does not displace a null-value restriction", () => {
-    const durable = new Map([
-      ["r#m", attest({ value: null, status: "restricted" as const, provenance: "measured" as const, evidence: ev("2026-11-13T00:00:00Z"), note: "429" })],
+    const durable: CatalogAttestationMap = new Map([
+      ["r#m", attest<CatalogAttestationValue>({ value: null, status: "restricted" as const, provenance: "measured" as const, evidence: ev("2026-11-13T00:00:00Z"), note: "429" })],
     ]);
-    const local = new Map([
-      ["r#m", attest({ value: { status: "verified-live" as const, provenance: "measured" as const, evidence: ev("2026-11-14T00:00:00Z") }, status: "verified-live" as const, provenance: "measured" as const, evidence: ev("2026-11-14T00:00:00Z") })],
+    const local: CatalogAttestationMap = new Map([
+      ["r#m", attest<CatalogAttestationValue>({ value: { status: "verified-live" as const, provenance: "measured" as const, evidence: ev("2026-11-14T00:00:00Z") }, status: "verified-live" as const, provenance: "measured" as const, evidence: ev("2026-11-14T00:00:00Z") })],
     ]);
     expect(mergeAttestations(durable, local).get("r#m")?.status).toBe("restricted");
   });
@@ -1370,7 +1374,7 @@ describe("attestation shapes with a null value", () => {
     const attestations = new Map(MOCK_ATTESTATIONS);
     attestations.set(
       "omp.kilo#nvidia/nemotron-3-ultra-550b-a55b:free",
-      attest({
+      attest<CatalogAttestationValue>({
         value: null,
         status: "restricted" as const,
         provenance: "measured" as const,

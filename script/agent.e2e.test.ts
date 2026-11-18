@@ -234,8 +234,6 @@ describe("herdr integration (REAL)", () => {
       model: "nvidia/nemotron-3-ultra-550b-a55b:free",
       prompt: "test prompt",
       acceptanceCriteria: [],
-      dependencies: [],
-      metadata: {},
     });
 
     expect(attempt.herdrWorkerName).toBeDefined();
@@ -286,7 +284,6 @@ describe("attempt fencing and recovery (REAL)", () => {
         retryAfterMs: null,
         exhausted: false,
         reason: "test",
-        quotaScopeKey: null,
       },
       quotaScope: null,
       retriesUsed: 0,

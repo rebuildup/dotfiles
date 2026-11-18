@@ -319,12 +319,16 @@ export function loadProbeConfig(configFile?: string): ProbeConfig {
   } catch {
     throw new ContractError("schema", `config not found: ${path}`);
   }
-  let raw: Record<string, unknown>;
+  let parsedToml: unknown;
   try {
-    raw = Bun.TOML.parse<Record<string, unknown>>(text);
+    parsedToml = Bun.TOML.parse(text);
   } catch (exc) {
     throw new ContractError("schema", `invalid TOML in ${path}: ${exc}`);
   }
+  if (!isPlainObject(parsedToml)) {
+    throw new ContractError("schema", `invalid TOML in ${path}: root is not a table`);
+  }
+  const raw = parsedToml;
 
   const providers: Record<string, ProbeProviderConfig> = {};
   const rawProviders = raw["providers"] ?? {};
@@ -646,7 +650,16 @@ function validateCachedLayers(raw: unknown, where: string): ProbeLayerResult[] {
     if (typeof status !== "string" || !PROBE_LAYER_STATUSES.includes(status as ProbeLayerStatus)) {
       throw new ContractError("state", `${where}: unknown status '${String(status)}' for layer '${layer}'`);
     }
-    return entry as ProbeLayerResult;
+    const evidence = entry["evidence"];
+    if (evidence !== null && evidence !== undefined && !isPlainObject(evidence)) {
+      throw new ContractError("state", `${where}: evidence must be an object or null`);
+    }
+    return {
+      ...entry,
+      layer: layer as ProbeLayer,
+      status: status as ProbeLayerStatus,
+      evidence: (evidence ?? null) as Evidence | null,
+    } as ProbeLayerResult;
   });
 }
 

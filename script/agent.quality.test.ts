@@ -70,7 +70,7 @@ const RULES: GateRule[] = [
 const PATHS = ["script/agent/quality.ts", "script/agent/review.ts", "script/agent.quality.test.ts"];
 
 /** Mock validation record (synthetic evidence, clearly labelled). */
-function record(overrides: Partial<ValidationRecord> = {}): ValidationRecord {
+function record(overrides: Record<string, unknown> = {}): ValidationRecord {
   return {
     name: "bun-test-agent-router",
     sha: SHA,
@@ -80,7 +80,7 @@ function record(overrides: Partial<ValidationRecord> = {}): ValidationRecord {
     at: FRESH_AT,
     note: null,
     ...overrides,
-  };
+  } as ValidationRecord;
 }
 
 /** Wrap a record in the contract envelope, as persisted state looks. */
@@ -88,7 +88,7 @@ function envelope(rec: unknown): Record<string, unknown> {
   return { contract_version: "1.0.0", ...(rec as object) };
 }
 
-function gate(overrides: Partial<QualityGateInput> = {}): QualityGateInput {
+function gate(overrides: Record<string, unknown> = {}): QualityGateInput {
   return {
     currentSha: SHA,
     now: NOW,
@@ -387,7 +387,7 @@ describe("evaluateQualityGate", () => {
 const DIFF_FP = "c".repeat(64);
 
 /** Mock review record (synthetic evidence, clearly labelled). */
-function review(overrides: Partial<ReviewRecord> = {}): ReviewRecord {
+function review(overrides: Record<string, unknown> = {}): ReviewRecord {
   return {
     reviewer: "cold-reviewer-1",
     sha: SHA,
@@ -398,7 +398,7 @@ function review(overrides: Partial<ReviewRecord> = {}): ReviewRecord {
     at: FRESH_AT,
     summary: "The diff matches the described change and introduces no new findings.",
     ...overrides,
-  };
+  } as ReviewRecord;
 }
 
 function reviewInput(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -426,11 +426,11 @@ describe("buildReviewInput", () => {
     expect(() => buildReviewInput(SHA, PATHS, "c".repeat(63))).toThrow(ContractError);
     expect(() => buildReviewInput(SHA, PATHS, "C".repeat(64))).toThrow(ContractError);
     expect(() => buildReviewInput(SHA, [], DIFF_FP)).toThrow(ContractError);
-    expect(() => buildReviewInput(SHA, [""])).toThrow(ContractError);
-    expect(() => buildReviewInput(SHA, ["../../etc/passwd"])).toThrow(ContractError);
-    expect(() => buildReviewInput(SHA, ["/etc/passwd"])).toThrow(ContractError);
-    expect(() => buildReviewInput(SHA, ["Bearer abc.def.ghi"])).toThrow(ContractError);
-    expect(() => buildReviewInput("main", PATHS)).toThrow(ContractError);
+    expect(() => buildReviewInput(SHA, [""], DIFF_FP)).toThrow(ContractError);
+    expect(() => buildReviewInput(SHA, ["../../etc/passwd"], DIFF_FP)).toThrow(ContractError);
+    expect(() => buildReviewInput(SHA, ["/etc/passwd"], DIFF_FP)).toThrow(ContractError);
+    expect(() => buildReviewInput(SHA, ["Bearer abc.def.ghi"], DIFF_FP)).toThrow(ContractError);
+    expect(() => buildReviewInput("main", PATHS, DIFF_FP)).toThrow(ContractError);
   });
 });
 

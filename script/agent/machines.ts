@@ -663,15 +663,11 @@ export function main(args: string[] = process.argv.slice(2)): void {
     if (!m) throw new Error(`machine ${rest[0] ?? ""} not found`);
     console.log(toJson({ ...m, id: displayId(m.id), label: displayId(m.label) }));
   } else if (cmd === "hosts") {
-    const hosts = groupHosts(inv.machines);
-    const sanitized = {
-      ...hosts,
-      groups: hosts.groups?.map((g: Record<string, unknown>) => ({
-        ...g,
-        machineIds: Array.isArray(g.machineIds) ? (g.machineIds as string[]).map(displayId) : g.machineIds,
-      })),
-    };
-    console.log(toJson(sanitized));
+    const hosts = groupHosts(inv.machines).map((g) => ({
+      ...g,
+      machineIds: g.machineIds.map(displayId),
+    }));
+    console.log(toJson(hosts));
   } else if (cmd === "probe") {
     console.log(toJson(getLocalMachine(declared.local)));
   } else {

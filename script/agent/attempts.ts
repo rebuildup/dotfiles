@@ -461,7 +461,7 @@ export function withFileLock<T>(lockPath: string, fn: () => T, options: FileLock
   if (typeof lockPath !== "string" || lockPath.length === 0) {
     throw new ContractError("schema", "lock path must be a non-empty string");
   }
-  if (!isPlainObject(options)) throw new ContractError("lock options must be an object");
+  if (!isPlainObject(options)) throw new ContractError("schema", "lock options must be an object");
   const timeoutMs =
     options.timeoutMs === undefined ? LOCK_DEFAULT_TIMEOUT_MS : lockOptionMs(options.timeoutMs, "timeoutMs");
   const stalenessMs =
@@ -523,9 +523,13 @@ export function withFileLock<T>(lockPath: string, fn: () => T, options: FileLock
  * Wrap a typed record/lease in the contract envelope for persistence. Used on
  * every store write path so disk state and read-path parsers agree.
  */
-function withContract(value: object): Record<string, unknown> {
+function withContract<T extends object>(value: T): T & { contract_version: string } {
   return { contract_version: CONTRACT_VERSION, ...value };
 }
+
+/** Persisted shapes: typed payload plus the contract envelope written to disk. */
+export type StoredAttemptRecord = AttemptRecord & { contract_version: string };
+export type StoredLease = Lease & { contract_version: string };
 
 /**
  * Durable storage for attempt records and leases.
@@ -536,17 +540,17 @@ export interface AttemptStore {
   /** Existing generation numbers for an attempt, ascending; [] when none. */
   listGenerations(attemptKey: string): number[];
   /** Atomic exclusive create. true = created; false when the generation already exists. */
-  createLease(attemptKey: string, generation: number, lease: Lease): boolean;
+  createLease(attemptKey: string, generation: number, lease: StoredLease): boolean;
   /** Raw lease JSON value, or null when absent. */
   readLease(attemptKey: string, generation: number): unknown;
   /** Atomically mark an existing lease released. Throws when absent. */
   markLeaseReleased(attemptKey: string, generation: number): void;
   /** Atomic exclusive create. true = created; false when the attempt already exists. */
-  createRecord(attemptKey: string, record: AttemptRecord): boolean;
+  createRecord(attemptKey: string, record: StoredAttemptRecord): boolean;
   /** Raw record JSON value, or null when absent. */
   readRecord(attemptKey: string): unknown;
   /** Atomic replace (temp file + rename; never a torn write). */
-  writeRecord(attemptKey: string, record: AttemptRecord): void;
+  writeRecord(attemptKey: string, record: StoredAttemptRecord): void;
   /**
    * Optional. Runs `fn()` while holding an exclusive single-host lock scoped
    * to this attempt's durable state. Real filesystem stores MUST provide it
@@ -586,7 +590,7 @@ export class FsAttemptStore implements AttemptStore {
     return generations.sort((a, b) => a - b);
   }
 
-  createLease(attemptKey: string, generation: number, lease: Lease): boolean {
+  createLease(attemptKey: string, generation: number, lease: StoredLease): boolean {
     parseLease(lease, "FsAttemptStore.createLease");
     const dir = this.dir(attemptKey);
     mkdirSync(dir, { recursive: true });
@@ -627,7 +631,7 @@ export class FsAttemptStore implements AttemptStore {
     );
   }
 
-  createRecord(attemptKey: string, record: AttemptRecord): boolean {
+  createRecord(attemptKey: string, record: StoredAttemptRecord): boolean {
     parseAttemptRecord(record, "FsAttemptStore.createRecord");
     const dir = this.dir(attemptKey);
     mkdirSync(dir, { recursive: true });
@@ -653,7 +657,7 @@ export class FsAttemptStore implements AttemptStore {
     return parseJson(readFileSync(path, "utf8"));
   }
 
-  writeRecord(attemptKey: string, record: AttemptRecord): void {
+  writeRecord(attemptKey: string, record: StoredAttemptRecord): void {
     parseAttemptRecord(record, "FsAttemptStore.writeRecord");
     writeFileAtomic(join(this.dir(attemptKey), "record.json"), redactJson(record));
   }

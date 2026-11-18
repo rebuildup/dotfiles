@@ -54,6 +54,7 @@ export interface ReconcileResult {
   action: "create-pr" | "update-pr" | "land" | "close-issue" | "cleanup-branch" | "blocked";
   prNumber?: number;
   reason: string;
+  blockers: string[];
   evidence: {
     prState?: string;
     headSha?: string;
@@ -72,49 +73,103 @@ export interface ReconcileResult {
 
 const GH_CLI = "gh";
 
+/** Raw stdout/stderr text of a successful child process. */
+async function readProc(
+  proc: Bun.Subprocess,
+): Promise<{ stdout: string; stderr: string; code: number }> {
+  const [stdout, stderr, code] = await Promise.all([
+    new Response(proc.stdout as ReadableStream).text(),
+    new Response(proc.stderr as ReadableStream).text(),
+    proc.exited,
+  ]);
+  return { stdout, stderr, code };
+}
+
 /**
- * Execute a gh CLI command and return parsed JSON.
+ * Execute a gh CLI command. Commands that pass "--json <fields>" return the
+ * parsed JSON value; all others return trimmed stdout text.
  */
 async function ghCommand(args: string[], cwd?: string): Promise<unknown> {
-  const hasJson = args.length > 0 && args[args.length - 1] === "--json";
-  const args_ = hasJson ? [GH_CLI, ...args] : [GH_CLI, ...args, "--json"];
-  const proc = await Bun.spawn(["gh", ...args_], {
+  const proc = await Bun.spawn([GH_CLI, ...args], {
     stdout: "pipe",
     stderr: "pipe",
     cwd,
   });
-  
-  const stdout = await new TextDecoder().decode(await new Response(proc.stdout).arrayBuffer());
-  const stderr = await new TextDecoder().decode(await proc.stderr.arrayBuffer());
-  const code = await proc.exited;
-  
+  const { stdout, stderr, code } = await readProc(proc);
   if (code !== 0) {
-    throw new ContractError("state", `gh ${args.join(" ")} failed: ${stderr}`);
+    throw new ContractError("state", `gh ${args.join(" ")} failed: ${stderr.trim()}`);
   }
-  
-  try {
-    return JSON.parse(stdout.trim());
-  } catch {
-    return stdout.trim();
+  const trimmed = stdout.trim();
+  if (args.includes("--json")) {
+    try {
+      return JSON.parse(trimmed);
+    } catch {
+      throw new ContractError("state", `gh ${args.join(" ")}: invalid JSON output`);
+    }
   }
+  return trimmed;
+}
+
+/** Subset of `gh pr view/list --json` fields consumed by this module. */
+export interface GHPullRequest {
+  number: number;
+  headRefName: string;
+  baseRefName: string;
+  headRefOid: string;
+  baseRefOid: string;
+  state: string; // OPEN | CLOSED | MERGED
+  isDraft: boolean;
+  mergeable?: string;
+  reviews?: { state?: string }[];
+  statusCheckRollup?: { conclusion?: string | null; status?: string }[];
+}
+
+const GH_PR_FIELDS =
+  "number,headRefName,baseRefName,headRefOid,baseRefOid,state,isDraft,mergeable,reviews,statusCheckRollup";
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Validate one `gh` PR JSON object; unknown shape is a contract violation. */
+export function parseGHPullRequest(raw: unknown, where: string): GHPullRequest {
+  if (!isRecord(raw)) throw new ContractError("state", `${where}: PR JSON must be an object`);
+  const num = raw["number"];
+  if (typeof num !== "number" || !Number.isInteger(num)) {
+    throw new ContractError("state", `${where}.number: must be an integer`);
+  }
+  for (const key of ["headRefName", "baseRefName", "headRefOid", "baseRefOid", "state"] as const) {
+    if (typeof raw[key] !== "string") {
+      throw new ContractError("state", `${where}.${key}: must be a string`);
+    }
+  }
+  if (typeof raw["isDraft"] !== "boolean") {
+    throw new ContractError("state", `${where}.isDraft: must be a boolean`);
+  }
+  return raw as unknown as GHPullRequest;
+}
+
+function parseGHPullRequestList(raw: unknown, where: string): GHPullRequest[] {
+  if (!Array.isArray(raw)) throw new ContractError("state", `${where}: expected a JSON array`);
+  return raw.map((entry, i) => parseGHPullRequest(entry, `${where}[${i}]`));
 }
 
 /**
  * Get PR by number.
  */
-export async function getPR(number: number, repo?: string): Promise<unknown> {
-  const args = ["pr", "view", String(number)];
+export async function getPR(number: number, repo?: string): Promise<GHPullRequest> {
+  const args = ["pr", "view", String(number), "--json", GH_PR_FIELDS];
   if (repo) args.push("--repo", repo);
-  return ghCommand(args);
+  return parseGHPullRequest(await ghCommand(args), `pr view ${number}`);
 }
 
 /**
  * List PRs for an issue.
  */
-export async function listPRsForIssue(issueNumber: number, repo?: string): Promise<any[]> {
-  const args = ["pr", "list", "--search", `issue:${issueNumber}`, "--state", "all"];
+export async function listPRsForIssue(issueNumber: number, repo?: string): Promise<GHPullRequest[]> {
+  const args = ["pr", "list", "--search", `issue:${issueNumber}`, "--state", "all", "--json", GH_PR_FIELDS];
   if (repo) args.push("--repo", repo);
-  return ghCommand([...args, "--json", "number,headRefOid,baseRefOid,headRefName,baseRefName,state,isDraft,mergeable,reviews,statusCheckRollup,title,author,createdAt,updatedAt"]);
+  return parseGHPullRequestList(await ghCommand(args), `pr list issue:${issueNumber}`);
 }
 
 /**
@@ -136,9 +191,16 @@ export async function createTicketPR(
     "--head", String(issueNumber),  // ticket branch name
   ];
   if (repo) args.push("--repo", repo);
-  
-  const result = await ghCommand(args);
-  return { number: result.number, url: result.url };
+
+  const url = await ghCommand(args);
+  if (typeof url !== "string") {
+    throw new ContractError("state", "gh pr create: expected a URL on stdout");
+  }
+  const match = /\/pull\/(\d+)/.exec(url);
+  if (!match) {
+    throw new ContractError("state", `gh pr create: cannot parse PR number from '${url}'`);
+  }
+  return { number: Number(match[1]), url };
 }
 
 /**
@@ -169,10 +231,10 @@ export async function mergePR(
   number: number,
   method: "merge" | "squash" | "rebase",
   repo?: string
-): Promise<{ sha: string }> {
+): Promise<void> {
   const args = ["pr", "merge", String(number), `--${method}`];
   if (repo) args.push("--repo", repo);
-  return ghCommand(args);
+  await ghCommand(args);
 }
 
 /**
@@ -211,7 +273,7 @@ export async function branchExistsLocally(branch: string): Promise<boolean> {
     stdout: "pipe",
     stderr: "pipe",
   });
-  return proc.exited === 0;
+  return (await proc.exited) === 0;
 }
 
 /**
@@ -222,8 +284,11 @@ export async function getMergeBase(branch1: string, branch2: string): Promise<st
     stdout: "pipe",
     stderr: "pipe",
   });
-  const stdout = await new TextDecoder().decode(await new Response(proc.stdout).arrayBuffer());
-  if (proc.exited !== 0 || !stdout.trim()) return null;
+  const [stdout, code] = await Promise.all([
+    new Response(proc.stdout).text(),
+    proc.exited,
+  ]);
+  if (code !== 0 || !stdout.trim()) return null;
   return stdout.trim();
 }
 
@@ -237,7 +302,7 @@ export async function getMergeBase(branch1: string, branch2: string): Promise<st
 export async function reconcileTicket(
   issueNumber: number,
   options: { baseBranch?: string; repo?: string } = {}
-): Promise<unknown> {
+): Promise<ReconcileResult> {
   const baseBranch = options.baseBranch || "release-0-4-0";
   const repo = options.repo;
   const ticketBranch = String(issueNumber);
@@ -253,31 +318,33 @@ export async function reconcileTicket(
   const baseSha = await getRemoteBranchSha(baseBranch);
 
   // Determine staleness
-  const isStale = remoteHeadSha && localHeadSha && remoteHeadSha !== localHeadSha;
-  const baseStaleness = remoteHeadSha && baseSha && remoteHeadSha === baseSha;
+  const isStale = !!(remoteHeadSha && localHeadSha && remoteHeadSha !== localHeadSha);
+  const baseStaleness = !!(remoteHeadSha && baseSha && remoteHeadSha === baseSha);
 
   // Get PR details if exists
-  let prDetails: Record<string, unknown> | null = null;
+  let prDetails: GHPullRequest | null = null;
   if (pr) {
     prDetails = await getPR(pr.number, options.repo);
   }
 
-  // Determine checks status
-  const checksGreen = prDetails?.statusCheckRollup?.every((c: unknown) => typeof c === "object" && c !== null && "conclusion" in c && (c as Record<string, unknown>).conclusion === "SUCCESS") ?? false;
-  
+  // Determine checks status: every reported check must be concluded SUCCESS.
+  const checksGreen =
+    (prDetails?.statusCheckRollup?.length ?? 0) > 0 &&
+    prDetails!.statusCheckRollup!.every((c) => c.conclusion === "SUCCESS");
+
   // Check review status
-  const reviewApproved = prDetails?.reviews?.some((r: unknown) => typeof r === "object" && r !== null && "state" in r && (r as Record<string, unknown>).state === "APPROVED") ?? false;
-  
+  const reviewApproved =
+    prDetails?.reviews?.some((r) => r.state === "APPROVED") ?? false;
+
   // Check for stale readiness (green checks but stale SHA)
   const staleReadiness = checksGreen && isStale;
 
-  // Check stack staleness (if stacked PR)
+  // Check stack staleness (if stacked PR): the base branch must not have moved
+  // past the SHA the PR was created against.
   let stackStaleness = false;
-  if (prDetails?.headRefName && prDetails?.baseRefName !== baseBranch) {
-    // Stacked PR - check predecessor
-    const baseSha_ = await getRemoteBranchSha(prDetails.baseRefName);
+  if (prDetails && prDetails.baseRefName !== baseBranch) {
     const predRemoteSha = await getRemoteBranchSha(prDetails.baseRefName);
-    stackStaleness = predRemoteSha && baseSha_ && predRemoteSha !== baseSha_;
+    stackStaleness = predRemoteSha !== null && predRemoteSha !== prDetails.baseRefOid;
   }
 
   // Determine blockers
@@ -289,7 +356,7 @@ export async function reconcileTicket(
   if (staleReadiness) blockers.push("checks green but SHA stale - requires rebase/revalidation");
   if (stackStaleness) blockers.push("stacked PR predecessor has moved - requires rebase");
   if (prDetails?.isDraft) blockers.push("PR is still draft");
-  if (!prDetails?.mergeable) blockers.push("PR has merge conflicts");
+  if (prDetails && prDetails.mergeable !== "MERGEABLE") blockers.push("PR has merge conflicts");
   if (!checksGreen) blockers.push("required checks not green");
   if (!reviewApproved && !prDetails?.isDraft) blockers.push("no approving review");
 
@@ -306,16 +373,16 @@ export async function reconcileTicket(
   if (!pr && branchExists && remoteHeadSha) {
     action = "create-pr";
     reason = "Ticket branch exists but no PR created";
-  } else if (pr && prDetails.isDraft && canLand) {
+  } else if (pr && prDetails && prDetails.isDraft && canLand) {
     action = "update-pr";
     reason = "PR ready for review";
-  } else if (pr && !prDetails.isDraft && canLand) {
+  } else if (pr && prDetails && !prDetails.isDraft && canLand) {
     action = "land";
     reason = "All gates green, authorized for landing";
-  } else if (pr && prDetails.state === "CLOSED" && !prDetails.merged) {
+  } else if (pr && prDetails && prDetails.state === "CLOSED") {
     action = "cleanup-branch";
     reason = "PR closed without merge";
-  } else if (pr && prDetails.merged) {
+  } else if (pr && prDetails && prDetails.state === "MERGED") {
     action = "close-issue";
     reason = "PR merged, issue ready to close";
   }
@@ -325,10 +392,11 @@ export async function reconcileTicket(
     action,
     prNumber: pr?.number,
     reason,
+    blockers,
     evidence: {
-      prState: prDetails?.state,
-      headSha: remoteHeadSha,
-      baseSha: baseSha,
+      prState: prDetails?.state ?? undefined,
+      headSha: remoteHeadSha ?? undefined,
+      baseSha: baseSha ?? undefined,
       checksGreen,
       reviewApproved,
       staleReadiness,
@@ -382,38 +450,40 @@ export async function ensureTicketPR(
 export async function landTicketPR(
   prNumber: number,
   options: { method?: "merge" | "squash" | "rebase"; repo?: string; requireApproval?: boolean } = {}
-): Promise<{ sha: string }> {
+): Promise<void> {
   const pr = await getPR(prNumber, options.repo);
-  
+
   if (pr.state !== "OPEN") {
     throw new ContractError("state", `PR #${prNumber} is not open`);
   }
-  
+
   if (pr.isDraft) {
     throw new ContractError("state", `PR #${prNumber} is still draft`);
   }
-  
+
   // Check required checks
-  const checksGreen = pr.statusCheckRollup?.every((c: unknown) => typeof c === "object" && c !== null && "conclusion" in c && (c as Record<string, unknown>).conclusion === "SUCCESS") ?? false;
+  const checksGreen =
+    (pr.statusCheckRollup?.length ?? 0) > 0 &&
+    pr.statusCheckRollup!.every((c) => c.conclusion === "SUCCESS");
   if (!checksGreen) {
     throw new ContractError("state", "Required checks not green");
   }
-  
+
   // Check review approval
-  const reviewApproved = pr.reviews?.some((r: unknown) => typeof r === "object" && r !== null && "state" in r && (r as Record<string, unknown>).state === "APPROVED") ?? false;
+  const reviewApproved = pr.reviews?.some((r) => r.state === "APPROVED") ?? false;
   if (options.requireApproval && !reviewApproved) {
     throw new ContractError("state", "No approving review");
   }
-  
+
   // Check for staleness
   const remoteHeadSha = await getRemoteBranchSha(pr.headRefName);
   if (remoteHeadSha && pr.headRefOid !== remoteHeadSha) {
     throw new ContractError("state", "PR head SHA diverged from remote - rebase required");
   }
-  
+
   // Merge
   const method = options.method || "squash";
-  return mergePR(prNumber, method, options.repo);
+  await mergePR(prNumber, method, options.repo);
 }
 
 /**
@@ -471,7 +541,7 @@ async function isBranchMerged(branch: string, baseBranch: string): Promise<boole
     stdout: "pipe",
     stderr: "pipe",
   });
-  return proc.exited === 0;
+  return (await proc.exited) === 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -490,16 +560,17 @@ function deliveryStatePath(issueNumber: number): string {
   return join(DELIVERY_STATE_DIR, `${issueNumber}.json`);
 }
 
-export function saveDeliveryState(issueNumber: number, state: any): void {
+export function saveDeliveryState(issueNumber: number, state: unknown): void {
   ensureDeliveryStateDir();
   writeFileSync(deliveryStatePath(issueNumber), JSON.stringify(state, null, 2));
 }
 
-export function loadDeliveryState(issueNumber: number): any | null {
+export function loadDeliveryState(issueNumber: number): Record<string, unknown> | null {
   const path = deliveryStatePath(issueNumber);
   if (!existsSync(path)) return null;
   try {
-    return JSON.parse(readFileSync(path, "utf-8"));
+    const parsed: unknown = JSON.parse(readFileSync(path, "utf-8"));
+    return isRecord(parsed) ? parsed : null;
   } catch {
     return null;
   }

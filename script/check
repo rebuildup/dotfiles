@@ -9,7 +9,7 @@ status=0
 # The managed target set (whole-directory units, composer-owned exclusions,
 # per-file sources) is defined once in script/lib/managed-targets.sh and
 # shared with script/link so both always agree on what is managed.
-# shellcheck source=lib/managed-targets.sh
+# shellcheck source=script/lib/managed-targets.sh
 source "$repo_root/script/lib/managed-targets.sh"
 
 sources() {

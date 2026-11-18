@@ -467,12 +467,16 @@ export function loadConfig(path?: string): Config {
   } catch {
     throw new AgentError(`config not found: ${configPathResolved}`);
   }
-  let raw: Record<string, unknown>;
+  let parsedToml: unknown;
   try {
-    raw = Bun.TOML.parse<Record<string, unknown>>(text);
+    parsedToml = Bun.TOML.parse(text);
   } catch (exc) {
     throw new AgentError(`invalid TOML in ${configPathResolved}: ${exc}`);
   }
+  if (!isPlainObject(parsedToml)) {
+    throw new AgentError(`invalid TOML in ${configPathResolved}: root is not a table`);
+  }
+  const raw = parsedToml;
 
   const defaults = raw["defaults"] ?? {};
   if (!isPlainObject(defaults)) {

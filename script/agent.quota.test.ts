@@ -22,7 +22,7 @@ import {
   type QuotaUsage,
 } from "./agent/quota";
 import { loadCatalog, type Catalog } from "./agent/catalog";
-import { ContractError } from "./agent/contract";
+import { ContractError, type Evidence } from "./agent/contract";
 
 const REPO = dirname(dirname(realpathSync(import.meta.path)));
 const REAL_CONFIG = join(REPO, "config", "agents.toml");
@@ -576,11 +576,11 @@ describe("review fixes: hostile inputs", () => {
       used: 5,
       resetAt: null,
       provenance: "measured",
-      evidence: { at: "2026-11-06T11:55:00Z", source: "probe" },
+      evidence: { at: "2026-11-06T11:55:00Z", source: "probe" as const },
     };
     const elevenMinOld = {
       ...fiveMinOld,
-      evidence: { at: "2026-11-06T11:49:00Z", source: "probe" },
+      evidence: { at: "2026-11-06T11:49:00Z", source: "probe" as const },
     };
     const kept = quotaReport(catalog, "claude.openrouter-free", { now: NOW, live: [fiveMinOld, elevenMinOld] });
     expect(kept.live).toHaveLength(1);
@@ -593,7 +593,7 @@ describe("review fixes: hostile inputs", () => {
     expect(catalogKept.documented.length).toBeGreaterThan(0);
     const staleLive = {
       ...fiveMinOld,
-      evidence: { at: "2026-11-06T11:30:00Z", source: "probe" },
+      evidence: { at: "2026-11-06T11:30:00Z", source: "probe" as const },
     };
     expect(
       quotaReport(catalog, "claude.openrouter-free", { now: sixDaysOld, live: [staleLive] }).live,

@@ -44,6 +44,7 @@ import {
   toJson,
   type Attested,
   type AttemptIdentity,
+  type ContractErrorCode,
 } from "./agent/contract";
 
 const REPO = dirname(dirname(realpathSync(import.meta.path)));
@@ -70,7 +71,7 @@ function liveAttest(value: unknown = { tool_call: true }): Attested<unknown> {
   });
 }
 
-function expectContractError(code: string, run: () => unknown): void {
+function expectContractError(code: ContractErrorCode, run: () => unknown): void {
   try {
     run();
   } catch (error) {

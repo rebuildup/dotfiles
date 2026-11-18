@@ -15,7 +15,7 @@
  */
 
 import { ContractError, parseRouteId, formatRouteId, type RouteRef } from "./contract.ts";
-import { FallbackCandidate, parseFallbackProfile } from "./fallback.ts";
+import { type FallbackCandidate, parseFallbackProfile } from "./fallback.ts";
 import {
   executeWithFallback,
   FallbackExhaustedError,
@@ -414,7 +414,7 @@ async function verifyOmpCustomCredential(provider: Provider): Promise<void> {
   });
   if (result.exitCode !== 0 || result.stdout.length === 0) {
     throw new ContractError(
-      "auth",
+      "state",
       `Infisical credential '${provider.secret}' for omp_custom provider ` +
         `'${provider.key}' did not resolve; the worker's apiKey command ` +
         "needs a working Infisical session for the dispatching user",

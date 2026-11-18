@@ -30,8 +30,8 @@ import {
   MAX_GENERATION,
   MAX_LEASE_MS,
   MIN_LEASE_MS,
-  type Runner,
 } from "./agent/attempts.ts";
+import { type MachineOS, type Runner } from "./agent/machines.ts";
 import {
   ResourceLeaseStore,
   capabilitiesFromProbe,
@@ -184,6 +184,7 @@ describe("MOCK: capability matrix per OS", () => {
     platform: "linux",
     procVersion: "Linux version 6.6.0",
     worktrunkVersion: "wt 0.81.0",
+    worktrunkError: null,
     gui: null,
     sandboxVerified: false,
   };
@@ -370,7 +371,7 @@ describe("MOCK: resource lease collision, takeover and release semantics", () =>
 // ---------------------------------------------------------------------------
 
 describe("MOCK: workspace record validation", () => {
-  const record = (over: Record<string, unknown> = {}) =>
+  const record = (over: Record<string, unknown> = {}): Record<string, unknown> =>
     parseJson(
       JSON.stringify({
         contract_version: "1.0.0",
@@ -384,7 +385,7 @@ describe("MOCK: workspace record validation", () => {
         createdAt: "2026-11-06T00:00:00Z",
         ...over,
       }),
-    );
+    ) as Record<string, unknown>;
 
   test("a valid record parses; env identity is preserved", () => {
     const r = parseWorkspaceRecord(record(), "t");
@@ -768,7 +769,7 @@ describe("REAL: local host capability probe", () => {
     }
     const c = capabilitiesFromProbe(probe);
     // OS mapping must match the actual host platform, whatever it is.
-    const expectedOs = { linux: "linux", darwin: "macos", win32: "windows" }[platform()] as string;
+    const expectedOs = ({ linux: "linux", darwin: "macos", win32: "windows" } as Record<string, MachineOS>)[platform()];
     expect(c.os).toBe(expectedOs);
     expect(typeof c.wsl).toBe("boolean");
     // Cross-OS invariants that hold on every host.

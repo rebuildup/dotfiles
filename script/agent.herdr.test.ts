@@ -10,6 +10,7 @@ import {
   checkHerdrAvailable,
   listWorkspaces,
   getWorkspace,
+  createWorkspace,
   createPane,
   getPaneStatus,
   closePane,

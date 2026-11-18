@@ -263,7 +263,10 @@ export interface RecoveryInput {
   attemptKey: string;
   store: AttemptStore;
   journal: JournalStore;
-  classification: LimitClassification;
+  /** Accepts the plain limits.ts verdict or fallback-exec's ClassifiedError
+   * (which adds `quotaScopeKey` provenance); the extra field is ignored here —
+   * the scope used for circuit breaking is the explicit `quotaScope` below. */
+  classification: LimitClassification & { quotaScopeKey?: string | null };
   /** Quota scope key for circuit breaker (from limits.ts). */
   quotaScope: string | null;
   /** Retry count already used for this attempt. */
