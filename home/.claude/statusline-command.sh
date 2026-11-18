@@ -58,6 +58,7 @@ pr_short="$(printf '%s' "$pr" | sed -nE 's;https?://[^/]+/([^/]+)/([^/]+)/pull/(
 [[ -z "$pr_short" ]] && pr_short="PRs"
 
 # Workspace (clickable VS Code link in WSL).
+# shellcheck disable=SC1003 # \e\\ is the OSC-8 ST terminator, not a quote escape
 printf '\e]8;;vscode://vscode-remote/wsl+%s%s\e\\\e[01;34m%s\e[0m\e]8;;\e\\' \
   "${WSL_DISTRO_NAME:-}" "$dir" "$short"
 
@@ -81,6 +82,7 @@ fi
 
 # PR link (clickable when a concrete PR URL is known).
 if [[ -n "$pr" ]]; then
+  # shellcheck disable=SC1003 # \e\\ is the OSC-8 ST terminator, not a quote escape
   printf ' | \e]8;;%s\e\\\e[31m%s\e[0m\e]8;;\e\\' "$pr" "$pr_short"
 fi
 
