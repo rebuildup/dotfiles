@@ -5,17 +5,19 @@
  * Uses mocks and stubs - does not import the main agent launcher.
  */
 
-import { describe, it, expect, beforeAll, afterAll } from "bun:test";
+import { describe, it, expect, beforeAll, afterAll, afterEach } from "bun:test";
 import {
   dispatchTask,
   startTaskAttempt,
   collectTaskAttempt,
-  handleFallback,
+  recordAttemptOutcome,
   getTaskStatus,
   loadTaskState,
   saveTaskState,
+  buildAgentStartOptions,
 } from "./agent/task.ts";
 import { ContractError } from "./agent/contract.ts";
+import { type Provider } from "./agent.ts";
 import { rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { agentStateDir } from "./agent/contract.ts";
@@ -47,17 +49,30 @@ afterAll(() => {
 // Mock config for tests
 // ---------------------------------------------------------------------------
 
+const MOCK_PROVIDER = {
+  key: "mock",
+  label: "Mock",
+  base_url: null,
+  require_model: true,
+  opencode_id: "mock",
+  omp_id: "mock",
+  anonymous: false,
+  opencode_npm: null,
+  opencode_models: {},
+  opencode_base_url: null,
+};
+
 const MOCK_CONFIG = {
   path: "/fake/config/agents.toml",
   providers: {
-    mistral: { models: ["zai-glm-5-3-flash"], require_infisical: true, secret: "MISTRAL_API_KEY", env: "MISTRAL_API_KEY", require_model: true, default_model: "zai-glm-5-3-flash" },
-    openrouter: { models: ["z-ai/glm-5.3-flash"], require_infisical: false, secret: "OPENROUTER_API_KEY", env: "OPENROUTER_API_KEY", require_model: false, default_model: "z-ai/glm-5.3-flash" },
-    "openrouter-free": { models: ["nvidia/nemotron-3-ultra-550b-a55b:free"], require_infisical: false, secret: "OPENROUTER_API_KEY", env: "OPENROUTER_API_KEY", require_model: true, default_model: "nvidia/nemotron-3-ultra-550b-a55b:free" },
+    mistral: { ...MOCK_PROVIDER, key: "mistral", models: ["zai-glm-5-3-flash"], require_infisical: true, secret: "MISTRAL_API_KEY", env: "MISTRAL_API_KEY", default_model: "zai-glm-5-3-flash" },
+    openrouter: { ...MOCK_PROVIDER, key: "openrouter", models: ["z-ai/glm-5.3-flash"], require_infisical: false, secret: "OPENROUTER_API_KEY", env: "OPENROUTER_API_KEY", default_model: "z-ai/glm-5.3-flash" },
+    "openrouter-free": { ...MOCK_PROVIDER, key: "openrouter-free", models: ["nvidia/nemotron-3-ultra-550b-a55b:free"], require_infisical: false, secret: "OPENROUTER_API_KEY", env: "OPENROUTER_API_KEY", default_model: "nvidia/nemotron-3-ultra-550b-a55b:free" },
   },
   routes: {
-    "omp.mistral": { provider: "mistral", models: ["zai-glm-5-3-flash"], require_model: true, default_model: "zai-glm-5-3-flash", note: "" },
-    "omp.openrouter": { provider: "openrouter", models: ["z-ai/glm-5.3-flash"], require_model: false, default_model: "z-ai/glm-5.3-flash", note: "" },
-    "omp.openrouter-free": { provider: "openrouter", models: ["nvidia/nemotron-3-ultra-550b-a55b:free"], require_model: true, default_model: "nvidia/nemotron-3-ultra-550b-a55b:free", note: "" },
+    "omp.mistral": { key: "omp.mistral", harness: "omp", provider: "mistral", models: ["zai-glm-5-3-flash"], require_model: true, default_model: "zai-glm-5-3-flash", note: "" },
+    "omp.openrouter": { key: "omp.openrouter", harness: "omp", provider: "openrouter", models: ["z-ai/glm-5.3-flash"], require_model: false, default_model: "z-ai/glm-5.3-flash", note: "" },
+    "omp.openrouter-free": { key: "omp.openrouter-free", harness: "omp", provider: "openrouter", models: ["nvidia/nemotron-3-ultra-550b-a55b:free"], require_model: true, default_model: "nvidia/nemotron-3-ultra-550b-a55b:free", note: "" },
   },
   harnesses: {
     omp: { adapter: "omp", key: "omp", label: "Oh My Pi", command: "omp", env: {} },
@@ -101,7 +116,9 @@ describe("Task state persistence", () => {
 });
 
 describe("dispatchTask", () => {
-  it("creates a task attempt with valid route", async () => {
+  it("rejects a route whose provider is not configured", async () => {
+    // The dispatch contract is checked before any Herdr work happens, so
+    // this needs no live agent.
     const descriptor = {
       id: "test-task-dispatch-1",
       class: "simple" as const,
@@ -112,19 +129,27 @@ describe("dispatchTask", () => {
       dependencies: [],
       metadata: {},
     };
-    
-    const result = await dispatchTask(MOCK_CONFIG, descriptor);
-    
-    expect(result.taskId).toBe("test-task-dispatch-1");
-    expect(result.attempt.taskId).toBe("test-task-dispatch-1");
-    expect(result.attempt.route.harness).toBe("omp");
-    expect(result.attempt.route.provider).toBe("mistral");
-    expect(result.attempt.model).toBe("zai-glm-5-3-flash");
-    expect(result.attempt.status).toBe("running");
-    expect(result.attempt.attemptNumber).toBe(1);
-    expect(result.attempt.generation).toBe(1);
-    expect(result.attempt.herdrPaneId).toBeDefined();
-    expect(result.attempt.herdrWorkspaceId).toBeDefined();
+    const config = {
+      ...MOCK_CONFIG,
+      providers: { ...MOCK_CONFIG.providers, mistral: undefined as unknown as Provider },
+    } as unknown as typeof MOCK_CONFIG;
+
+    await expect(dispatchTask(config, descriptor)).rejects.toThrow(/Provider not configured/);
+  });
+
+  it("rejects a model the route does not allow", async () => {
+    const descriptor = {
+      id: "test-task-dispatch-1",
+      class: "simple" as const,
+      route: "omp.mistral",
+      model: "not-an-allowed-model",
+      prompt: "test prompt",
+      acceptanceCriteria: [],
+      dependencies: [],
+      metadata: {},
+    };
+
+    await expect(dispatchTask(MOCK_CONFIG, descriptor)).rejects.toThrow(/Model not allowed/);
   });
 
   it("throws for invalid route", async () => {
@@ -303,8 +328,10 @@ describe("Task state management", () => {
   });
 });
 
-describe("startTaskAttempt (simulated)", () => {
-  it("returns success for valid attempt", async () => {
+describe("startTaskAttempt", () => {
+  it("reports the classified reason when no worker is attached", async () => {
+    // Without a worker there is nothing to prompt: the attempt must fail
+    // loudly rather than report a success it cannot have produced.
     const attempt = {
       id: "attempt-test-1",
       taskId: "test-start-1",
@@ -315,17 +342,13 @@ describe("startTaskAttempt (simulated)", () => {
       status: "running" as const,
       generation: 1,
     };
-    
-    const result = await startTaskAttempt(MOCK_CONFIG, attempt, "test prompt");
-    
-    // In simulation mode, should return success
-    expect(result.success).toBe(true);
-    expect(result.result).toBeDefined();
+
+    await expect(startTaskAttempt(MOCK_CONFIG, attempt, "test prompt")).rejects.toThrow(ContractError);
   });
 });
 
-describe("collectTaskAttempt (simulated)", () => {
-  it("collects result for completed attempt", async () => {
+describe("collectTaskAttempt", () => {
+  it("reports failure when no worker is attached", async () => {
     const attempt = {
       id: "attempt-collect-1",
       taskId: "test-collect-1",
@@ -337,17 +360,17 @@ describe("collectTaskAttempt (simulated)", () => {
       status: "completed" as const,
       generation: 1,
     };
-    
+
     const result = await collectTaskAttempt(attempt);
-    
+
     expect(result.taskId).toBe("test-collect-1");
-    expect(result.success).toBe(true);
-    expect(result.result).toBeDefined();
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe("unknown");
   });
 });
 
-describe("handleFallback", () => {
-  it("returns null when no fallback profile", async () => {
+describe("recordAttemptOutcome", () => {
+  it("records a failed attempt with its classified reason", () => {
     const attempt = {
       id: "attempt-fallback-1",
       taskId: "test-fallback-1",
@@ -355,42 +378,14 @@ describe("handleFallback", () => {
       model: "zai-glm-5-3-flash",
       attemptNumber: 1,
       startedAt: new Date().toISOString(),
-      status: "failed" as const,
+      status: "running" as const,
       generation: 1,
     };
-    
-    const result = await handleFallback(MOCK_CONFIG, "test-fallback-1", attempt, {
-      class: "billing",
-      observedAt: new Date().toISOString(),
-      resetAt: null,
-      retryAfterMs: null,
-      exhausted: false,
-      reason: "Payment required",
-      quotaScopeKey: null,
-    });
-    
-    // No profile ID = no fallback
-    expect(result).toBeNull();
-  });
 
-  it("respects max attempts limit", async () => {
-    // Create state with 5 failed attempts
-    const history = Array.from({ length: 5 }, (_, i) => ({
-      id: `attempt-${i}`,
-      taskId: "test-max-attempts",
-      route: { harness: "omp", provider: "mistral" },
-      model: "zai-glm-5-3-flash",
-      attemptNumber: i + 1,
-      startedAt: new Date().toISOString(),
-      endedAt: new Date().toISOString(),
-      status: "failed" as const,
-      generation: i + 1,
-    }));
-    
-    saveTaskState("test-max-attempts", {
+    saveTaskState("test-fallback-1", {
       descriptor: {
-        id: "test-max-attempts",
-        class: "simple",
+        id: "test-fallback-1",
+        class: "simple" as const,
         route: "omp.mistral",
         model: "zai-glm-5-3-flash",
         prompt: "test",
@@ -398,34 +393,83 @@ describe("handleFallback", () => {
         dependencies: [],
         metadata: {},
       },
-      history,
-      currentAttempt: history[4],
+      history: [attempt],
+      currentAttempt: attempt,
     });
-    
+
+    const recorded = recordAttemptOutcome("test-fallback-1", attempt, {
+      status: "failed",
+      error: {
+        category: "auth",
+        observedAt: new Date().toISOString(),
+        resetAt: null,
+        retryAfterMs: null,
+        exhausted: false,
+        reason: "credential or authorization failure; not transient",
+        quotaScopeKey: null,
+      },
+    });
+
+    expect(recorded).not.toBeNull();
+    expect(recorded!.status).toBe("failed");
+    expect(recorded!.error?.category).toBe("auth");
+
+    // The classified reason is durable: a resumed task can tell an auth
+    // failure from a quota exhaustion without re-deriving it.
+    const reloaded = loadTaskState("test-fallback-1");
+    expect(reloaded!.currentAttempt!.error?.category).toBe("auth");
+    expect(reloaded!.history).toHaveLength(1);
+  });
+
+  it("records a completed attempt with its result", () => {
     const attempt = {
-      id: "attempt-5",
-      taskId: "test-max-attempts",
+      id: "attempt-completed-1",
+      taskId: "test-completed-1",
       route: { harness: "omp", provider: "mistral" },
       model: "zai-glm-5-3-flash",
-      profileId: "omp-mistral-quota",
-      attemptNumber: 5,
+      attemptNumber: 1,
       startedAt: new Date().toISOString(),
-      status: "failed" as const,
-      generation: 5,
+      status: "running" as const,
+      generation: 1,
     };
-    
-    const result = await handleFallback(MOCK_CONFIG, "test-max-attempts", attempt, {
-      class: "rate-limit",
-      observedAt: new Date().toISOString(),
-      resetAt: null,
-      retryAfterMs: 60000,
-      exhausted: false,
-      reason: "Rate limited",
-      quotaScopeKey: null,
+
+    saveTaskState("test-completed-1", {
+      descriptor: {
+        id: "test-completed-1",
+        class: "simple" as const,
+        route: "omp.mistral",
+        model: "zai-glm-5-3-flash",
+        prompt: "test",
+        acceptanceCriteria: [],
+        dependencies: [],
+        metadata: {},
+      },
+      history: [attempt],
+      currentAttempt: attempt,
     });
-    
-    // Should return null after 5 attempts
-    expect(result).toBeNull();
+
+    const recorded = recordAttemptOutcome("test-completed-1", attempt, {
+      status: "completed",
+      result: { output: "done" },
+    });
+
+    expect(recorded!.status).toBe("completed");
+    expect(recorded!.error).toBeUndefined();
+    expect(loadTaskState("test-completed-1")!.currentAttempt!.status).toBe("completed");
+  });
+
+  it("returns null for an unknown task", () => {
+    const attempt = {
+      id: "attempt-unknown-1",
+      taskId: "test-unknown-task",
+      route: { harness: "omp", provider: "mistral" },
+      model: "zai-glm-5-3-flash",
+      attemptNumber: 1,
+      startedAt: new Date().toISOString(),
+      status: "running" as const,
+      generation: 1,
+    };
+    expect(recordAttemptOutcome("test-unknown-task", attempt, { status: "failed" })).toBeNull();
   });
 });
 
@@ -484,5 +528,126 @@ describe("getTaskStatus", () => {
       
       expect(result!.overallStatus).toBe(expected);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// OMP provider aggregation: the worker must start on the route's own
+// provider (the provider id OMP knows) and pin its model roles, so a worker
+// never runs against a different account than the route authorized.
+// ---------------------------------------------------------------------------
+
+describe("buildAgentStartOptions", () => {
+  const provider = (over: Partial<Provider> = {}): Provider => ({
+    key: "test",
+    label: "Test",
+    base_url: null,
+    secret: null,
+    env: null,
+    default_model: null,
+    require_model: false,
+    models: [],
+    opencode_id: "test",
+    omp_id: "test",
+    require_infisical: false,
+    anonymous: false,
+    opencode_npm: null,
+    opencode_models: {},
+    opencode_base_url: null,
+    ...over,
+  });
+
+  it("passes the provider id OMP knows, not the launcher route key", () => {
+    const opts = buildAgentStartOptions(
+      provider({ key: "openrouter-free", omp_id: "openrouter" }),
+      "nvidia/nemotron-3-ultra-550b-a55b:free",
+    );
+    expect(opts).toEqual(["--", "--provider", "openrouter", "--model", "nvidia/nemotron-3-ultra-550b-a55b:free"]);
+  });
+
+  it("includes every omp route's provider, including ones added later", () => {
+    // A provider missing from the option builder would start the worker on
+    // OMP's default provider instead of the route's own.
+    const opts = buildAgentStartOptions(provider({ key: "groq", omp_id: "groq" }), "openai/gpt-oss-120b");
+    expect(opts).toContain("--provider");
+    expect(opts[opts.indexOf("--provider") + 1]).toBe("groq");
+  });
+
+  it("pins the model roles for credentialed providers", () => {
+    const opts = buildAgentStartOptions(
+      provider({ key: "kilo", omp_id: "kilo", require_infisical: true }),
+      "nvidia/nemotron-3-ultra-550b-a55b:free",
+    );
+    const selector = "kilo/nvidia/nemotron-3-ultra-550b-a55b:free";
+    expect(opts).toContain("--smol");
+    expect(opts).toContain("--slow");
+    expect(opts).toContain("--plan");
+    expect(opts[opts.indexOf("--smol") + 1]).toBe(selector);
+    expect(opts[opts.indexOf("--slow") + 1]).toBe(selector);
+    expect(opts[opts.indexOf("--plan") + 1]).toBe(selector);
+  });
+
+  it("omits model-role pinning for providers without Infisical credentials", () => {
+    const opts = buildAgentStartOptions(provider({ key: "openrouter", omp_id: "openrouter" }), "z-ai/glm-5.3-flash");
+    expect(opts).not.toContain("--smol");
+    expect(opts).not.toContain("--slow");
+    expect(opts).not.toContain("--plan");
+  });
+
+  it("refuses an anonymous provider: OMP has no credential-free route", () => {
+    expect(() => buildAgentStartOptions(provider({ key: "ovhcloud", anonymous: true }), "gpt-oss-120b")).toThrow(ContractError);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Worker credentials: a Herdr worker inherits the Herdr SERVER's
+// environment, so the route's credential must be passed explicitly. Without
+// it the worker starts, accepts the prompt, and then fails with
+// "No API key found for <provider>" — which looks like a provider-side
+// rejection rather than a missing credential.
+// ---------------------------------------------------------------------------
+
+describe("worker credential injection", () => {
+  const ORIGINAL = { ...process.env };
+
+  afterEach(() => {
+    for (const key of Object.keys(process.env)) {
+      if (!(key in ORIGINAL)) delete process.env[key];
+    }
+    for (const [key, value] of Object.entries(ORIGINAL)) {
+      if (value !== undefined) process.env[key] = value;
+    }
+  });
+
+  it("fails before starting a worker when the credential is absent", async () => {
+    delete process.env.TEST_ROUTE_KEY;
+    const config = {
+      path: "/fake/config/agents.toml",
+      providers: {
+        mistral: {
+          key: "mistral", label: "Mistral", base_url: null, secret: "TEST_ROUTE_KEY",
+          env: "TEST_ROUTE_KEY", default_model: "m", require_model: false, models: ["m"],
+          opencode_id: "mistral", omp_id: "mistral", require_infisical: true, anonymous: false,
+          opencode_npm: null, opencode_models: {}, opencode_base_url: null,
+        },
+      },
+      harnesses: { omp: { key: "omp", label: "OMP", command: "omp", adapter: "omp", env: {} } },
+      routes: {
+        "omp.mistral": {
+          key: "omp.mistral", harness: "omp", provider: "mistral", default_model: "m",
+          models: ["m"], require_model: false, note: "",
+        },
+      },
+      drop_env: [],
+    } as unknown as Parameters<typeof dispatchTask>[0];
+
+    await expect(
+      dispatchTask(config, {
+        id: "test-missing-cred",
+        route: "omp.mistral",
+        model: "m",
+        prompt: "test",
+      }),
+    ).rejects.toThrow(/TEST_ROUTE_KEY/);
   });
 });

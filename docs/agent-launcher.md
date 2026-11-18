@@ -41,6 +41,9 @@ agent fallback <profile-id> [--json]
 | `script/agent/fallback.ts` | Opt-in continuity profile (issue #136) |
 | `script/agent/fallback-exec.ts` | Same-harness fallback execution (issue #139) |
 
+Router execution contract (primary-first, classified verdicts, per-candidate
+worker and credential): [ADR-0019](adr/ADR-0019.md).
+
 ## Free-tier providers ($0, explicit opt-in)
 
 Policy: [ADR-0018](adr/ADR-0018.md). Measurements:
