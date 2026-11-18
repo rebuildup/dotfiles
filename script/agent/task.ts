@@ -45,6 +45,7 @@ import {
   type HerdrTaskMapping,
 } from "./herdr.ts";
 import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import {
   withFileLock,
@@ -167,12 +168,19 @@ const TASK_ID_SAFE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const taskAttemptStore = new FsAttemptStore();
 const taskJournalStore = new FsJournalStore();
 
-function taskAttemptKey(attempt: Pick<TaskAttempt, "route" | "model" | "taskId">): string {
+/**
+ * The fencing/journal identity of a task is its DISPATCH identity
+ * (descriptor route+model+taskId) — never the serving attempt's route,
+ * which changes when a fallback candidate serves. Deriving the key from
+ * the recorded attempt would orphan the lease and journal history after
+ * every successful fallback.
+ */
+function taskAttemptKey(descriptor: { route: string; model: string; id: string }): string {
   return formatAttemptKey({
-    route: formatRouteId(attempt.route),
-    model: attempt.model,
+    route: descriptor.route,
+    model: descriptor.model,
     machine: "",
-    attempt: attempt.taskId,
+    attempt: descriptor.id,
   });
 }
 
@@ -186,6 +194,14 @@ function assertNoPendingEffects(attemptKey: string, taskId: string): void {
         "a pre-without-post effect is UNKNOWN — reconcile externally before replay",
     );
   }
+}
+
+let effectSeq = 0;
+/** Unique, journal-parseable effect id: repeated prompts on one worker
+ *  are distinct effects; a crash between pre and post still blocks replay. */
+function uniqueEffectId(kind: string, target: string): string {
+  const id = `${kind}-${target}-${(effectSeq++).toString(36)}-${Date.now().toString(36)}`;
+  return id.slice(0, 64).replace(/[^A-Za-z0-9._-]/g, "-");
 }
 
 /** Run `fn` between journal pre/post entries under the caller's lease. */
@@ -210,8 +226,11 @@ async function journaledEffect<T>(
 }
 
 /** Acquire the exclusive execution lease for a task attempt. */
-function acquireTaskLease(attempt: TaskAttempt, owner: string): Lease {
-  const attemptKey = taskAttemptKey(attempt);
+function acquireTaskLease(
+  descriptor: { route: string; model: string; id: string },
+  owner: string,
+): Lease {
+  const attemptKey = taskAttemptKey(descriptor);
   return acquireLease(taskAttemptStore, attemptKey, owner, {
     now: Date.now(),
     leaseMs: 6 * 60 * 60 * 1000,
@@ -955,7 +974,7 @@ export async function startTaskAttempt(
         // run the primary again instead of the candidate the profile
         // authorized.
         if (candidate === null) {
-          const promptResult = await journaledEffect(opts?.lease, `prompt-${attempt.herdrWorkerName}`, "worker-prompt", attempt.herdrWorkerName!, () =>
+          const promptResult = await journaledEffect(opts?.lease, uniqueEffectId("prompt", attempt.herdrWorkerName!), "prompt-send", attempt.herdrWorkerName!, () =>
             promptAgent(attempt.herdrWorkerName!, prompt, { wait: true, timeoutMs: promptTimeoutMs }));
           const signal = promptFailureSignal(promptResult);
           if (signal) {
@@ -992,14 +1011,20 @@ export async function startTaskAttempt(
         preparedProviders.set(routeRef.provider, candidatePrepared);
         await verifyOmpManagedCredential(candidateProvider);
         const options = buildAgentStartOptions(candidateProvider, model, candidatePrepared);
-        const candidateAttempt = await startCandidateWorker(attempt, workerName, options, {
-          ...taskWorkerEnv(candidateProvider),
-          OMP_SKIP_SETUP: "1",
-        });
+        const candidateAttempt = await journaledEffect(
+          opts?.lease,
+          uniqueEffectId("dispatch", workerName),
+          "worker-start",
+          workerName,
+          () => startCandidateWorker(attempt, workerName, options, {
+            ...taskWorkerEnv(candidateProvider),
+            OMP_SKIP_SETUP: "1",
+          }),
+        );
 
         let outcome: { success: boolean; error?: FailureSignal; result?: unknown } | undefined;
         try {
-          const promptResult = await journaledEffect(opts?.lease, `prompt-${candidateAttempt.workerName}`, "worker-prompt", candidateAttempt.workerName, () =>
+          const promptResult = await journaledEffect(opts?.lease, uniqueEffectId("prompt", candidateAttempt.workerName), "prompt-send", candidateAttempt.workerName, () =>
             promptAgent(candidateAttempt.workerName, prompt, { wait: true, timeoutMs: promptTimeoutMs }));
           const signal = promptFailureSignal(promptResult);
           if (signal) {
@@ -1051,7 +1076,7 @@ export async function startTaskAttempt(
       };
     } else {
       // No fallback profile - single route execution
-      const promptResult = await journaledEffect(opts?.lease, `prompt-${attempt.herdrWorkerName}`, "worker-prompt", attempt.herdrWorkerName!, () =>
+      const promptResult = await journaledEffect(opts?.lease, uniqueEffectId("prompt", attempt.herdrWorkerName!), "prompt-send", attempt.herdrWorkerName!, () =>
         promptAgent(attempt.herdrWorkerName!, prompt, { wait: true, timeoutMs: promptTimeoutMs }));
       const signal = promptFailureSignal(promptResult);
       if (signal) {
@@ -1216,6 +1241,52 @@ function withTaskLock<T>(taskId: string, fn: () => T): T {
 // High-level task orchestration
 // ---------------------------------------------------------------------------
 
+export interface WorkspaceBaseline {
+  headSha: string | null;
+  dirtyCount: number;
+  unpushedCount: number | null;
+}
+
+function gitOut(args: string[]): string | null {
+  const r = spawnSync("git", args, { cwd: process.cwd(), encoding: "utf8", timeout: 10000 });
+  if (r.status !== 0) return null;
+  return r.stdout.trim();
+}
+
+/**
+ * Observable workspace state for side-effect reconciliation: HEAD, dirty
+ * entry count, and unpushed commit count. Worker-internal effects (commits,
+ * pushes, file writes) cannot be journaled by the router — this baseline is
+ * the external observation the next run/resume compares against. Anything
+ * unobservable stays null and is reported as such, never assumed safe.
+ */
+export function captureWorkspaceBaseline(): WorkspaceBaseline | null {
+  const head = gitOut(["rev-parse", "HEAD"]);
+  if (head === null) return null; // not a git worktree — nothing observable
+  const status = gitOut(["status", "--porcelain"]);
+  const unpushed = gitOut(["rev-list", "--count", "@{u}..HEAD"]);
+  return {
+    headSha: head,
+    dirtyCount: status === null ? -1 : status.split("\n").filter((l) => l.trim() !== "").length,
+    unpushedCount: unpushed === null ? null : Number(unpushed),
+  };
+}
+
+function workspaceDrift(
+  before: WorkspaceBaseline | null | undefined,
+  after: WorkspaceBaseline | null,
+): { before: WorkspaceBaseline | null; after: WorkspaceBaseline | null; changed: boolean | null } | null {
+  if (!before || !after) return null;
+  return {
+    before,
+    after,
+    changed:
+      before.headSha !== after.headSha ||
+      before.dirtyCount !== after.dirtyCount ||
+      before.unpushedCount !== after.unpushedCount,
+  };
+}
+
 /**
  * Execute each declared acceptance criterion as a shell command in the
  * task's working directory and report per-check exit status. Criteria are
@@ -1270,11 +1341,11 @@ export async function runTaskToCompletion(
 
   // Exclusive execution lease: fences any concurrent resume/dispatch on the
   // same task and anchors journal pre/post entries for this run.
-  const lease = acquireTaskLease(attempt, `task-${process.pid}`);
+  const lease = acquireTaskLease(descriptor, `task-${process.pid}`);
   try {
   // Unreconciled effects from a previous run block replay — never assume
   // an interrupted operation did not happen.
-  assertNoPendingEffects(taskAttemptKey(attempt), descriptor.id);
+  assertNoPendingEffects(taskAttemptKey(descriptor), descriptor.id);
 
   // Start the attempt
   const startResult = await startTaskAttempt(config, attempt, descriptor.prompt, {
@@ -1318,9 +1389,11 @@ export async function runTaskToCompletion(
   // status`, history and any later resume all see the same outcome.
   const accepted = acceptance === undefined || acceptance.verified;
   const taskSucceeded = collected.success && accepted;
-  const storedResult = isPlainObject(collected.result)
-    ? { ...collected.result, ...(acceptance ? { acceptance } : {}) }
-    : { value: collected.result, ...(acceptance ? { acceptance } : {}) };
+  const storedResult = {
+    ...(isPlainObject(collected.result) ? collected.result : { value: collected.result }),
+    ...(acceptance ? { acceptance } : {}),
+    workspaceBaseline: captureWorkspaceBaseline(),
+  };
   const outcomeError: ClassifiedError | undefined = !collected.success
     ? collected.error
     : !accepted
@@ -1434,12 +1507,12 @@ export async function resumeTaskAttempt(
   // resumes must not both reach the worker. The attempts.ts generation
   // advance fences any stale lease holder; pending journal effects block
   // replay until externally reconciled.
-  const attemptKey = taskAttemptKey(resumed);
+  const attemptKey = taskAttemptKey(state.descriptor);
   assertNoPendingEffects(attemptKey, taskId);
-  const lease = acquireTaskLease(resumed, `resume-${process.pid}`);
+  const lease = acquireTaskLease(state.descriptor, `resume-${process.pid}`);
   let promptResult;
   try {
-    promptResult = await journaledEffect(lease, `prompt-${resumed.herdrWorkerName}`, "worker-prompt", resumed.herdrWorkerName!, () =>
+    promptResult = await journaledEffect(lease, uniqueEffectId("prompt", resumed.herdrWorkerName!), "prompt-send", resumed.herdrWorkerName!, () =>
       promptAgent(resumed.herdrWorkerName!, prompt, { wait: true, timeoutMs: promptTimeoutMs }));
   } finally {
     // The lease covers prompt dispatch; outcome recording below is protected
@@ -1480,14 +1553,25 @@ export async function resumeTaskAttempt(
   // worker success without verified criteria is not task completion.
   const persisted = loadTaskState(taskId);
   const criteria = persisted?.descriptor.acceptanceCriteria ?? [];
+  const prevResult = isPlainObject(persisted?.currentAttempt?.result)
+    ? persisted.currentAttempt.result
+    : null;
+  const prevBaseline = isPlainObject(prevResult) && isPlainObject(prevResult["workspaceBaseline"])
+    ? (prevResult["workspaceBaseline"] as unknown as WorkspaceBaseline)
+    : null;
+  const baselineBefore = captureWorkspaceBaseline();
   const acceptance = collected.success && criteria.length
     ? await verifyAcceptanceCriteria(criteria, process.cwd(), Math.min(opts?.timeoutMs ?? 120000, 120000))
     : undefined;
   const accepted = acceptance === undefined || acceptance.verified;
   const taskSucceeded = collected.success && accepted;
-  const storedResult = isPlainObject(collected.result)
-    ? { ...collected.result, ...(acceptance ? { acceptance } : {}) }
-    : { value: collected.result, ...(acceptance ? { acceptance } : {}) };
+  const drift = workspaceDrift(prevBaseline ?? baselineBefore, captureWorkspaceBaseline());
+  const storedResult = {
+    ...(isPlainObject(collected.result) ? collected.result : { value: collected.result }),
+    ...(acceptance ? { acceptance } : {}),
+    workspaceBaseline: captureWorkspaceBaseline(),
+    ...(drift ? { workspaceDrift: drift } : {}),
+  };
   recordAttemptOutcome(taskId, resumed, {
     status: taskSucceeded ? "completed" : "failed",
     error: !collected.success
