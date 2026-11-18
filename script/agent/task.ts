@@ -42,7 +42,7 @@ import {
   saveHerdrTaskMapping,
   type HerdrTaskMapping,
 } from "./herdr.ts";
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 
@@ -96,12 +96,30 @@ export interface TaskStatus {
   overallStatus: "pending" | "running" | "completed" | "failed" | "blocked" | "awaiting-fallback";
 }
 
+export interface AcceptanceCheck {
+  command: string;
+  exitCode: number | null;
+  timedOut: boolean;
+}
+
+export interface AcceptanceReport {
+  /** true only when EVERY declared criterion exited 0. */
+  verified: boolean;
+  checks: AcceptanceCheck[];
+}
+
 export interface CollectResult {
   taskId: string;
   attempt: TaskAttempt;
   success: boolean;
   result?: unknown;
   error?: ClassifiedError;
+  /**
+   * Acceptance-criteria verification, kept DISTINCT from worker success
+   * (ADR-0017 §5: agent output is not proof of task completion). Present
+   * only when the descriptor declared `acceptanceCriteria`.
+   */
+  acceptance?: AcceptanceReport;
 }
 
 // ---------------------------------------------------------------------------
@@ -116,7 +134,12 @@ function ensureTaskStateDir(): void {
   }
 }
 
+const TASK_ID_SAFE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
 function taskStatePath(taskId: string): string {
+  if (!TASK_ID_SAFE.test(taskId)) {
+    throw new ContractError("schema", `unsafe task id for state path: '${taskId}'`);
+  }
   return join(TASK_STATE_DIR, `${taskId}.json`);
 }
 
@@ -126,7 +149,12 @@ export function saveTaskState(taskId: string, state: {
   currentAttempt: TaskAttempt | null;
 }): void {
   ensureTaskStateDir();
-  writeFileSync(taskStatePath(taskId), JSON.stringify(state, null, 2));
+  // Atomic publish: a crash mid-write must never leave a truncated state
+  // file that loadTaskState would reject (or worse, misparses).
+  const path = taskStatePath(taskId);
+  const tmp = `${path}.tmp-${process.pid}`;
+  writeFileSync(tmp, JSON.stringify(state, null, 2));
+  renameSync(tmp, path);
 }
 
 const ATTEMPT_STATUSES: readonly TaskAttempt["status"][] = [
@@ -444,7 +472,7 @@ export async function dispatchTask(
 
   // Credential presence is checked before any launcher-side guard so a
   // missing credential reports itself, not a downstream guard error.
-  const workerEnv = routeWorkerEnv(provider);
+  const workerEnv = taskWorkerEnv(provider);
   // Side-effecting launch checks shared with the interactive path: managed
   // models.yml integrity, credential-source guard, implicit-switch guard.
   // A Herdr worker cannot re-run them inside __exec, so they run here,
@@ -527,17 +555,19 @@ export async function dispatchTask(
  * produced a response.
  */
 function promptFailureSignal(promptResult: { blocked?: boolean; stalled?: boolean; errorCode?: string }): FailureSignal | null {
+  // Herdr lifecycle state is NOT provider evidence: a blocked or stalled
+  // worker says nothing about the provider's HTTP response, so no status,
+  // exit code or failure kind may be fabricated. The signal carries only
+  // the lifecycle marker in errorKind and classifies as `unknown`, which
+  // fails closed — fallback never advances on a guessed 401/402/403/429.
   if (promptResult.blocked) {
-    return { httpStatus: 403, exitCode: 403, failureKind: "forbidden", retryAfterMs: null, resetAt: null, usage: [], errorKind: "agent-blocked" };
+    return { httpStatus: null, exitCode: null, failureKind: null, retryAfterMs: null, resetAt: null, usage: [], errorKind: "agent-blocked" };
   }
   if (promptResult.stalled) {
-    // The prompt never reached a working state: a transport/timeout failure,
-    // not an authorization one. The exact cause is preserved in errorKind so
-    // the classified reason stays distinguishable.
     return {
-      httpStatus: 504,
-      exitCode: 124,
-      failureKind: "timeout",
+      httpStatus: null,
+      exitCode: null,
+      failureKind: null,
       retryAfterMs: null,
       resetAt: null,
       usage: [],
@@ -584,6 +614,29 @@ export function routeWorkerEnv(provider: Provider): Record<string, string> {
     );
   }
   return { [envName]: value };
+}
+
+/**
+ * Credential handoff policy for the Herdr task path (`agent task run` and
+ * fallback candidates). Herdr 0.9.5 offers only `--env NAME=VALUE`, which
+ * places the secret in process argv and server state; there is no
+ * secret-safe channel (pane run/send-text are argv channels too). Until
+ * Herdr grows one, the task path is fail-closed for ambient-credential
+ * providers: managed-profile providers resolve the secret inside OMP via
+ * `apiKey: "!infisical-key.sh <NAME>"` and anonymous providers need
+ * nothing, so both return {}. The interactive launcher is unaffected —
+ * ambient credentials remain valid there.
+ */
+function taskWorkerEnv(provider: Provider): Record<string, string> {
+  if (provider.anonymous) return {};
+  if (provider.secret && (provider.omp_custom || provider.require_infisical)) return {};
+  throw new ContractError(
+    "policy",
+    `provider '${provider.key}' uses an ambient credential that would transit ` +
+      "Herdr --env argv; agent task run supports managed-profile (Infisical-" +
+      "resolved) and anonymous providers only. Use the interactive launcher " +
+      "for this route.",
+  );
 }
 
 /**
@@ -740,8 +793,12 @@ function recordCandidateAttempt(
 export async function startTaskAttempt(
   config: Config,
   attempt: TaskAttempt,
-  prompt: string
+  prompt: string,
+  opts?: { timeoutMs?: number }
 ): Promise<{ success: boolean; error?: ClassifiedError; result?: unknown; workerName?: string; paneId?: string }> {
+  // --timeout propagates to every prompt wait in this attempt (primary and
+  // each fallback candidate); the default matches the previous fixed bound.
+  const promptTimeoutMs = opts?.timeoutMs ?? 300000;
   if (!attempt.herdrWorkerName || !attempt.herdrPaneId) {
     throw new ContractError("state", "No Herdr worker name or pane in attempt");
   }
@@ -760,7 +817,7 @@ export async function startTaskAttempt(
         // run the primary again instead of the candidate the profile
         // authorized.
         if (candidate === null) {
-          const promptResult = await promptAgent(attempt.herdrWorkerName!, prompt, { wait: true, timeoutMs: 300000 });
+          const promptResult = await promptAgent(attempt.herdrWorkerName!, prompt, { wait: true, timeoutMs: promptTimeoutMs });
           const signal = promptFailureSignal(promptResult);
           if (signal) return { success: false, error: signal };
           const output = await readWorkerOutput(attempt.herdrWorkerName!);
@@ -790,13 +847,13 @@ export async function startTaskAttempt(
         await verifyOmpManagedCredential(candidateProvider);
         const options = buildAgentStartOptions(candidateProvider, model, candidatePrepared);
         const candidateAttempt = await startCandidateWorker(attempt, workerName, options, {
-          ...routeWorkerEnv(candidateProvider),
+          ...taskWorkerEnv(candidateProvider),
           OMP_SKIP_SETUP: "1",
         });
 
         let outcome: { success: boolean; error?: FailureSignal; result?: unknown } | undefined;
         try {
-          const promptResult = await promptAgent(candidateAttempt.workerName, prompt, { wait: true, timeoutMs: 300000 });
+          const promptResult = await promptAgent(candidateAttempt.workerName, prompt, { wait: true, timeoutMs: promptTimeoutMs });
           const signal = promptFailureSignal(promptResult);
           if (signal) {
             outcome = { success: false, error: signal };
@@ -839,7 +896,7 @@ export async function startTaskAttempt(
       };
     } else {
       // No fallback profile - single route execution
-      const promptResult = await promptAgent(attempt.herdrWorkerName!, prompt, { wait: true, timeoutMs: 300000 });
+      const promptResult = await promptAgent(attempt.herdrWorkerName!, prompt, { wait: true, timeoutMs: promptTimeoutMs });
       const signal = promptFailureSignal(promptResult);
       if (signal) return { success: false, error: classifyFailure(signal, new Date().toISOString()) };
       const output = await readWorkerOutput(attempt.herdrWorkerName!);
@@ -976,6 +1033,39 @@ export function recordAttemptOutcome(
 // ---------------------------------------------------------------------------
 
 /**
+ * Execute each declared acceptance criterion as a shell command in the
+ * task's working directory and report per-check exit status. Criteria are
+ * user-supplied at dispatch (`--accept`), so this is the same trust level
+ * as the operator running them; output is not persisted (only exit
+ * status), keeping secrets out of durable state. `verified` is true only
+ * when every check exits 0 — worker success alone never implies it.
+ */
+export async function verifyAcceptanceCriteria(
+  criteria: string[],
+  cwd: string,
+  timeoutMs: number,
+): Promise<AcceptanceReport> {
+  const shell = process.platform === "win32" ? "cmd" : "sh";
+  const shellArgs = process.platform === "win32" ? ["/c"] : ["-c"];
+  const checks: AcceptanceCheck[] = [];
+  for (const command of criteria) {
+    const proc = Bun.spawn([shell, ...shellArgs, command], {
+      cwd,
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      proc.kill();
+    }, timeoutMs);
+    const exitCode = await proc.exited.finally(() => clearTimeout(timer));
+    checks.push({ command, exitCode: timedOut ? null : exitCode, timedOut });
+  }
+  return { verified: checks.every((c) => c.exitCode === 0 && !c.timedOut), checks };
+}
+
+/**
  * Run a task to completion with automatic fallback handling.
  *
  * The fallback profile's candidates are executed inside `startTaskAttempt`
@@ -995,7 +1085,7 @@ export async function runTaskToCompletion(
   await waitAgent(attempt.herdrWorkerName!, 30000);
   
   // Start the attempt
-  const startResult = await startTaskAttempt(config, attempt, descriptor.prompt);
+  const startResult = await startTaskAttempt(config, attempt, descriptor.prompt, { timeoutMs: descriptor.timeoutMs });
   
   if (!startResult.success) {
     // Every authorized candidate failed. The classified reason travels with
@@ -1014,6 +1104,16 @@ export async function runTaskToCompletion(
   // return the wrong output.
   const serving = startResult.workerName ?? attempt.herdrWorkerName!;
   const collected = await collectTaskAttempt({ ...attempt, herdrWorkerName: serving });
+  // Acceptance criteria are verified against the workspace AFTER collect,
+  // independently of worker success: a completed worker with failing
+  // criteria is NOT a completed task.
+  const acceptance = collected.success && descriptor.acceptanceCriteria?.length
+    ? await verifyAcceptanceCriteria(
+        descriptor.acceptanceCriteria,
+        process.cwd(),
+        descriptor.timeoutMs ?? 120000,
+      )
+    : undefined;
   recordAttemptOutcome(descriptor.id, attempt, {
     status: collected.success ? "completed" : "failed",
     error: collected.error,
@@ -1029,6 +1129,63 @@ export async function runTaskToCompletion(
       // Cleanup must not mask the task outcome.
     }
   }
+  return { ...collected, ...(acceptance ? { acceptance } : {}) };
+}
+
+/**
+ * Resume an interrupted task by re-prompting its EXISTING worker.
+ *
+ * Conservative by design: only single-route attempts (no fallback profile)
+ * are resumable this way — re-running executeWithFallback could re-dispatch
+ * an already-exhausted primary or spin up duplicate candidate workers, which
+ * is exactly the double-side-effect case the fencing/journal work exists to
+ * prevent. Profile tasks must be re-dispatched explicitly instead.
+ * The worker keeps its own session context, so a "continue" prompt resumes
+ * in place rather than replaying the original instruction.
+ */
+export async function resumeTaskAttempt(
+  config: Config,
+  taskId: string,
+  prompt: string,
+  opts?: { timeoutMs?: number },
+): Promise<CollectResult> {
+  const state = loadTaskState(taskId);
+  if (!state) {
+    throw new ContractError("identity", `no task state for '${taskId}'`);
+  }
+  const attempt = state.currentAttempt;
+  if (!attempt) {
+    throw new ContractError("state", `task '${taskId}' has no current attempt`);
+  }
+  if (attempt.status === "completed") {
+    throw new ContractError("state", `task '${taskId}' already completed`);
+  }
+  if (attempt.profileId) {
+    throw new ContractError(
+      "policy",
+      `task '${taskId}' used fallback profile '${attempt.profileId}'; ` +
+        "resume would re-run candidate dispatch. Re-dispatch with " +
+        "`agent task run --fallback` instead.",
+    );
+  }
+  if (!attempt.herdrWorkerName) {
+    throw new ContractError("state", `task '${taskId}' attempt has no worker to resume`);
+  }
+  const startResult = await startTaskAttempt(config, attempt, prompt, opts);
+  if (!startResult.success) {
+    recordAttemptOutcome(taskId, attempt, { status: "failed", error: startResult.error });
+    return { taskId, attempt, success: false, error: startResult.error };
+  }
+  const serving = startResult.workerName ?? attempt.herdrWorkerName;
+  const collected = await collectTaskAttempt(
+    { ...attempt, herdrWorkerName: serving },
+    opts?.timeoutMs,
+  );
+  recordAttemptOutcome(taskId, attempt, {
+    status: collected.success ? "completed" : "failed",
+    error: collected.error,
+    result: collected.result,
+  });
   return collected;
 }
 

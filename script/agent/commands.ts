@@ -437,6 +437,38 @@ export async function cmdTask(
     console.log(redactJson(status));
     return 0;
   }
+  if (sub === "resume") {
+    const taskId = arg as string;
+    if (!TASK_ID_PATTERN.test(taskId)) {
+      throw new AgentError(`invalid task id '${taskId}'`, EXIT_USAGE);
+    }
+    const ro = (opts ?? {}) as { prompt: string | null; timeoutMs: number | null };
+    const { checkHerdrAvailable } = await import("./herdr.ts");
+    const herdr = await checkHerdrAvailable();
+    if (!herdr.available) {
+      throw new AgentError(
+        `Herdr is not available (${herdr.error ?? "unknown"}); task resume requires Herdr`,
+        EXIT_RUNTIME,
+      );
+    }
+    const prompt = ro.prompt ?? "Continue the previous task from where it stopped.";
+    let result;
+    try {
+      result = await task.resumeTaskAttempt(config, taskId, prompt, { timeoutMs: ro.timeoutMs ?? undefined });
+    } catch (error) {
+      if (error instanceof ContractError) {
+        throw new AgentError(error.message, EXIT_RUNTIME);
+      }
+      throw error;
+    }
+    console.log(redactJson({
+      taskId: result.taskId,
+      success: result.success,
+      ...(result.error ? { error: result.error } : {}),
+      ...(result.result !== undefined ? { result: result.result } : {}),
+    }));
+    return result.success ? 0 : EXIT_RUNTIME;
+  }
   // sub === "run"
   const route = arg as string;
   const o = (opts ?? {}) as {
@@ -498,9 +530,13 @@ export async function cmdTask(
   console.log(redactJson({
     taskId: result.taskId,
     success: result.success,
+    ...(result.acceptance ? { acceptance: result.acceptance } : {}),
     ...(result.error ? { error: result.error } : {}),
     ...(result.result !== undefined ? { result: result.result } : {}),
   }));
-  return result.success ? 0 : EXIT_RUNTIME;
+  // Worker success AND verified acceptance are both required: an agent that
+  // finished but failed its declared criteria is not a completed task.
+  const accepted = result.acceptance === undefined || result.acceptance.verified;
+  return result.success && accepted ? 0 : EXIT_RUNTIME;
 }
 

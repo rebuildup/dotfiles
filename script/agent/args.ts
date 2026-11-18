@@ -72,9 +72,38 @@ function parseTaskArgs(argv: string[]): Action {
     }
     return ["task", "status", argv[1]];
   }
+  if (sub === "resume") {
+    const taskId = argv[1];
+    if (!taskId || taskId.startsWith("-")) {
+      throw new AgentError(
+        "usage: agent task resume <task-id> [--prompt <text>] [--timeout <ms>]"
+      );
+    }
+    const opts = { prompt: null as string | null, timeoutMs: null as number | null };
+    const rest = argv.slice(2);
+    for (let i = 0; i < rest.length; i++) {
+      const token = rest[i];
+      const take = (): string => {
+        const value = rest[++i];
+        if (value === undefined) throw new AgentError(`${token} requires a value`);
+        return value;
+      };
+      if (token === "--prompt") opts.prompt = take();
+      else if (token === "--timeout") {
+        const ms = Number(take());
+        if (!Number.isFinite(ms) || ms <= 0) {
+          throw new AgentError("--timeout must be a positive number of milliseconds");
+        }
+        opts.timeoutMs = ms;
+      } else {
+        throw new AgentError(`unexpected argument '${token}' for task resume`);
+      }
+    }
+    return ["task", "resume", taskId, opts];
+  }
   if (sub !== "run") {
     throw new AgentError(
-      `unknown task action '${sub ?? ""}'; usage: agent task run|status ...`
+      `unknown task action '${sub ?? ""}'; usage: agent task run|resume|status ...`
     );
   }
   const route = argv[1];
@@ -133,7 +162,8 @@ export type Action =
       accept: string[];
       timeoutMs: number | null;
     }]
-  | ["task", "status", string];
+  | ["task", "status", string]
+  | ["task", "resume", string, { prompt: string | null; timeoutMs: number | null }];
 export function parseArgs(argv: string[]): Action {
   // Parse argv without touching the config.
   const head = argv[0];
