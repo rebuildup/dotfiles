@@ -1324,8 +1324,13 @@ export function gitOperationInProgress(): boolean {
 }
 
 export function captureWorkspaceBaseline(): WorkspaceBaseline | null {
-  const head = gitOut(["rev-parse", "HEAD"]);
-  if (head === null) return null; // not a git worktree — nothing observable
+  // Unborn HEAD (fresh `git init`, no commits) still has observable state:
+  // branch + dirty entries. Only a non-repo yields null.
+  const isRepo = gitOut(["rev-parse", "--git-dir"]) !== null;
+  if (!isRepo) return null;
+  const head = gitOut(["rev-parse", "HEAD"])
+    ?? gitOut(["symbolic-ref", "--short", "HEAD"])
+    ?? "(unborn)";
   const status = gitOut(["status", "--porcelain"]);
   const unpushed = gitOut(["rev-list", "--count", "@{u}..HEAD"]);
   return {
