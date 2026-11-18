@@ -17,6 +17,7 @@ import {
   buildAgentStartOptions,
   routeWorkerEnv,
   verifyAcceptanceCriteria,
+  captureWorkspaceBaseline,
 } from "./agent/task.ts";
 import { ContractError } from "./agent/contract.ts";
 import { type Config, type Provider } from "./agent/config.ts";
@@ -740,5 +741,44 @@ describe("acceptance criteria verification", () => {
     expect(report.verified).toBe(false);
     expect(report.checks[0].timedOut).toBe(true);
     expect(report.checks[0].exitCode).toBeNull();
+  });
+});
+
+describe("generation fencing on outcome writes", () => {
+  it("refuses a stale-generation outcome overwriting a newer record", () => {
+    const taskId = "test-gen-fence";
+    const attempt = {
+      id: "a1", taskId, route: { harness: "omp", provider: "kilo" },
+      model: "m", attemptNumber: 1, startedAt: new Date().toISOString(),
+      status: "running" as const, generation: 1,
+    };
+    saveTaskState(taskId, {
+      descriptor: {
+        id: taskId, class: "simple" as const, route: "omp.kilo",
+        model: "m", prompt: "test", acceptanceCriteria: [],
+      },
+      history: [attempt],
+      currentAttempt: attempt,
+    });
+    // Newer generation already recorded (e.g. a resume wrote generation 2).
+    const newer = { ...attempt, generation: 2, status: "completed" as const };
+    recordAttemptOutcome(taskId, newer, { status: "completed" });
+    // A stale writer holding generation 1 must be refused, not overwrite.
+    expect(() =>
+      recordAttemptOutcome(taskId, attempt, { status: "failed" }),
+    ).toThrow(/generation moved|stale/);
+    const state = loadTaskState(taskId);
+    expect(state?.currentAttempt?.generation).toBe(2);
+    expect(state?.currentAttempt?.status).toBe("completed");
+  });
+});
+
+describe("workspace baseline", () => {
+  it("captures observable git state or null outside a repo", () => {
+    const baseline = captureWorkspaceBaseline();
+    // Test runs inside the dotfiles repo: HEAD sha + counts must be present.
+    expect(baseline).not.toBeNull();
+    expect(baseline!.headSha).toMatch(/^[0-9a-f]{40}$/);
+    expect(baseline!.dirtyCount).toBeGreaterThanOrEqual(0);
   });
 });
