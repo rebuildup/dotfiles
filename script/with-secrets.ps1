@@ -31,9 +31,10 @@ if (-not (Test-Path $binding)) {
     exit 1
 }
 
-# Strict project binding: compare the parsed workspaceId field, not arbitrary
-# text, so the wrapper can never fall through to Infisical Cloud or another
-# project.
+# Strict project binding: compare the parsed workspaceId/defaultEnvironment
+# fields, not arbitrary text, so the wrapper can never fall through to
+# Infisical Cloud or another project/environment. Mirrors
+# script/lib/infisical-binding.sh used by the bash wrappers.
 try {
     $bindingObject = Get-Content -Raw $binding | ConvertFrom-Json
 } catch {
@@ -42,6 +43,10 @@ try {
 }
 if ($bindingObject.workspaceId -ne $projectId) {
     [Console]::Error.WriteLine("Infisical binding workspaceId does not match expected self-host project $projectId")
+    exit 1
+}
+if ($bindingObject.defaultEnvironment -ne $environment) {
+    [Console]::Error.WriteLine("Infisical binding defaultEnvironment does not match expected environment $environment")
     exit 1
 }
 

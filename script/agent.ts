@@ -61,7 +61,7 @@ import {
   renderRoutesText,
   UnknownGuideTopicError,
 } from "./agent/help";
-import { effectiveQuotaKey, loadCatalog, type Catalog } from "./agent/catalog";
+import { getPrimaryQuotaScope, loadCatalog, type Catalog } from "./agent/catalog";
 import {
   buildFallbackCatalog,
   listFallbackProfiles,
@@ -3033,15 +3033,6 @@ function loadAttestations(): Map<string, any> {
     }
   }
   return map;
-}
-
-/** The real shared allowance of a route, from the validated catalog tables. */
-function getPrimaryQuotaScope(catalog: Catalog, primaryRoute: string): string | null {
-  try {
-    return effectiveQuotaKey(catalog, primaryRoute);
-  } catch {
-    return null;
-  }
 }
 
 async function main(argv: string[]): Promise<number> {

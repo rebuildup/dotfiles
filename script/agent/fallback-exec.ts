@@ -32,7 +32,7 @@ import {
   seedAttestationsFromCatalog,
 } from "./fallback.ts";
 import { loadConfig, type Config, type Route, type Provider, type Harness } from "../agent.ts";
-import { effectiveQuotaKey, loadCatalog, type Catalog } from "./catalog.ts";
+import { getPrimaryQuotaScope, loadCatalog, type Catalog } from "./catalog.ts";
 import { agentStateDir } from "./contract.ts";
 import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -539,12 +539,3 @@ function loadAttestations(): Map<string, any> {
   }
   return map;
 }
-
-function getPrimaryQuotaScope(catalog: Catalog, primaryRoute: string): string | null {
-  try {
-    return effectiveQuotaKey(catalog, primaryRoute);
-  } catch {
-    return null;
-  }
-}
-

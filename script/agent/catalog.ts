@@ -530,6 +530,19 @@ export function effectiveQuotaKey(catalog: Catalog, routeId: string): string | n
 }
 
 /**
+ * The real shared allowance of a route, from the validated catalog tables.
+ * Returns null when the route has no resolvable quota scope (unknown route
+ * or malformed id) instead of throwing.
+ */
+export function getPrimaryQuotaScope(catalog: Catalog, routeId: string): string | null {
+  try {
+    return effectiveQuotaKey(catalog, routeId);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Model facts for a route's model, resolved through the route's provider.
  * Returns null when nothing is known (unknown stays unknown).
  */
