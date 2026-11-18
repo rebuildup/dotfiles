@@ -15,6 +15,7 @@ import {
   loadTaskState,
   saveTaskState,
   buildAgentStartOptions,
+  routeWorkerEnv,
 } from "./agent/task.ts";
 import { ContractError } from "./agent/contract.ts";
 import { type Config, type Provider } from "./agent.ts";
@@ -633,5 +634,37 @@ describe("worker credential injection", () => {
         prompt: "test",
       }),
     ).rejects.toThrow(/TEST_ROUTE_KEY/);
+  });
+
+  it("never hands a managed-profile credential to Herdr --env", () => {
+    // Native require_infisical providers (kilo/groq/opencode-go/mistral/...)
+    // and omp_custom providers resolve the secret inside OMP via the
+    // managed models.yml `apiKey: "!infisical-key.sh <NAME>"`. The value must
+    // not transit `herdr --env NAME=VALUE` (argv + server state exposure).
+    const base = {
+      key: "kilo", label: "Kilo", base_url: null, secret: "KILO_API_KEY",
+      env: "KILO_API_KEY", default_model: "m", require_model: false, models: ["m"],
+      opencode_id: "kilo", omp_id: "kilo", require_infisical: true, anonymous: false,
+      opencode_npm: null, opencode_models: {}, opencode_base_url: null,
+      omp_custom: false, omp_api: null, omp_models: {},
+    } as unknown as Provider;
+    process.env.KILO_API_KEY = "super-secret-value";
+    try {
+      expect(routeWorkerEnv(base)).toEqual({});
+      expect(routeWorkerEnv({ ...base, omp_custom: true })).toEqual({});
+      // Ambient-credential routes keep the env handoff (contract unchanged).
+      const ambient = {
+        ...base, key: "openrouter", secret: "OPENROUTER_API_KEY",
+        env: "OPENROUTER_API_KEY", require_infisical: false,
+      } as unknown as Provider;
+      process.env.OPENROUTER_API_KEY = "ambient-value";
+      expect(routeWorkerEnv(ambient)).toEqual({ OPENROUTER_API_KEY: "ambient-value" });
+      // Anonymous providers never carry a credential.
+      expect(routeWorkerEnv({ ...base, anonymous: true, secret: null, env: null }))
+        .toEqual({});
+    } finally {
+      delete process.env.KILO_API_KEY;
+      delete process.env.OPENROUTER_API_KEY;
+    }
   });
 });

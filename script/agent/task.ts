@@ -24,6 +24,7 @@ import {
   classifyFailure,
 } from "./fallback-exec.ts";
 import {
+  ompNeedsManagedProfile,
   ompWorkerArgs,
   prepareOmpWorker,
   type Config,
@@ -375,13 +376,13 @@ export function buildAgentStartOptions(
       `provider '${provider.key}' is anonymous; OMP has no credential-free route contract unless omp_custom = true`,
     );
   }
-  if (provider.omp_custom && !prepared?.profile) {
+  if (ompNeedsManagedProfile(provider) && !prepared?.profile) {
     throw new ContractError(
       "state",
-      `provider '${provider.key}' is omp_custom; buildAgentStartOptions requires prepareOmpWorker(provider) first`,
+      `provider '${provider.key}' uses a managed OMP profile; buildAgentStartOptions requires prepareOmpWorker(provider) first`,
     );
   }
-  const fallback: OmpWorkerPreparation = prepared ?? { profile: null, custom: null };
+  const fallback: OmpWorkerPreparation = prepared ?? { profile: null, managed: null };
   return ["--", ...ompWorkerArgs(provider, model, fallback)];
 }
 
@@ -450,7 +451,7 @@ export async function dispatchTask(
   // A Herdr worker cannot re-run them inside __exec, so they run here,
   // immediately before the worker is started.
   const prepared = prepareOmpWorker(provider);
-  await verifyOmpCustomCredential(provider);
+  await verifyOmpManagedCredential(provider);
 
   // Create Herdr workspace for the task
   const workspace = await createWorkspace(process.cwd(), `task-${descriptor.id.slice(0, 8)}`, {
@@ -561,14 +562,16 @@ function promptFailureSignal(promptResult: { blocked?: boolean; stalled?: boolea
  * whose credential is absent is a hard failure: starting the worker anyway
  * would burn a prompt on a guaranteed auth failure.
  */
-function routeWorkerEnv(provider: Provider): Record<string, string> {
+export function routeWorkerEnv(provider: Provider): Record<string, string> {
   if (provider.anonymous) return {};
-  // omp_custom providers with an Infisical secret resolve the credential
-  // inside OMP itself: models.yml `apiKey: "!infisical-key.sh <secret>"`
-  // makes OMP fetch the value from Infisical at request time. Passing the
-  // value through `herdr --env NAME=VALUE` would expose it in process argv
-  // and the Herdr server — the secret never needs to leave Infisical.
-  if (provider.omp_custom && provider.secret) return {};
+  // Managed-profile providers (omp_custom, or native require_infisical)
+  // resolve the credential inside OMP itself: models.yml
+  // `apiKey: "!infisical-key.sh <secret>"` makes OMP fetch the value from
+  // Infisical at request time. Passing the value through
+  // `herdr --env NAME=VALUE` would expose it in process argv and the Herdr
+  // server — the secret never needs to leave Infisical. Ambient-credential
+  // routes (require_infisical = false, no omp_custom) keep the env path.
+  if (provider.secret && (provider.omp_custom || provider.require_infisical)) return {};
   const envName = provider.env ?? provider.secret;
   if (!envName) {
     throw new ContractError("identity", `Provider '${provider.key}' declares no credential env name`);
@@ -593,8 +596,8 @@ function routeWorkerEnv(provider: Provider): Record<string, string> {
  * child process only to check non-emptiness; it is never stored, logged,
  * or passed on.
  */
-async function verifyOmpCustomCredential(provider: Provider): Promise<void> {
-  if (!provider.omp_custom || !provider.secret) return;
+async function verifyOmpManagedCredential(provider: Provider): Promise<void> {
+  if (!provider.secret || !(provider.omp_custom || provider.require_infisical)) return;
   const helper = join(import.meta.dir, "infisical-key.sh");
   const result = Bun.spawnSync({
     cmd: ["bash", helper, provider.secret],
@@ -604,7 +607,7 @@ async function verifyOmpCustomCredential(provider: Provider): Promise<void> {
   if (result.exitCode !== 0 || result.stdout.length === 0) {
     throw new ContractError(
       "state",
-      `Infisical credential '${provider.secret}' for omp_custom provider ` +
+      `Infisical credential '${provider.secret}' for managed-profile provider ` +
         `'${provider.key}' did not resolve; the worker's apiKey command ` +
         "needs a working Infisical session for the dispatching user",
     );
@@ -785,7 +788,7 @@ export async function startTaskAttempt(
         const candidatePrepared = preparedProviders.get(routeRef.provider)
           ?? prepareOmpWorker(candidateProvider);
         preparedProviders.set(routeRef.provider, candidatePrepared);
-        await verifyOmpCustomCredential(candidateProvider);
+        await verifyOmpManagedCredential(candidateProvider);
         const options = buildAgentStartOptions(candidateProvider, model, candidatePrepared);
         const candidateAttempt = await startCandidateWorker(attempt, workerName, options, {
           ...routeWorkerEnv(candidateProvider),
