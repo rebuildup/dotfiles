@@ -318,6 +318,11 @@ export interface SideEffectEntry {
   outcome: SideEffectOutcome | null; // null on "pre"
   ref: string | null; // immutable ref of the result ("post" only)
   at: string; // ISO 8601 UTC
+  /** The exact prompt a "prompt-send" effect carried ("pre" only). Needed
+   *  so reconcile matches provider-session evidence to THIS effect's
+   *  prompt — resume prompts differ from descriptor.prompt. Same
+   *  durability class as the task descriptor's stored prompt. */
+  prompt?: string;
 }
 
 /** One declared-but-incomplete effect: its outcome is UNKNOWN. */
@@ -327,6 +332,7 @@ export interface SideEffectPending {
   kind: string;
   target: string;
   declaredAt: string;
+  prompt?: string;
 }
 
 /** Durable append-only journal storage; `readAll` returns lines in order. */
@@ -395,6 +401,7 @@ const SIDE_EFFECT_FIELDS = [
   "outcome",
   "ref",
   "at",
+  "prompt",
 ];
 
 /** Parse one journal entry from untrusted data (a JSONL line's JSON value). */
@@ -440,6 +447,17 @@ export function parseSideEffectEntry(raw: unknown, where: string): SideEffectEnt
   if (phase === "post" && outcome === null) {
     throw new ContractError("schema", `${where}: a 'post' entry requires an outcome`);
   }
+  const promptRaw = payload["prompt"];
+  let prompt: string | undefined;
+  if (promptRaw !== undefined && promptRaw !== null) {
+    if (typeof promptRaw !== "string" || promptRaw.length > 4000 || looksLikeSecretValue(promptRaw)) {
+      throw new ContractError("schema", `${where}: invalid or secret-shaped prompt`);
+    }
+    prompt = promptRaw;
+  }
+  if (phase === "post" && prompt !== undefined) {
+    throw new ContractError("schema", `${where}: a 'post' entry carries no prompt`);
+  }
   const entry: SideEffectEntry = {
     effectId,
     attemptKey,
@@ -450,6 +468,7 @@ export function parseSideEffectEntry(raw: unknown, where: string): SideEffectEnt
     outcome,
     ref,
     at,
+    ...(prompt !== undefined ? { prompt } : {}),
   };
   assertNoSecrets(entry, where);
   return entry;
@@ -490,7 +509,7 @@ export function journalPreEffect(
   attempts: AttemptStore,
   journal: JournalStore,
   lease: Lease,
-  effect: { effectId: string; kind: string; target: string },
+  effect: { effectId: string; kind: string; target: string; prompt?: string },
   now: number,
 ): SideEffectEntry {
   assertLeaseCurrent(attempts, lease, now);
@@ -506,6 +525,7 @@ export function journalPreEffect(
       outcome: null,
       ref: null,
       at: isoTime(now),
+      ...(effect.prompt !== undefined ? { prompt: effect.prompt } : {}),
     },
     `journalPreEffect(${effect.effectId})`,
   );
@@ -606,6 +626,7 @@ export function pendingSideEffects(
         kind: pre.kind,
         target: pre.target,
         declaredAt: pre.at,
+        ...(pre.prompt !== undefined ? { prompt: pre.prompt } : {}),
       });
     }
   }

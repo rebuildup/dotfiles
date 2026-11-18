@@ -824,6 +824,39 @@ describe("journal reconcile contract", () => {
     expect(report.pending).toContain("prompt-w-1");
   });
 
+  it("reconcile is repeatable, releases its lease, and never touches task generations", async () => {
+    const taskId = `test-recon-seq-${randomUUID().slice(0, 8)}`;
+    const descriptor = { id: taskId, route: "omp.groq", model: "test-model", prompt: "seq-prompt" };
+    const attempt = {
+      id: "a1", taskId, route: { harness: "omp", provider: "groq" }, model: "test-model",
+      attemptNumber: 1, startedAt: new Date().toISOString(), status: "failed" as const,
+      generation: 7,
+    };
+    saveTaskState(taskId, { descriptor, history: [attempt], currentAttempt: attempt });
+    const key = formatAttemptKey({ route: descriptor.route, model: descriptor.model, machine: "", attempt: taskId });
+    const attempts = new FsAttemptStore();
+    const journal = new FsJournalStore();
+    const dead = acquireLease(attempts, key, "dead", { now: Date.now() - 7200000, leaseMs: 3600000 });
+    journalPreEffect(attempts, journal, dead, { effectId: "prompt-w-2", kind: "prompt-send", target: "w-2", prompt: "resume-specific-prompt" }, Date.now() - 7100000);
+
+    const r1 = await reconcileTaskEffects({ providers: {} } as Config, taskId);
+    expect(r1.pending).toContain("prompt-w-2");
+    // A second reconcile still reports the same pending effect — and
+    // succeeds only because the first released its lease (fencing proof:
+    // an unreleased lease would refuse this acquisition).
+    const r2 = await reconcileTaskEffects({ providers: {} } as Config, taskId);
+    expect(r2.pending).toContain("prompt-w-2");
+    // Reconcile released its lease: a fresh lease on the same key succeeds
+    // (generation advanced past the crashed owner's), proving reconcile ->
+    // resume ordering cannot deadlock on its own fencing.
+    const next = acquireLease(attempts, key, "next-owner", { now: Date.now(), leaseMs: 3600000 });
+    expect(next.generation).toBeGreaterThan(dead.generation);
+    // TaskAttempt.generation (task-state fencing) is untouched by journal
+    // reconcile — the two generation namespaces stay consistent.
+    const after = loadTaskState(taskId);
+    expect(after?.currentAttempt?.generation).toBe(7);
+  });
+
   it("duplicate effect ids cannot double-post", async () => {
     const taskId = `test-dupe-${randomUUID().slice(0, 8)}`;
     const descriptor = { id: taskId, route: "omp.groq", model: "test-model", prompt: "p" };
