@@ -95,13 +95,10 @@ evaluation).
 - **No `omp.requesty`.** OMP has no native `requesty` or `ovhcloud`
   provider id (`Unknown provider "requesty"`), and adding one would require
   a local `models.yml` endpoint override, which this design does not allow.
-- **No route at all for ModelScope, SenseNova or SiliconFlow.** Their keys
-  exist in Infisical but the accounts are not entitled, and the reason for each
-  is now identified: ModelScope's token is valid but the account is not bound
-  to an Alibaba Cloud account; SenseNova's key matches neither Token Plan
-  workspace; SiliconFlow's key is valid only on the international host, where
-  the free chat IDs answer 402/403. These are account actions, not launcher
-  defects — see
+- **No route at all for SiliconFlow.** Its key
+  exists in Infisical but the account is not entitled: the key is valid only on the international host, where
+  the free chat IDs answer 402/403. This is an account action, not a launcher
+  defect — see
   [blocked-provider-investigation-2026-11-13](research/blocked-provider-investigation-2026-11-13.md).
   A key is not evidence that a route is free, so a route that cannot be proven
   $0 must not be reachable.
@@ -156,16 +153,14 @@ allowance, and an ambient key was measured to silently point the route at a
 different account. `opencode.ovhcloud` needs no secret at all and runs no
 Infisical stage.
 
-`MODELSCOPE_API_KEY`, `SENSENOVA_API_KEY` and `SILICONFLOW_API_KEY` are also
-stored in `dev` but are deliberately unused: the accounts are not entitled, so
-no route reads them. Each cause is identified — see
+`SILICONFLOW_API_KEY` is also
+stored in `dev` but is deliberately unused: the account is not entitled, so
+no route reads it. The cause is identified — see
 [blocked-provider-investigation-2026-11-13](research/blocked-provider-investigation-2026-11-13.md).
-All three need a one-time console action by the account owner:
+It needs a one-time console action by the account owner:
 
 | provider | action | where |
 | --- | --- | --- |
-| ModelScope | Bind an Alibaba Cloud account that has completed real-name verification. The token is already valid; the `.cn` site must be used (the international site cannot bind). | `https://modelscope.cn/my/settings/account` |
-| SenseNova | Confirm a key exists under the Free (公测) plan for the 日日新 account, or issue one from the intended TokenPlan workspace. The stored key matches neither. | `https://platform.sensenova.cn` → API Keys |
 | SiliconFlow | Complete real-name verification. The stored key is valid on the international host only; a `.cn` key would need a separate Infisical name. | SiliconFlow console → account |
 
 After the action, re-run the probe in the investigation doc; a working account
