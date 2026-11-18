@@ -18,6 +18,9 @@ import {
 } from "node:fs";
 import { delimiter, dirname, join } from "node:path";
 
+/** CLI program name used in diagnostics and version output. */
+export const PROGRAM = "agent";
+
 /** True on Windows hosts; single owner so every module agrees. */
 export const IS_WINDOWS = process.platform === "win32";
 
