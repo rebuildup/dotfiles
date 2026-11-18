@@ -6,7 +6,7 @@
  * lifecycle operations used by the task dispatch/collect logic.
  */
 
-import { ContractError, agentStateDir } from "./contract.ts";
+import { ContractError, agentStateDir, isPlainObject } from "./contract.ts";
 import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -548,7 +548,12 @@ export function loadHerdrTaskMapping(taskId: string): HerdrTaskMapping | null {
   const path = herdrTaskStatePath(taskId);
   if (!existsSync(path)) return null;
   try {
-    return JSON.parse(readFileSync(path, "utf-8"));
+    const raw: unknown = JSON.parse(readFileSync(path, "utf-8"));
+    if (!isPlainObject(raw)) return null;
+    for (const key of ["taskId", "workspaceId", "paneId", "workerName", "createdAt", "route", "model"] as const) {
+      if (typeof raw[key] !== "string") return null;
+    }
+    return raw as unknown as HerdrTaskMapping;
   } catch {
     return null;
   }

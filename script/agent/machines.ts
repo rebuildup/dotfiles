@@ -221,13 +221,50 @@ export function detectWsl(procVersion: string): boolean {
 // Herdr (official CLI, read-only)
 // ---------------------------------------------------------------------------
 
-/** Parse JSON array stdout regardless of exit code. */
-function parseHerdrArray<T>(what: string, res: { exitCode: number; stdout: string; stderr: string }): T[] | string {
+function reqStr(v: Record<string, unknown>, key: string, what: string, i: number): string {
+  const x = v[key];
+  if (typeof x !== "string") throw new Error(`${what}: element ${i}.${key} must be a string`);
+  return x;
+}
+
+function parseHerdrProfile(v: Record<string, unknown>, what: string, i: number): HerdrMachineProfile {
+  return {
+    id: reqStr(v, "id", what, i),
+    label: reqStr(v, "label", what, i),
+    target: reqStr(v, "target", what, i),
+    session: reqStr(v, "session", what, i),
+    enabled: v["enabled"] === true,
+    selected: v["selected"] === true,
+  };
+}
+
+function parseHerdrStatus(v: Record<string, unknown>, what: string, i: number): HerdrMachineStatus {
+  const error = v["error"];
+  if (error !== null && error !== undefined && typeof error !== "string") {
+    throw new Error(`${what}: element ${i}.error must be a string or null`);
+  }
+  return {
+    id: reqStr(v, "id", what, i),
+    label: reqStr(v, "label", what, i),
+    status: reqStr(v, "status", what, i),
+    error: error ?? null,
+  };
+}
+
+/** Parse a JSON array of objects, validating each element. */
+function parseHerdrArray<T>(
+  what: string,
+  res: { exitCode: number; stdout: string; stderr: string },
+  parse: (v: Record<string, unknown>, what: string, i: number) => T,
+): T[] | string {
   try {
-    const parsed = JSON.parse(res.stdout);
-    if (Array.isArray(parsed)) return parsed as T[];
-    return `${what}: expected a JSON array (exit ${res.exitCode})`;
-  } catch {
+    const parsed: unknown = JSON.parse(res.stdout);
+    if (!Array.isArray(parsed) || !parsed.every(isPlainObject)) {
+      return `${what}: expected a JSON array of objects (exit ${res.exitCode})`;
+    }
+    return parsed.map((v, i) => parse(v, what, i));
+  } catch (e) {
+    if (e instanceof Error && e.message.startsWith(what)) return e.message;
     return `${what}: no valid JSON on stdout (exit ${res.exitCode})`;
   }
 }
@@ -484,11 +521,11 @@ export function getInventory(opts: InventoryOptions = {}): Inventory {
   let statuses: HerdrMachineStatus[] = [];
   let statusKnown = false;
   try {
-    const l = parseHerdrArray<HerdrMachineProfile>("herdr machine list", run(["herdr", "machine", "list", "--json"]));
+    const l = parseHerdrArray("herdr machine list", run(["herdr", "machine", "list", "--json"]), parseHerdrProfile);
     if (typeof l === "string") errors.push(l);
     else profiles = l;
     // exits 1 when any machine is in error but still writes JSON: parse regardless
-    const s = parseHerdrArray<HerdrMachineStatus>("herdr machine status", run(["herdr", "machine", "status", "--json"]));
+    const s = parseHerdrArray("herdr machine status", run(["herdr", "machine", "status", "--json"]), parseHerdrStatus);
     if (typeof s === "string") errors.push(s);
     else {
       statuses = s;
