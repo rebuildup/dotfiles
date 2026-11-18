@@ -22,7 +22,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Check shell syntax
-        run: bash -n script/lib/managed-targets.sh script/lib/infisical-binding.sh script/link script/check script/test script/bootstrap script/secrets-doctor script/with-secrets script/check-secrets script/test-workflow script/agent/minimax script/agent/mimo script/agent/infisical-key.sh home/.claude/statusline-command.sh evals/agent-router/controls.sh home/.local/bin/agent home/.local/bin/ocr-go-key home/.local/bin/devices config/agent-init.bash
+        run: while IFS= read -r f; do bash -n "$f"; done < script/shell-files.txt
       - name: Install ShellCheck
         run: |
           if [ "$RUNNER_OS" = "Linux" ]; then
@@ -31,7 +31,7 @@ jobs:
             brew install shellcheck
           fi
       - name: Lint shell scripts (ShellCheck)
-        run: shellcheck -s bash -x script/lib/managed-targets.sh script/lib/infisical-binding.sh script/link script/check script/test script/bootstrap script/secrets-doctor script/with-secrets script/check-secrets script/test-workflow config/infisical.sh home/.local/bin/agent home/.local/bin/devices config/agent-init.bash script/agent/minimax script/agent/mimo script/agent/infisical-key.sh home/.claude/statusline-command.sh evals/agent-router/controls.sh home/.local/bin/ocr-go-key
+        run: shellcheck -s bash -x $(cat script/shell-files.txt)
       - name: Compile-check Python scripts
         run: python3 -m py_compile script/snippet-sync.py
       - name: Validate JSON files

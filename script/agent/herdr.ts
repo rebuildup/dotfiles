@@ -343,10 +343,12 @@ export async function getPaneStatus(paneId: string): Promise<{ status: string; a
   const parsed = parseHerdrJsonOrNull(result.stdout.trim());
   const env = herdrResultOf(parsed);
   if (!env) return null;
-  const agentName = herdrStr(env["agent_name"]) ?? herdrStr(env["agentName"]);
-  const agentKind = herdrStr(env["agent_kind"]) ?? herdrStr(env["agentKind"]);
+  // Real 0.9.5 shape: result.pane.{agent_status, ...}; tolerate a flat result.
+  const pane = isPlainObject(env["pane"]) ? env["pane"] : env;
+  const agentName = herdrStr(pane["agent_name"]) ?? herdrStr(pane["agentName"]) ?? herdrStr(pane["name"]);
+  const agentKind = herdrStr(pane["agent_kind"]) ?? herdrStr(pane["agentKind"]) ?? herdrStr(pane["agent"]);
   return {
-    status: herdrStr(env["status"]) ?? "unknown",
+    status: herdrStr(pane["agent_status"]) ?? herdrStr(pane["status"]) ?? "unknown",
     ...(agentName !== undefined ? { agentName } : {}),
     ...(agentKind !== undefined ? { agentKind } : {}),
   };
@@ -558,13 +560,16 @@ export async function getAgent(workerName: string): Promise<{
   if (result === null || result.code !== 0) return null;
   const env = herdrResultOf(parseHerdrJsonOrNull(result.stdout.trim()));
   if (!env) return null;
-  const name = herdrStr(env["name"]) ?? herdrStr(env["agent_name"]) ?? herdrStr(env["agentName"]);
+  // Real shape mirrors `agent list` entries, usually nested under result.agent.
+  const agent = isPlainObject(env["agent"]) ? env["agent"] : env;
+  const name = herdrStr(agent["name"]) ?? herdrStr(agent["worker_name"]) ?? herdrStr(agent["workerName"])
+    ?? herdrStr(agent["agent_name"]) ?? herdrStr(agent["agentName"]) ?? herdrStr(agent["agent"]);
   if (!name) return null;
-  const kind = herdrStr(env["kind"]) ?? herdrStr(env["agent_kind"]) ?? herdrStr(env["agentKind"]) ?? "";
-  const paneId = herdrStr(env["pane_id"]) ?? herdrStr(env["paneId"]) ?? "";
-  const status = herdrStr(env["status"]) ?? herdrStr(env["agent_status"]) ?? "unknown";
-  const workspaceId = herdrStr(env["workspace_id"]) ?? herdrStr(env["workspaceId"]);
-  const cwd = herdrStr(env["cwd"]);
+  const kind = herdrStr(agent["kind"]) ?? herdrStr(agent["agent_kind"]) ?? herdrStr(agent["agentKind"]) ?? herdrStr(agent["agent"]) ?? "";
+  const paneId = herdrStr(agent["pane_id"]) ?? herdrStr(agent["paneId"]) ?? "";
+  const status = herdrStr(agent["status"]) ?? herdrStr(agent["agent_status"]) ?? "unknown";
+  const workspaceId = herdrStr(agent["workspace_id"]) ?? herdrStr(agent["workspaceId"]);
+  const cwd = herdrStr(agent["cwd"]);
   return {
     name, kind, paneId, status,
     ...(workspaceId !== undefined ? { workspaceId } : {}),
