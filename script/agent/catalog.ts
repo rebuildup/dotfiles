@@ -36,6 +36,7 @@ import {
   parseAttested,
   parseModelId,
   parseRouteId,
+  parseTomlTable,
   quotaScopeKey,
   requireBool,
   requireStr,
@@ -438,16 +439,7 @@ export function loadCatalog(configFile?: string): Catalog {
   } catch {
     throw new ContractError("schema", `config not found: ${path}`);
   }
-  let parsedToml: unknown;
-  try {
-    parsedToml = Bun.TOML.parse(text);
-  } catch (exc) {
-    throw new ContractError("schema", `invalid TOML in ${path}: ${exc}`);
-  }
-  if (!isPlainObject(parsedToml)) {
-    throw new ContractError("schema", `invalid TOML in ${path}: root is not a table`);
-  }
-  const raw = parsedToml;
+  const raw = parseTomlTable(text, path);
 
   const providersSection = raw["providers"] ?? {};
   const routesSection = raw["routes"] ?? {};

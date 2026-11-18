@@ -72,7 +72,7 @@ import {
   renderFallbackResolution,
   seedAttestationsFromCatalog,
 } from "./agent/fallback";
-import { ContractError, redactJson } from "./agent/contract";
+import { ContractError, isPlainObject, parseTomlTable, redactJson } from "./agent/contract";
 import { dotfilesRepoRoot } from "./agent/util";
 
 const PROGRAM = "agent";
@@ -316,10 +316,6 @@ function withSecretsPath(): string {
   );
 }
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 /** Route keys are `<harness>.<provider>`; split at the first dot only.
  * (JS String.split's limit argument is not Python's maxsplit.) */
 function splitRouteKey(key: string): [string, string] {
@@ -467,16 +463,12 @@ export function loadConfig(path?: string): Config {
   } catch {
     throw new AgentError(`config not found: ${configPathResolved}`);
   }
-  let parsedToml: unknown;
+  let raw: Record<string, unknown>;
   try {
-    parsedToml = Bun.TOML.parse(text);
+    raw = parseTomlTable(text, configPathResolved);
   } catch (exc) {
-    throw new AgentError(`invalid TOML in ${configPathResolved}: ${exc}`);
+    throw new AgentError(exc instanceof Error ? exc.message : String(exc));
   }
-  if (!isPlainObject(parsedToml)) {
-    throw new AgentError(`invalid TOML in ${configPathResolved}: root is not a table`);
-  }
-  const raw = parsedToml;
 
   const defaults = raw["defaults"] ?? {};
   if (!isPlainObject(defaults)) {
@@ -2932,7 +2924,7 @@ function cmdCheck(config: Config): number {
   // fail CI here rather than at `agent fallback` time with a stack trace.
   let profileCount = 0;
   try {
-    const parsedToml = Bun.TOML.parse(readFileSync(config.path, "utf8")) as Record<string, unknown>;
+    const parsedToml = parseTomlTable(readFileSync(config.path, "utf8"), config.path);
     for (const id of listFallbackProfiles(parsedToml)) {
       parseFallbackProfile(parsedToml, id);
       profileCount++;
@@ -3020,7 +3012,7 @@ function cmdRoutes(config: Config, argv: string[]): number {
 function cmdFallback(config: Config, profileId: string, json: boolean): number {
   // Parse profile from config using Bun's native TOML parser
   const tomlText = readFileSync(config.path, "utf-8");
-  const parsedToml = Bun.TOML.parse(tomlText) as Record<string, unknown>;
+  const parsedToml = parseTomlTable(tomlText, config.path);
 
   // A malformed profile must surface as a normal launcher error, not a raw
   // ContractError stack trace (parseFallbackProfile throws on bad identity,

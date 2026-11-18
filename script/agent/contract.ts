@@ -810,6 +810,24 @@ export function isPlainObject(value: unknown): value is Record<string, unknown> 
 }
 
 /**
+ * Parse TOML text and require a table at the root. Shared by every config
+ * reader so parse failures and non-table roots fail closed with one error
+ * shape instead of seven hand-rolled variants.
+ */
+export function parseTomlTable(text: string, where: string): Record<string, unknown> {
+  let parsed: unknown;
+  try {
+    parsed = Bun.TOML.parse(text);
+  } catch (exc) {
+    throw new ContractError("schema", `invalid TOML in ${where}: ${exc}`);
+  }
+  if (!isPlainObject(parsed)) {
+    throw new ContractError("schema", `invalid TOML in ${where}: root is not a table`);
+  }
+  return parsed;
+}
+
+/**
  * Reject unknown fields: every key of `value` must be in `allowed`. Used on
  * every externally supplied object (fixture, state file, CLI JSON) so a
  * typo can never silently drop part of a contract.

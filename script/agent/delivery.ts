@@ -6,7 +6,7 @@
  * and reconciliation of Issue/PR/branch state.
  */
 
-import { ContractError, agentStateDir } from "./contract.ts";
+import { ContractError, agentStateDir, isPlainObject } from "./contract.ts";
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -127,13 +127,9 @@ export interface GHPullRequest {
 const GH_PR_FIELDS =
   "number,headRefName,baseRefName,headRefOid,baseRefOid,state,isDraft,mergeable,reviews,statusCheckRollup";
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 /** Validate one `gh` PR JSON object; unknown shape is a contract violation. */
 export function parseGHPullRequest(raw: unknown, where: string): GHPullRequest {
-  if (!isRecord(raw)) throw new ContractError("state", `${where}: PR JSON must be an object`);
+  if (!isPlainObject(raw)) throw new ContractError("state", `${where}: PR JSON must be an object`);
   const num = raw["number"];
   if (typeof num !== "number" || !Number.isInteger(num)) {
     throw new ContractError("state", `${where}.number: must be an integer`);
@@ -570,7 +566,7 @@ export function loadDeliveryState(issueNumber: number): Record<string, unknown> 
   if (!existsSync(path)) return null;
   try {
     const parsed: unknown = JSON.parse(readFileSync(path, "utf-8"));
-    return isRecord(parsed) ? parsed : null;
+    return isPlainObject(parsed) ? parsed : null;
   } catch {
     return null;
   }

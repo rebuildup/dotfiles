@@ -61,6 +61,7 @@ import {
   isStale,
   parseEnvelope,
   parseModelId,
+  parseTomlTable,
   parseRouteId,
   redactJson,
   requireStr,
@@ -319,16 +320,7 @@ export function loadProbeConfig(configFile?: string): ProbeConfig {
   } catch {
     throw new ContractError("schema", `config not found: ${path}`);
   }
-  let parsedToml: unknown;
-  try {
-    parsedToml = Bun.TOML.parse(text);
-  } catch (exc) {
-    throw new ContractError("schema", `invalid TOML in ${path}: ${exc}`);
-  }
-  if (!isPlainObject(parsedToml)) {
-    throw new ContractError("schema", `invalid TOML in ${path}: root is not a table`);
-  }
-  const raw = parsedToml;
+  const raw = parseTomlTable(text, path);
 
   const providers: Record<string, ProbeProviderConfig> = {};
   const rawProviders = raw["providers"] ?? {};

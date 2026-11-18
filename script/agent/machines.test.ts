@@ -39,7 +39,7 @@ function runner(list: unknown, status: unknown, statusExit = 0, listExit = 0): R
       : { exitCode: statusExit, stdout: typeof status === "string" ? status : JSON.stringify(status), stderr: "" };
 }
 const st = (id: string, status: string, error: string | null = null) => ({ id, label: id, status, error });
-const inv = (profiles: any[], statuses: any[], declared: Record<string, Declared> = {}, statusExit = 0) =>
+const inv = (profiles: unknown[], statuses: unknown[], declared: Record<string, Declared> = {}, statusExit = 0) =>
   getInventory({ run: runner(profiles, statuses, statusExit), declared, local: null, now: NOW });
 const get = (m: Machine[], id: string) => m.find((x) => x.id === id)!;
 

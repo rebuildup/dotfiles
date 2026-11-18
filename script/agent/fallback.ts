@@ -10,7 +10,7 @@
  * profile only takes effect when explicitly selected and fully validated.
  */
 
-import { ContractError, agentStateDir, parseRouteId, formatRouteId, type RouteRef, attest, parseAttested, isUsable, type Attested, type Evidence, type VerificationStatus, type Provenance, type EvidenceSource, DEFAULT_MAX_EVIDENCE_AGE_MS } from "./contract.ts";
+import { ContractError, agentStateDir, parseRouteId, formatRouteId, type RouteRef, attest, parseAttested, isPlainObject, isUsable, type Attested, type Evidence, type VerificationStatus, type Provenance, type EvidenceSource, DEFAULT_MAX_EVIDENCE_AGE_MS } from "./contract.ts";
 import type { E2eObservation } from "./catalog.ts";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -644,10 +644,15 @@ export function loadCatalogAttestations(): CatalogAttestationMap {
   for (const file of readdirSync(stateDir)) {
     if (!file.endsWith(".json")) continue;
     try {
-      const data = JSON.parse(readFileSync(join(stateDir, file), "utf-8"));
-      if (data.attestations && typeof data.attestations === "object") {
-        for (const [key, value] of Object.entries(data.attestations)) {
-          map.set(key, value as CatalogAttestation);
+      const data: unknown = JSON.parse(readFileSync(join(stateDir, file), "utf-8"));
+      if (!isPlainObject(data)) continue;
+      const raw = data["attestations"];
+      if (!isPlainObject(raw)) continue;
+      for (const [key, value] of Object.entries(raw)) {
+        try {
+          map.set(key, parseAttested<CatalogAttestationValue>(value, `catalog/${file}:${key}`));
+        } catch {
+          // A malformed entry is dropped: absent attestation fails closed.
         }
       }
     } catch {

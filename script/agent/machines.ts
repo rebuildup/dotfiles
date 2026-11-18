@@ -35,6 +35,7 @@ import {
   toJson,
   ContractError,
   REDACTED,
+  isPlainObject,
   looksLikeSecretValue,
   type Attested,
   type Evidence,
@@ -295,9 +296,32 @@ export function displayId(id: string): string {
 export function loadDeclared(path?: string): Record<string, Declared> {
   const file = path ?? process.env.AGENT_MACHINES_DECLARED ?? join(agentStateDir(), "machines-declared.json");
   if (!existsSync(file)) return {};
-  const raw = JSON.parse(readFileSync(file, "utf8"));
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) throw new Error(`${basename(file)}: object expected`);
-  return raw as Record<string, Declared>;
+  const raw: unknown = JSON.parse(readFileSync(file, "utf8"));
+  if (!isPlainObject(raw)) throw new Error(`${basename(file)}: object expected`);
+  const out: Record<string, Declared> = {};
+  const strKeys = ["os", "arch", "hostId"] as const;
+  const numKeys = ["cpuCores", "ramBytes", "gpuVramBytes"] as const;
+  for (const [id, entry] of Object.entries(raw)) {
+    if (!isPlainObject(entry)) throw new Error(`${basename(file)}: '${id}' must be an object`);
+    const d: Declared = {};
+    for (const k of strKeys) {
+      const v = entry[k];
+      if (v !== undefined && typeof v !== "string") throw new Error(`${basename(file)}: '${id}.${k}' must be a string`);
+      if (v !== undefined) (d as Record<string, unknown>)[k] = v;
+    }
+    for (const k of numKeys) {
+      const v = entry[k];
+      if (v !== undefined && (typeof v !== "number" || !Number.isFinite(v))) throw new Error(`${basename(file)}: '${id}.${k}' must be a finite number`);
+      if (v !== undefined) (d as Record<string, unknown>)[k] = v;
+    }
+    for (const k of ["hasGpu", "gui"] as const) {
+      const v = entry[k];
+      if (v !== undefined && typeof v !== "boolean") throw new Error(`${basename(file)}: '${id}.${k}' must be a boolean`);
+      if (v !== undefined) (d as Record<string, unknown>)[k] = v;
+    }
+    out[id] = d;
+  }
+  return out;
 }
 
 function remoteMachine(

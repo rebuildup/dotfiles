@@ -1506,7 +1506,7 @@ describe("positive-budget cap enforcement via the real parser", () => {
       },
     );
 
-  const fresh = (): any =>
+  const fresh = (): CatalogAttestationMap =>
     new Map([
       [
         "omp.paid#m1",

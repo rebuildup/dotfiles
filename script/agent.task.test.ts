@@ -17,7 +17,7 @@ import {
   buildAgentStartOptions,
 } from "./agent/task.ts";
 import { ContractError } from "./agent/contract.ts";
-import { type Provider } from "./agent.ts";
+import { type Config, type Provider } from "./agent.ts";
 import { rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { agentStateDir } from "./agent/contract.ts";
@@ -60,9 +60,12 @@ const MOCK_PROVIDER = {
   opencode_npm: null,
   opencode_models: {},
   opencode_base_url: null,
+  omp_custom: false,
+  omp_api: null,
+  omp_models: {},
 };
 
-const MOCK_CONFIG = {
+const MOCK_CONFIG: Config = {
   path: "/fake/config/agents.toml",
   providers: {
     mistral: { ...MOCK_PROVIDER, key: "mistral", models: ["zai-glm-5-3-flash"], require_infisical: true, secret: "MISTRAL_API_KEY", env: "MISTRAL_API_KEY", default_model: "zai-glm-5-3-flash" },
@@ -78,7 +81,7 @@ const MOCK_CONFIG = {
     omp: { adapter: "omp", key: "omp", label: "Oh My Pi", command: "omp", env: {} },
   },
   drop_env: [],
-} as any;
+};
 
 // ---------------------------------------------------------------------------
 // Tests

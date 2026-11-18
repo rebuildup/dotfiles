@@ -12,6 +12,7 @@
 import {
   ContractError,
   parseRouteId,
+  parseTomlTable,
   type RouteRef,
 } from "./contract.ts";
 import {
@@ -160,7 +161,7 @@ export async function executeWithFallback(
 ): Promise<{ route: RouteRef; model: string; candidate: FallbackCandidate | null; result: unknown }> {
   // Load and validate profile
   const tomlText = readFileSync(config.path, "utf-8");
-  const parsedToml = Bun.TOML.parse(tomlText) as Record<string, unknown>;
+  const parsedToml = parseTomlTable(tomlText, config.path);
   const profile = parseFallbackProfile(parsedToml, profileId);
   if (!profile) {
     throw new ContractError("identity", `Fallback profile not found: ${profileId}`);
