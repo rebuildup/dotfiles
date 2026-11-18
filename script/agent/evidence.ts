@@ -126,13 +126,14 @@ function scanSessionFile(
   provider: Provider,
   sinceMs: number,
   prompt: string,
-): ErrorEvent | null {
+): { matched: boolean; error: ErrorEvent | null } {
+  const NO_MATCH = { matched: false, error: null };
   let text: string;
   try {
-    if (statSync(path).size > MAX_SESSION_FILE_BYTES) return null;
+    if (statSync(path).size > MAX_SESSION_FILE_BYTES) return NO_MATCH;
     text = readFileSync(path, "utf8");
   } catch {
-    return null;
+    return NO_MATCH;
   }
   const wantCwd = canonicalPath(cwd);
   const wantPrompt = normalizePrompt(prompt);
@@ -192,11 +193,15 @@ function scanSessionFile(
         : null;
     outcomes.push({ ts, errorStatus: stop === "error" ? errorStatus : null });
   }
-  if (sessionCwd === null || !promptSeen || outcomes.length === 0) return null;
-  if (canonicalPath(sessionCwd) !== wantCwd) return null;
+  // "matched" means this session provably belongs to THIS execution
+  // (cwd + exact prompt + provider + window) — its last outcome may still
+  // be healthy. The caller needs the distinction to detect ambiguity.
+  if (sessionCwd === null || !promptSeen) return NO_MATCH;
+  if (canonicalPath(sessionCwd) !== wantCwd) return NO_MATCH;
+  if (outcomes.length === 0) return { matched: true, error: null };
   const last = outcomes.reduce((a, b) => (b.ts > a.ts ? b : a));
-  if (last.errorStatus === null) return null;
-  return { ts: last.ts, httpStatus: last.errorStatus };
+  if (last.errorStatus === null) return { matched: true, error: null };
+  return { matched: true, error: { ts: last.ts, httpStatus: last.errorStatus } };
 }
 
 /**
@@ -217,11 +222,17 @@ export function extractProviderFailureEvidence(opts: {
   sessionsRoot?: string;
 }): FailureSignal | null {
   const root = opts.sessionsRoot ?? ompSessionsRoot(opts.provider);
-  let best: ErrorEvent | null = null;
+  // Attribution requires EXACTLY ONE matching session. Two workers running
+  // the same prompt on the same provider+cwd produce indistinguishable
+  // sessions — picking either outcome would be a guess, so ambiguity
+  // resolves to null (unknown, fail closed) rather than wrong evidence.
+  const matches: { error: ErrorEvent | null }[] = [];
   for (const file of sessionFilesSince(root, opts.sinceMs)) {
     const hit = scanSessionFile(file, opts.cwd, opts.provider, opts.sinceMs, opts.prompt);
-    if (hit !== null && (best === null || hit.ts > best.ts)) best = hit;
+    if (hit.matched) matches.push(hit);
   }
+  if (matches.length !== 1) return null;
+  const best = matches[0].error;
   if (best === null) return null;
   return {
     httpStatus: best.httpStatus,
