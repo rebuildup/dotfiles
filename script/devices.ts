@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // Infisical owns destinations; OpenSSH and Herdr own transport and terminals.
-import {readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, lstatSync, rmSync, copyFileSync, rmdirSync, readdirSync, openSync, fstatSync, closeSync, constants} from 'node:fs';
-import {homedir, platform, userInfo} from 'node:os';
+import {readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, lstatSync, rmSync, copyFileSync, rmdirSync, readdirSync, openSync, fstatSync, closeSync, constants, mkdtempSync} from 'node:fs';
+import {homedir, platform, userInfo, tmpdir} from 'node:os';
 import {join, resolve} from 'node:path';
 import {randomUUID} from 'node:crypto';
 
@@ -75,11 +75,23 @@ function providerArgs(){
  const metadata=readFileSync(join(root,'config/infisical.sh'),'utf8');
  const get=(key:string)=>{const v=metadata.match(new RegExp(`^${key}="([^"]+)"$`,'m'))?.[1];if(!v)throw Error(`missing ${key}`);return v;};
  const project=get('INFISICAL_PROJECT_ID'),env=get('INFISICAL_ENVIRONMENT'),domain=get('INFISICAL_API_URL');
- const binding=JSON.parse(readFileSync(join(root,'.infisical.json'),'utf8'));
- if(binding.workspaceId!==project||binding.defaultEnvironment!==env)throw Error('Infisical binding mismatch');
+ const binding:unknown=JSON.parse(readFileSync(join(root,'.infisical.json'),'utf8'));
+ const bw=(binding!==null&&typeof binding==='object'&&!Array.isArray(binding))?binding as Record<string,unknown>:{};
+ if(bw.workspaceId!==project||bw.defaultEnvironment!==env)throw Error('Infisical binding mismatch');
  return [`--domain=${domain}`,`--projectId=${project}`,`--env=${env}`,'--path=/devices','--silent'];
 }
 function run(args:string[],timeout=30000):string{
+ // Windows OpenSSH never exits while stdout/stderr are pipes; hand ssh real file handles instead.
+ if(platform()==='win32'&&args[0]==='ssh'){
+  const dir=mkdtempSync(join(tmpdir(),'devices-ssh-'));
+  const out=join(dir,'out'),err=join(dir,'err');
+  const fo=openSync(out,'w'),fe=openSync(err,'w');
+  try{
+   const p=Bun.spawnSync(args,{stdin:'ignore',stdout:fo,stderr:fe,timeout});
+   if(p.exitCode!==0)throw Error(`${args[0]} ${args[1]} failed: ${readFileSync(err,'utf8').trim()||'timeout or nonzero exit'}`);
+   return readFileSync(out,'utf8');
+  }finally{closeSync(fo);closeSync(fe);rmSync(dir,{recursive:true,force:true});}
+ }
  const p=Bun.spawnSync(args,{stdin:'ignore',stdout:'pipe',stderr:'pipe',timeout});
  if(p.exitCode!==0)throw Error(`${args[0]} ${args[1]} failed: ${p.stderr.toString().trim()||'timeout or nonzero exit'}`);
  return p.stdout.toString();
@@ -88,10 +100,13 @@ function readRegistry():Device[]{
  const rows=JSON.parse(run(['infisical','secrets',...providerArgs(),'--output=json','--expand=false','--include-imports=false','--secret-overriding=false']));
  if(rows===null)return [];
  if(!Array.isArray(rows))throw Error('Infisical did not return a secret array');
- return validateRegistry(rows.map((r:any)=>{
-  if(!/^DEVICE_[A-Z][A-Z0-9_]*$/.test(r.secretKey))throw Error('unexpected entry in /devices');
-  const n=validateNode(JSON.parse(r.secretValue));
-  if(secretName(n.id)!==r.secretKey)throw Error('secret name/device id mismatch');return n;
+ return validateRegistry(rows.map((r:unknown)=>{
+  if(r===null||typeof r!=='object'||Array.isArray(r))throw Error('Infisical /devices entry is not an object');
+  const row=r as Record<string,unknown>;
+  if(typeof row.secretKey!=='string'||!/^DEVICE_[A-Z][A-Z0-9_]*$/.test(row.secretKey))throw Error('unexpected entry in /devices');
+  if(typeof row.secretValue!=='string')throw Error(`missing secret value for ${row.secretKey}`);
+  const n=validateNode(JSON.parse(row.secretValue));
+  if(secretName(n.id)!==row.secretKey)throw Error('secret name/device id mismatch');return n;
  }));
 }
 function secretName(id:string){if(!idPattern.test(id))throw Error('invalid device ID');return 'DEVICE_'+id.toUpperCase().replaceAll('-','_');}
@@ -169,7 +184,16 @@ export function assertSyncedTarget(n:Device,home:string){
  const userConfig=join(home,'.ssh/config');
  if(!existsSync(userConfig)||!readFileSync(userConfig,'utf8').startsWith(`Include ${quotePath(config)}\n`))throw Error('managed SSH Include missing; run devices sync explicitly');
 }
-function profiles():Profile[]{return JSON.parse(run(['herdr','machine','list','--json']));}
+function profiles():Profile[]{
+ const raw:unknown=JSON.parse(run(['herdr','machine','list','--json']));
+ if(!Array.isArray(raw))throw Error('herdr machine list did not return an array');
+ return raw.map((v,i)=>{
+  if(v===null||typeof v!=='object'||Array.isArray(v))throw Error(`herdr machine list entry ${i} is not an object`);
+  const p=v as Record<string,unknown>;
+  for(const k of ['id','label','target','session'] as const)if(typeof p[k]!=='string')throw Error(`herdr machine list entry ${i}.${k} must be a string`);
+  return {id:p.id as string,label:p.label as string,target:p.target as string,session:p.session as string,enabled:p.enabled===true};
+ });
+}
 function saveOwned(file:string,owned:Owned){atomic(file,JSON.stringify(owned,null,2)+'\n');}
 function livePid(pid:number){
  try{process.kill(pid,0);return true;}catch(e:any){if(e.code==='ESRCH')return false;throw e;}
@@ -199,7 +223,18 @@ function requireSession(n:Device,home:string){
  if(!/^status: running$/m.test(result.replaceAll('\r','')))throw Error(`${n.id}: start Herdr locally first; refusing remote server startup`);
 }
 function sync(nodes:Device[],home:string,state:string){
- const file=join(state,'profiles.json'),owned:Owned=existsSync(file)?JSON.parse(readFileSync(file,'utf8')):{};
+ const file=join(state,'profiles.json');
+ let owned:Owned={};
+ if(existsSync(file)){
+  const raw:unknown=JSON.parse(readFileSync(file,'utf8'));
+  if(raw===null||typeof raw!=='object'||Array.isArray(raw))throw Error('profiles.json is not an object');
+  for(const [id,entry] of Object.entries(raw)){
+   if(entry===null||typeof entry!=='object'||Array.isArray(entry))throw Error(`profiles.json['${id}'] is not an object`);
+   const e=entry as Record<string,unknown>;
+   if(typeof e.profileId!=='string')throw Error(`profiles.json['${id}'].profileId must be a string`);
+   owned[id]={profileId:e.profileId,node:validateNode(e.node)};
+  }
+ }
  preflightSSH(home);
  const current=profiles();const local=localInstance();
  // An empty ID records our intent before Herdr creates its opaque profile ID.
