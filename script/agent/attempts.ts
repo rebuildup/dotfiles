@@ -45,7 +45,6 @@ import {
   openSync,
   readFileSync,
   readdirSync,
-  renameSync,
   statSync,
   unlinkSync,
   writeFileSync,
@@ -66,6 +65,7 @@ import {
   optionalStr,
   stringList,
 } from "./contract.ts";
+import { sleepSync, writeFileAtomic } from "./util.ts";
 
 // ---------------------------------------------------------------------------
 // Constants and small validators
@@ -394,10 +394,6 @@ function lockOptionMs(value: unknown, name: string): number {
   return value;
 }
 
-function sleepSync(ms: number): void {
-  // Standard synchronous sleep; works on a Bun/Node main thread.
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
 
 /** Parse a lock file; null when absent content is hostile or unreadable. */
 function readLockFile(path: string): LockFileContents | null {
@@ -625,7 +621,7 @@ export class FsAttemptStore implements AttemptStore {
       );
     }
     const lease = parseLease(raw, `lease(${attemptKey}#${generation})`);
-    this.writeAtomic(
+    writeFileAtomic(
       join(this.dir(attemptKey), `lease-${generation}.json`),
       redactJson(withContract({ ...lease, released: true })),
     );
@@ -659,7 +655,7 @@ export class FsAttemptStore implements AttemptStore {
 
   writeRecord(attemptKey: string, record: AttemptRecord): void {
     parseAttemptRecord(record, "FsAttemptStore.writeRecord");
-    this.writeAtomic(join(this.dir(attemptKey), "record.json"), redactJson(record));
+    writeFileAtomic(join(this.dir(attemptKey), "record.json"), redactJson(record));
   }
 
   /** Per-attempt exclusive lock guarding the record's read-modify-write CAS. */
@@ -668,19 +664,6 @@ export class FsAttemptStore implements AttemptStore {
     return withFileLock(join(this.dir(attemptKey), "record.lock"), fn);
   }
 
-  /**
-   * Atomic replace: write a unique temp sibling, then rename(2) over the
-   * target. rename(2) atomically replaces the destination on POSIX — a
-   * reader sees either the old or the new complete file, never a tear. A
-   * failure is a real error and must surface, not be retried blind.
-   */
-  private writeAtomic(path: string, contents: string): void {
-    const dir = path.slice(0, path.lastIndexOf("/"));
-    mkdirSync(dir, { recursive: true });
-    const tmp = `${path}.tmp-${process.pid}-${Math.random().toString(36).slice(2, 10)}`;
-    writeFileSync(tmp, contents, "utf8");
-    renameSync(tmp, path);
-  }
 }
 
 // ---------------------------------------------------------------------------

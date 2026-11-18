@@ -568,7 +568,7 @@ describe("launcher integration", () => {
       }
     }
     const anonymous = data.routes.filter((r) => r.cred_kind === "anonymous");
-    expect(anonymous.map((r) => r.id)).toEqual(["opencode.ovhcloud"]);
+    expect(anonymous.map((r) => r.id)).toEqual(["omp.ovhcloud", "opencode.ovhcloud"]);
     expect(anonymous[0].cred).toBeNull();
     const deepseek = data.routes.find((r) => r.id === "claude.deepseek");
     expect(deepseek?.cred).toEqual({ env: "DEEPSEEK_API_KEY", infisical_required: false });

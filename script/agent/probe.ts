@@ -50,7 +50,7 @@
  * Run: bun test script/agent.probe.test.ts
  */
 
-import { mkdirSync, readFileSync, writeFileSync, realpathSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
   CONTRACT_VERSION,
@@ -68,6 +68,7 @@ import {
   type Evidence,
 } from "./contract";
 import { effectiveQuotaKey, loadCatalog, type Catalog } from "./catalog";
+import { dotfilesRepoRoot } from "./util";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -375,12 +376,9 @@ export function loadProbeConfig(configFile?: string): ProbeConfig {
 }
 
 function probeConfigPath(): string {
-  return process.env.AGENT_CONFIG || join(repoRoot(), "config", "agents.toml");
+  return process.env.AGENT_CONFIG || join(dotfilesRepoRoot(), "config", "agents.toml");
 }
 
-function repoRoot(): string {
-  return dirname(dirname(dirname(realpathSync(import.meta.path))));
-}
 
 /** Non-empty string or null; a secret NAME is the same shape as any key. */
 function optionalName(raw: unknown, where: string): string | null {

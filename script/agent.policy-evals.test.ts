@@ -117,7 +117,14 @@ describe("hard failure: wrong provider and unknown quota", () => {
   });
 
   test("quota-exhausted without reset never guesses a reset time", () => {
-    const c = classifyFailure({ httpStatus: 429, usage: [{ metric: "requests", remaining: 0 }] }, "2026-11-12T00:00:00Z");
+    const c = classifyFailure({
+      httpStatus: 429,
+      usage: [{
+        window: "minute", metric: "requests", limit: 100, remaining: 0, used: 100,
+        resetAt: null, provenance: "measured",
+        evidence: { at: "2026-11-12T00:00:00Z", source: "probe" },
+      }],
+    }, "2026-11-12T00:00:00Z");
     expect(c.category).toBe("quota-exhausted");
     expect(c.resetAt).toBeNull();
   });

@@ -6,7 +6,7 @@
  * and reconciliation of Issue/PR/branch state.
  */
 
-import { ContractError } from "./contract.ts";
+import { ContractError, agentStateDir } from "./contract.ts";
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -505,7 +505,3 @@ export function loadDeliveryState(issueNumber: number): any | null {
   }
 }
 
-// Re-export needed functions
-import { agentStateDir } from "./contract.ts";
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
-import { join } from "node:path";

@@ -12,11 +12,7 @@
 import {
   ContractError,
   parseRouteId,
-  formatRouteId,
   type RouteRef,
-  type Attested,
-  isUsable,
-  DEFAULT_MAX_EVIDENCE_AGE_MS,
 } from "./contract.ts";
 import {
   FallbackProfile,
@@ -28,277 +24,54 @@ import {
   parseFallbackProfile,
   resolveFallbackProfile,
   buildFallbackCatalog,
+  loadCatalogAttestations,
   mergeAttestations,
   seedAttestationsFromCatalog,
 } from "./fallback.ts";
-import { loadConfig, type Config, type Route, type Provider, type Harness } from "../agent.ts";
-import { effectiveQuotaKey, loadCatalog, type Catalog } from "./catalog.ts";
-import { agentStateDir } from "./contract.ts";
-import { readFileSync, existsSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { loadConfig, type Config } from "../agent.ts";
+import { getPrimaryQuotaScope, loadCatalog, type Catalog } from "./catalog.ts";
+import {
+  CATEGORY_FACTS,
+  CATEGORY_SEVERITY,
+  LIMIT_CATEGORIES,
+  classifyFailure as classifyLimitFailure,
+  type CategoryFacts,
+  type FailureSignal as LimitFailureSignal,
+  type LimitCategory,
+  type LimitClassification,
+} from "./limits.ts";
+import { readFileSync } from "node:fs";
 
 // ---------------------------------------------------------------------------
-// Error classification (compatible with #92 limits.ts)
+// Error classification — canonical implementation lives in limits.ts (#92).
+// This module re-exports the taxonomy and adapts the signal shape: the only
+// local addition is `quotaScopeKey`, which limits.ts does not carry.
 // ---------------------------------------------------------------------------
 
-/**
- * Failure categories matching limits.ts taxonomy.
- * When limits.ts (#119) is merged, this module should import from there.
- */
-export type LimitCategory =
-  | "rate-limit"       // 429 with retry-after; transient, reset possible
-  | "quota-exhausted"  // 429 with observed depleted allowance (remaining 0)
-  | "concurrency"      // parallelism limit; transient, no reset
-  | "billing"          // 402 payment required; NOT transient, NO reset
-  | "auth"             // 401/403; NOT transient, NO reset
-  | "network"          // timeout/dns/unreachable/5xx; transient
-  | "context"          // context length exceeded; deterministic
-  | "model-invalid"    // unknown/mismatched model id; config error
-  | "unknown";         // fail closed
+export { CATEGORY_FACTS, CATEGORY_SEVERITY, LIMIT_CATEGORIES };
+export type { CategoryFacts, LimitCategory };
 
-export const LIMIT_CATEGORIES: readonly LimitCategory[] = [
-  "rate-limit",
-  "quota-exhausted",
-  "concurrency",
-  "billing",
-  "auth",
-  "network",
-  "context",
-  "model-invalid",
-  "unknown",
-];
+/** Structured failure evidence. `quotaScopeKey` is fallback-exec's own
+ * provenance field; every other field is the canonical limits.ts signal. */
+export type FailureSignal = LimitFailureSignal & { quotaScopeKey?: string | null };
 
-/** Policy facts per category — single authority for decisions. */
-export interface CategoryFacts {
-  transient: boolean;
-  resetPossible: boolean;
-  scopeBlock: boolean;
-  checkpointRecovery: boolean;
-}
-
-export const CATEGORY_FACTS: Record<LimitCategory, CategoryFacts> = {
-  "rate-limit": { transient: true, resetPossible: true, scopeBlock: true, checkpointRecovery: true },
-  "quota-exhausted": { transient: true, resetPossible: true, scopeBlock: true, checkpointRecovery: true },
-  concurrency: { transient: true, resetPossible: false, scopeBlock: true, checkpointRecovery: true },
-  billing: { transient: false, resetPossible: false, scopeBlock: true, checkpointRecovery: false },
-  auth: { transient: false, resetPossible: false, scopeBlock: true, checkpointRecovery: false },
-  network: { transient: true, resetPossible: false, scopeBlock: false, checkpointRecovery: true },
-  context: { transient: false, resetPossible: false, scopeBlock: false, checkpointRecovery: false },
-  "model-invalid": { transient: false, resetPossible: false, scopeBlock: false, checkpointRecovery: false },
-  unknown: { transient: false, resetPossible: false, scopeBlock: false, checkpointRecovery: false },
-};
-
-/** Severity for admission block merging: lower = more severe. */
-export const CATEGORY_SEVERITY: Record<LimitCategory, number> = {
-  billing: 0,
-  auth: 0,
-  "quota-exhausted": 1,
-  "rate-limit": 2,
-  concurrency: 3,
-  network: 4,
-  context: 5,
-  "model-invalid": 5,
-  unknown: 6,
-};
-
-/** Classification result with structured evidence (no message scraping). */
-export interface ClassifiedError {
-  category: LimitCategory;
-  observedAt: string;
-  resetAt: string | null;
-  retryAfterMs: number | null;
-  exhausted: boolean;
-  reason: string;
+/** The classified verdict plus the quota scope it was observed under. */
+export interface ClassifiedError extends LimitClassification {
   quotaScopeKey: string | null;
 }
 
-const REASON_BY_CATEGORY: Record<LimitCategory, string> = {
-  "rate-limit": "HTTP 429: rate limited",
-  "quota-exhausted": "HTTP 429: allowance depleted (remaining 0 observed)",
-  concurrency: "concurrency limit observed",
-  billing: "HTTP 402: payment required; no provider reset time exists",
-  auth: "credential or authorization failure; not transient",
-  network: "transport or provider unavailable",
-  context: "request exceeds the model context window",
-  "model-invalid": "model id unknown or mismatched",
-  unknown: "unrecognized failure; failing closed",
-};
-
-const ERROR_KIND_CATEGORY: Record<string, LimitCategory> = {
-  context_length_exceeded: "context",
-  model_not_found: "model-invalid",
-  invalid_api_key: "auth",
-  insufficient_quota: "billing",
-  overloaded_error: "network",
-};
-
-const MIRRORED_EXIT_CODES: Record<number, LimitCategory> = {
-  401: "auth",
-  402: "billing",
-  403: "auth",
-  429: "rate-limit",
-};
-
-const PROBE_FAILURE_CATEGORY: Record<string, LimitCategory> = {
-  config: "unknown",
-  "model-mismatch": "model-invalid",
-  "credential-missing": "auth",
-  "not-launchable": "unknown",
-  dns: "network",
-  network: "network",
-  timeout: "network",
-  auth: "auth",
-  payment: "billing",
-  forbidden: "auth",
-  "rate-limit": "rate-limit",
-  "rate-limit-cooldown": "rate-limit",
-  restricted: "auth",
-  "no-tool-call": "unknown",
-  "unsupported-wire": "unknown",
-  http: "unknown",
-};
-
-const MAX_RETRY_AFTER_MS = 60 * 60 * 1000;
-const MAX_RESET_HORIZON_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
-
-interface FailureSignal {
-  httpStatus?: number | null;
-  failureKind?: string | null;
-  exitCode?: number | null;
-  retryAfterMs?: number | null;
-  resetAt?: string | null;
-  usage?: Array<{ metric: string; remaining: number }> | null;
-  errorKind?: string | null;
-  quotaScopeKey?: string | null;
-}
-
-function requireIsoTime(ts: string, where: string): string {
-  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/.test(ts)) {
-    throw new ContractError("schema", `${where}: not a valid ISO 8601 UTC timestamp`);
-  }
-  return ts;
-}
-
-function optionalNumber(raw: unknown, where: string, min: number, max: number): number | null {
-  if (raw === undefined || raw === null) return null;
-  if (typeof raw !== "number" || !Number.isFinite(raw) || !Number.isInteger(raw)) {
-    throw new ContractError("schema", `${where}: must be a finite integer`);
-  }
-  if (raw < min || raw > max) {
-    throw new ContractError("schema", `${where}: out of range`);
-  }
-  return raw;
-}
-
-function checkSignal(signal: FailureSignal, observedMs: number): {
-  httpStatus: number | null;
-  failureKind: string | null;
-  exitCode: number | null;
-  retryAfterMs: number | null;
-  resetAt: string | null;
-  usage: Array<{ metric: string; remaining: number }>;
-  errorKind: string | null;
-} {
+/**
+ * Classify a failure from structured evidence ONLY, via the canonical
+ * limits.ts classifier. `quotaScopeKey` is stripped before classification
+ * (limits.ts rejects unknown signal fields) and re-attached to the verdict.
+ */
+export function classifyFailure(signal: FailureSignal, observedAt: string): ClassifiedError {
   if (!signal || typeof signal !== "object") {
     throw new ContractError("schema", "signal object expected");
   }
-  
-  const httpStatus = optionalNumber(signal.httpStatus, "httpStatus", 100, 599);
-  if (httpStatus !== null && httpStatus < 400) {
-    throw new ContractError("schema", `httpStatus ${httpStatus} is not a failure`);
-  }
-  
-  let failureKind: string | null = null;
-  if (signal.failureKind !== undefined && signal.failureKind !== null) {
-    if (typeof signal.failureKind !== "string" || !PROBE_FAILURE_CATEGORY[signal.failureKind]) {
-      throw new ContractError("schema", `unknown failureKind`);
-    }
-    failureKind = signal.failureKind;
-  }
-  
-  const exitCode = optionalNumber(signal.exitCode, "exitCode", 0, 4_294_967_295);
-  const retryAfterMs = optionalNumber(signal.retryAfterMs, "retryAfterMs", 0, MAX_RETRY_AFTER_MS);
-  
-  let resetAt: string | null = null;
-  if (signal.resetAt !== undefined && signal.resetAt !== null) {
-    const parsed = requireIsoTime(signal.resetAt, "resetAt");
-    if (Date.parse(parsed) - observedMs <= MAX_RESET_HORIZON_MS) resetAt = parsed;
-  }
-  
-  let usage: Array<{ metric: string; remaining: number }> = [];
-  if (signal.usage !== undefined && signal.usage !== null) {
-    if (!Array.isArray(signal.usage)) {
-      throw new ContractError("schema", "usage must be an array");
-    }
-    usage = signal.usage;
-  }
-  
-  let errorKind: string | null = null;
-  if (signal.errorKind !== undefined && signal.errorKind !== null) {
-    if (typeof signal.errorKind !== "string" || !/^[A-Za-z0-9_.-]{1,100}$/.test(signal.errorKind)) {
-      throw new ContractError("schema", "malformed errorKind");
-    }
-    errorKind = signal.errorKind;
-  }
-  
-  return { httpStatus, failureKind, exitCode, retryAfterMs, resetAt, usage, errorKind };
-}
-
-/**
- * Classify a failure from structured evidence ONLY.
- * Mirrors limits.ts logic: HTTP status -> probe failureKind -> exit code -> unknown.
- * Message text is NEVER scraped; unknown fails closed.
- */
-export function classifyFailure(signal: FailureSignal, observedAt: string): ClassifiedError {
-  requireIsoTime(observedAt, "observedAt");
-  const observedMs = Date.parse(observedAt);
-  const checked = checkSignal(signal, observedMs);
-  
-  let category: LimitCategory = "unknown";
-  
-  if (checked.httpStatus !== null) {
-    const status = checked.httpStatus;
-    if (status === 401 || status === 403) {
-      category = "auth";
-    } else if (status === 402) {
-      category = "billing";
-    } else if (status === 429) {
-      if (checked.errorKind && ERROR_KIND_CATEGORY[checked.errorKind]) {
-        category = ERROR_KIND_CATEGORY[checked.errorKind];
-      } else if (checked.usage.some((u) => u.metric === "concurrency")) {
-        category = "concurrency";
-      } else if (checked.usage.some((u) => u.remaining === 0)) {
-        category = "quota-exhausted";
-      } else {
-        category = "rate-limit";
-      }
-    } else if (status === 413) {
-      category = "context";
-    } else if (status === 400 || status === 404) {
-      category = checked.errorKind && ERROR_KIND_CATEGORY[checked.errorKind]
-        ? ERROR_KIND_CATEGORY[checked.errorKind]
-        : "unknown";
-    } else if (status >= 500) {
-      category = "network";
-    }
-  } else if (checked.failureKind) {
-    category = PROBE_FAILURE_CATEGORY[checked.failureKind];
-  } else if (checked.exitCode !== null) {
-    category = MIRRORED_EXIT_CODES[checked.exitCode] ?? "unknown";
-  }
-  
-  const facts = CATEGORY_FACTS[category];
-  const exhausted = checked.usage.some((u) => u.remaining === 0);
-  
-  return {
-    category,
-    observedAt,
-    resetAt: facts.resetPossible ? checked.resetAt : null,
-    retryAfterMs: facts.transient ? checked.retryAfterMs : null,
-    exhausted,
-    reason: REASON_BY_CATEGORY[category],
-    quotaScopeKey: signal.quotaScopeKey ?? null,
-  };
+  const { quotaScopeKey, ...rest } = signal;
+  const base = classifyLimitFailure(rest, observedAt);
+  return { ...base, quotaScopeKey: quotaScopeKey ?? null };
 }
 
 // ---------------------------------------------------------------------------
@@ -351,10 +124,39 @@ export class FallbackExhaustedError extends ContractError {
  * `candidate` is null for the primary attempt and set for a fallback
  * candidate, so the caller can tell which one it is running.
  */
+/** Durable record of one execution attempt, delivered to `onAttempt`
+ * immediately after the attempt resolves so a caller can persist it even
+ * when the executor later throws (exhaustion, circuit breaker, stop). */
+export interface FallbackAttemptRecord {
+  route: RouteRef;
+  model: string;
+  candidate: FallbackCandidate | null;
+  success: boolean;
+  /** Raw structured failure evidence, when the attempt failed. */
+  error: FailureSignal | null;
+  /** The classified verdict for `error` (or the success path's null). */
+  classified: ClassifiedError | null;
+  result: any;
+}
+
+export interface FallbackExecutionOptions {
+  /**
+   * The model the task actually requested on the primary route (e.g. a
+   * `--model` override). Defaults to the route's declared default. Must be
+   * in the route/provider model allowlist — the worker is pinned to it, so
+   * recording anything else would misstate what ran.
+   */
+  primaryModel?: string;
+  /** Called after EVERY attempt outcome, in order, before the executor
+   * decides whether to retry, advance, or throw. */
+  onAttempt?: (record: FallbackAttemptRecord) => void | Promise<void>;
+}
+
 export async function executeWithFallback(
   config: Config,
   profileId: string,
-  taskFn: (route: RouteRef, model: string, candidate: FallbackCandidate | null) => Promise<{ success: boolean; error?: FailureSignal; result?: any }>
+  taskFn: (route: RouteRef, model: string, candidate: FallbackCandidate | null) => Promise<{ success: boolean; error?: FailureSignal; result?: any }>,
+  options: FallbackExecutionOptions = {}
 ): Promise<{ route: RouteRef; model: string; candidate: FallbackCandidate | null; result: any }> {
   // Load and validate profile
   const tomlText = readFileSync(config.path, "utf-8");
@@ -375,7 +177,7 @@ export async function executeWithFallback(
   // Durable committed evidence first, then local probe state (local wins).
   const attestationMap = mergeAttestations(
     seedAttestationsFromCatalog(catalogFacts),
-    loadAttestations(),
+    loadCatalogAttestations(),
   );
 
   // Get primary quota scope
@@ -383,9 +185,10 @@ export async function executeWithFallback(
 
   // Resolve profile
   const resolution = resolveFallbackProfile(profile, catalogLike, attestationMap, primaryQuotaScope);
-  if (!resolution.hasUsable) {
-    throw new ContractError("state", `No usable fallback candidates for profile ${profileId}: ${resolution.rejected.map(r => `${r.candidate.route}/${r.candidate.model}: ${r.reason}`).join("; ")}`);
-  }
+  // Zero usable candidates is NOT an error: the profile authorizes fallback,
+  // it does not require it. A healthy primary must still run normally; the
+  // rejected candidates are simply unavailable if the primary fails.
+  // (resolution.rejected stays available for callers that want the audit.)
 
   const primaryRouteRef = parseRouteId(profile.primaryRoute);
   let state: FallbackExecutionState = {
@@ -407,7 +210,23 @@ export async function executeWithFallback(
   // unusable. Executing only the candidates would silently run a different
   // provider than the task asked for.
   const primaryRouteConfig = config.routes[profile.primaryRoute];
-  const primaryModel = primaryRouteConfig?.default_model ?? primaryRouteConfig?.models?.[0] ?? null;
+  const routeProvider = primaryRouteConfig ? config.providers[primaryRouteConfig.provider] : undefined;
+  const allowedModels = primaryRouteConfig?.models ?? routeProvider?.models ?? [];
+  let primaryModel: string | null;
+  if (options.primaryModel !== undefined) {
+    // The worker was already pinned to the requested model at dispatch; the
+    // executor must record/run THAT model, not silently substitute the route
+    // default. An id outside the allowlist is a caller bug — fail closed.
+    if (!allowedModels.includes(options.primaryModel)) {
+      throw new ContractError(
+        "identity",
+        `requested primary model '${options.primaryModel}' is not allowed on route '${profile.primaryRoute}'`,
+      );
+    }
+    primaryModel = options.primaryModel;
+  } else {
+    primaryModel = primaryRouteConfig?.default_model ?? primaryRouteConfig?.models?.[0] ?? null;
+  }
   if (!primaryModel) {
     throw new ContractError(
       "state",
@@ -453,7 +272,14 @@ export async function executeWithFallback(
       try {
         outcome = await taskFn(routeRef, model, candidate);
       } catch (error) {
-        // Unexpected error - treat as unknown (fail closed)
+        // A ContractError is a launcher/config defect (missing provider,
+        // credential, adapter), not provider evidence: it carries its own
+        // structured message and must surface unchanged. It must NOT be
+        // retried on, or silently advance, to another candidate.
+        if (error instanceof ContractError) throw error;
+        // Any other exception carries no structured evidence. Record it as
+        // unknown and STOP: advancing to another candidate on unknown facts
+        // would silently change account/model/billing scope (ADR-0017).
         const classified: ClassifiedError = {
           category: "unknown",
           observedAt: new Date().toISOString(),
@@ -464,17 +290,28 @@ export async function executeWithFallback(
           quotaScopeKey: null,
         };
         state.lastError = classified;
-        candidateRetries = FALLBACK_MAX_RETRIES_PER_CANDIDATE + 1;
-        continue;
+        await options.onAttempt?.({
+          route: routeRef, model, candidate,
+          success: false, error: null, classified, result: null,
+        });
+        throw new FallbackExhaustedError(profileId, classified);
       }
 
       if (outcome.success) {
+        await options.onAttempt?.({
+          route: routeRef, model, candidate,
+          success: true, error: null, classified: null, result: outcome.result ?? null,
+        });
         return { route: routeRef, model, candidate, result: outcome.result };
       }
 
       // Task failed - classify error from structured evidence
       const classified = classifyFailure(outcome.error ?? {}, new Date().toISOString());
       state.lastError = classified;
+      await options.onAttempt?.({
+        route: routeRef, model, candidate,
+        success: false, error: outcome.error ?? null, classified, result: outcome.result ?? null,
+      });
 
       // An unrecognized failure is not evidence that another candidate would
       // fare better, and ADR-0017 forbids silently changing accounts,
@@ -516,35 +353,5 @@ export async function executeWithFallback(
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-function loadAttestations(): Map<string, any> {
-  const map = new Map<string, any>();
-  const stateDir = join(agentStateDir(), "catalog");
-  if (!existsSync(stateDir)) return map;
-
-  for (const file of readdirSync(stateDir)) {
-    if (!file.endsWith(".json")) continue;
-    try {
-      const content = readFileSync(join(stateDir, file), "utf-8");
-      const data = JSON.parse(content);
-      if (data.attestations && typeof data.attestations === "object") {
-        for (const [key, value] of Object.entries(data.attestations)) {
-          map.set(key, value);
-        }
-      }
-    } catch {
-      // ignore malformed files
-    }
-  }
-  return map;
-}
-
-function getPrimaryQuotaScope(catalog: Catalog, primaryRoute: string): string | null {
-  try {
-    return effectiveQuotaKey(catalog, primaryRoute);
-  } catch {
-    return null;
-  }
 }
 

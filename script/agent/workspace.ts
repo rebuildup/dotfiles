@@ -76,6 +76,7 @@ import {
   validateOwner,
 } from "./attempts.ts";
 import { detectWsl, type MachineOS, type Runner } from "./machines.ts";
+import { writeFileAtomic } from "./util.ts";
 
 // ---------------------------------------------------------------------------
 // Resource kinds and ids
@@ -412,7 +413,7 @@ export class ResourceLeaseStore {
       throw new ContractError("state", `release: lease is held by '${stored.owner}', not '${parsed.owner}'`);
     }
     if (stored.released) return; // idempotent
-    this.writeAtomic(
+    writeFileAtomic(
       this.leasePath(parsed.kind, parsed.resourceId, parsed.generation),
       redactJson({ contract_version: CONTRACT_VERSION, ...stored, released: true }),
     );
@@ -443,23 +444,6 @@ export class ResourceLeaseStore {
     return true;
   }
 
-  /** Atomic replace: write a temp sibling, then rename over the target. */
-  private writeAtomic(path: string, contents: string): void {
-    const dir = path.slice(0, path.lastIndexOf("/"));
-    mkdirSync(dir, { recursive: true });
-    const tmp = `${path}.tmp-${process.pid}-${Math.random().toString(36).slice(2, 10)}`;
-    writeFileSync(tmp, contents, "utf8");
-    try {
-      renameSync(tmp, path);
-    } catch (error) {
-      try {
-        rmSync(tmp, { force: true });
-      } catch {
-        /* the rename error is the one to report */
-      }
-      throw error;
-    }
-  }
 }
 
 // ---------------------------------------------------------------------------

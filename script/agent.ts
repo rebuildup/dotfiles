@@ -45,9 +45,9 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
-  readdirSync,
   readFileSync,
   realpathSync,
+  renameSync,
   symlinkSync,
   unlinkSync,
   writeFileSync,
@@ -61,18 +61,19 @@ import {
   renderRoutesText,
   UnknownGuideTopicError,
 } from "./agent/help";
-import { effectiveQuotaKey, loadCatalog, type Catalog } from "./agent/catalog";
+import { getPrimaryQuotaScope, loadCatalog, type Catalog } from "./agent/catalog";
 import {
   buildFallbackCatalog,
   listFallbackProfiles,
+  loadCatalogAttestations,
   mergeAttestations,
   parseFallbackProfile,
   resolveFallbackProfile,
   renderFallbackResolution,
   seedAttestationsFromCatalog,
 } from "./agent/fallback";
-import { agentStateDir } from "./agent/contract";
 import { ContractError, redactJson } from "./agent/contract";
+import { dotfilesRepoRoot } from "./agent/util";
 
 const PROGRAM = "agent";
 const EXIT_USAGE = 2;
@@ -303,18 +304,15 @@ interface Plan {
   baseline: string[] | null; // null = current process env
 }
 
-function repoRoot(): string {
-  return dirname(dirname(realpathSync(import.meta.path)));
-}
 
 function configPath(): string {
-  return process.env.AGENT_CONFIG || join(repoRoot(), "config", "agents.toml");
+  return process.env.AGENT_CONFIG || join(dotfilesRepoRoot(), "config", "agents.toml");
 }
 
 function withSecretsPath(): string {
   return (
     process.env.AGENT_WITH_SECRETS ||
-    join(repoRoot(), "script", IS_WINDOWS ? "with-secrets.ps1" : "with-secrets")
+    join(dotfilesRepoRoot(), "script", IS_WINDOWS ? "with-secrets.ps1" : "with-secrets")
   );
 }
 
@@ -1640,6 +1638,15 @@ function ompCustomBaseUrl(provider: Provider): string {
   return url;
 }
 
+/**
+ * The `apiKey: "!…"` command rendered into a managed models.yml: the
+ * repo-shipped helper resolves the named Infisical secret with the canonical
+ * self-host flags (never Infisical Cloud).
+ */
+function ompInfisicalKeyCommand(secretName: string): string {
+  return `${join(import.meta.dir, "agent", "infisical-key.sh")} ${secretName}`;
+}
+
 function ompModelLimits(provider: Provider, modelId: string): { contextWindow?: number; maxTokens?: number } {
   const spec = provider.omp_models[modelId];
   if (spec) return { contextWindow: spec.context, maxTokens: spec.output };
@@ -1661,8 +1668,18 @@ export function renderOmpModelsYaml(provider: Provider): string {
   ];
   if (provider.anonymous) {
     lines.push('    auth: "none"');
+  } else if (provider.secret) {
+    // Infisical-backed credential: OMP runs the `!` command and uses its
+    // stdout as the key, so the secret travels Infisical -> OMP directly.
+    // It never enters Herdr argv (`--env NAME=VALUE`), the pane environment,
+    // or the Herdr server — the exposure the env-name form had on the
+    // worker path. The env-name form remains for providers whose credential
+    // is ambient-only (no Infisical secret name).
+    lines.push(
+      `    apiKey: ${JSON.stringify(`!${ompInfisicalKeyCommand(provider.secret)}`)}`
+    );
   } else {
-    const envName = provider.env ?? provider.secret;
+    const envName = provider.env;
     if (!envName) {
       throw new AgentError(
         `provider '${provider.key}' omp_custom declares no credential env name`,
@@ -1690,11 +1707,16 @@ export interface OmpCustomLaunch {
   modelsSha256: string;
 }
 
+const OMP_MODELS_MANAGED_MARKER = "# Managed by the dotfiles agent launcher";
+
 /**
- * Ensure the launcher-managed models.yml exists and is byte-identical to
- * what config declares. An existing file with different content is never
- * overwritten: it is either user-owned or stale, and silently replacing it
- * could redirect the credential or endpoint.
+ * Ensure the launcher-managed models.yml exists and matches what config
+ * declares. A file WITHOUT the managed marker is never touched: it is
+ * user-owned and could redirect the credential or endpoint. A file WITH the
+ * marker but stale content is the launcher's own artifact from an older
+ * config/launcher version — it is rewritten atomically so an upgrade (e.g.
+ * env-name apiKey -> `!command`) does not wedge every route on a hash
+ * mismatch.
  */
 export function ensureOmpCustomProvider(provider: Provider): OmpCustomLaunch {
   const profile = ompCustomProfileName(provider.key);
@@ -1706,11 +1728,17 @@ export function ensureOmpCustomProvider(provider: Provider): OmpCustomLaunch {
   if (existsSync(modelsPath)) {
     const existing = readFileSync(modelsPath, "utf8");
     if (existing !== content) {
-      throw new AgentError(
-        `OMP custom provider models.yml (${modelsPath}) exists with different ` +
-          "content; it is launcher-managed — remove it or run native `omp`",
-        EXIT_RUNTIME
-      );
+      if (!existing.startsWith(OMP_MODELS_MANAGED_MARKER)) {
+        throw new AgentError(
+          `OMP custom provider models.yml (${modelsPath}) exists without the ` +
+            "launcher-managed marker; refusing to overwrite a user-owned file",
+          EXIT_RUNTIME
+        );
+      }
+      // Stale launcher-managed artifact: replace with the canonical content.
+      const tmp = `${modelsPath}.tmp-${process.pid}`;
+      writeFileSync(tmp, content, { mode: 0o600 });
+      renameSync(tmp, modelsPath);
     }
   } else {
     writeFileSync(modelsPath, content, { mode: 0o600 });
@@ -1782,10 +1810,32 @@ function insideHerdr(): boolean {
   );
 }
 
-function planOmp(plan: Plan, harness: Harness, provider: Provider, model: string | null): void {
-  if (model === null) throw new AgentError("resolved no model for adapter omp");
-  const custom = provider.omp_custom;
-  if (provider.anonymous && !custom) {
+export interface OmpWorkerPreparation {
+  /** `--profile` value for omp_custom providers, else null. */
+  profile: string | null;
+  /** omp_custom launch details for the pre-spawn guard payload. */
+  custom: OmpCustomLaunch | null;
+}
+
+/**
+ * Side-effecting preparation for an OMP worker launch, shared by the
+ * interactive plan path (`planOmp`) and the Herdr worker path
+ * (`script/agent/task.ts`). Runs every check the launcher owns BEFORE a
+ * worker process exists:
+ *
+ * - omp_custom: generates/verifies the managed models.yml and rejects
+ *   ambient OMP_PROFILE / PI_* / OMP_*_DIR overrides (the launcher passes
+ *   --profile explicitly);
+ * - every omp route: rejects implicit model-switch config;
+ * - require_infisical: rejects dotenv/broker/models./stored-credential
+ *   overrides that could move the credential source.
+ *
+ * A Herdr worker cannot re-run these checks inside `__exec` (it is not
+ * launched through the with-secrets wrapper), so they run here, immediately
+ * before the worker is started.
+ */
+export function prepareOmpWorker(provider: Provider): OmpWorkerPreparation {
+  if (provider.anonymous && !provider.omp_custom) {
     // OMP resolves its credential ladder from env/stored auth; an
     // anonymous route declares no credential env name and the launcher cannot
     // prove OMP sends no key. Fail closed rather than risk a paid path.
@@ -1797,9 +1847,9 @@ function planOmp(plan: Plan, harness: Harness, provider: Provider, model: string
         "(models.yml auth: none)"
     );
   }
-  let customLaunch: OmpCustomLaunch | null = null;
-  if (custom) {
-    customLaunch = ensureOmpCustomProvider(provider);
+  let custom: OmpCustomLaunch | null = null;
+  if (provider.omp_custom) {
+    custom = ensureOmpCustomProvider(provider);
     // The launcher passes --profile explicitly; an ambient profile/agent-dir
     // override would move OMP to a different agent dir where the managed
     // models.yml does not exist.
@@ -1808,45 +1858,46 @@ function planOmp(plan: Plan, harness: Harness, provider: Provider, model: string
         throw new AgentError(
           `OMP ${key} is defined in the ambient environment for the ` +
             `omp_custom '${provider.key}' route, which passes --profile ` +
-            `${customLaunch.profile} explicitly; unset it or run native \`omp\`.`,
+            `${custom.profile} explicitly; unset it or run native \`omp\`.`,
           EXIT_RUNTIME
         );
       }
     }
   }
-  const selector = `${provider.omp_id}/${model}`;
-  const guardPath = ompDestructiveGuardPath();
-
   // Model-pinning boundary for EVERY omp route, not just require_infisical:
   // agents.toml forbids implicit model fallback on all routes, so
   // omp.openrouter-free must fail closed on a user fallback chain that could
   // move a rate-limited free request to a paid model. The credential-source
   // checks below (dotenv/profile, broker, models.*, stored credentials) stay
   // require_infisical-only.
-  guardOmpImplicitSwitch(provider.omp_id, customLaunch?.agentDir);
-
-  const args: string[] = [
-    "--provider", provider.omp_id,
-    "--model", model,
-  ];
-  if (customLaunch) {
-    args.push("--profile", customLaunch.profile);
-  }
+  guardOmpImplicitSwitch(provider.omp_id, custom?.agentDir);
   if (provider.require_infisical) {
     const envName = provider.env || provider.secret;
     if (!envName) {
       throw new AgentError(`provider '${provider.key}' declares no credential env name`);
     }
-    guardOmpCredentialSource(provider.omp_id, envName, customLaunch ?? undefined);
-    plan.omp_guard = {
-      providerId: provider.omp_id,
-      envName,
-      agentDir: customLaunch?.agentDir ?? null,
-      modelsPath: customLaunch?.modelsPath ?? null,
-      modelsSha256: customLaunch?.modelsSha256 ?? null,
-    };
+    guardOmpCredentialSource(provider.omp_id, envName, custom ?? undefined);
+  }
+  return { profile: custom?.profile ?? null, custom };
+}
+
+/**
+ * The OMP argv for a worker on `provider`/`model`, including the tool-surface
+ * hardening every worker gets: the destructive guard and overlay are loaded
+ * for Herdr-started workers exactly as for launcher-started ones.
+ */
+export function ompWorkerArgs(provider: Provider, model: string, prepared: OmpWorkerPreparation): string[] {
+  const args: string[] = [
+    "--provider", provider.omp_id,
+    "--model", model,
+  ];
+  if (prepared.profile) {
+    args.push("--profile", prepared.profile);
+  }
+  if (provider.require_infisical) {
     // Pin the model roles. --models only drives Ctrl+P cycling, so it is not
     // a security allowlist and is intentionally not passed.
+    const selector = `${provider.omp_id}/${model}`;
     args.push(
       "--smol", selector,
       "--slow", selector,
@@ -1863,11 +1914,31 @@ function planOmp(plan: Plan, harness: Harness, provider: Provider, model: string
     "--no-lsp",
     "--no-pty",
     "--no-title",
-    "--trusted-extension", guardPath,
+    "--trusted-extension", ompDestructiveGuardPath(),
     "--config", ompWorkerOverlayPath(),
   );
   if (insideHerdr()) {
     args.push("--trusted-extension", ompHerdrExtensionPath());
+  }
+  return args;
+}
+
+function planOmp(plan: Plan, harness: Harness, provider: Provider, model: string | null): void {
+  if (model === null) throw new AgentError("resolved no model for adapter omp");
+  const prepared = prepareOmpWorker(provider);
+  const args = ompWorkerArgs(provider, model, prepared);
+  if (provider.require_infisical) {
+    const envName = provider.env || provider.secret;
+    if (!envName) {
+      throw new AgentError(`provider '${provider.key}' declares no credential env name`);
+    }
+    plan.omp_guard = {
+      providerId: provider.omp_id,
+      envName,
+      agentDir: prepared.custom?.agentDir ?? null,
+      modelsPath: prepared.custom?.modelsPath ?? null,
+      modelsSha256: prepared.custom?.modelsSha256 ?? null,
+    };
   }
   // A fresh machine's first interactive run otherwise blocks on OMP's setup
   // wizard before the Worker can accept a Herdr prompt. The slot is fully
@@ -2980,7 +3051,7 @@ function cmdFallback(config: Config, profileId: string, json: boolean): number {
   // wins: a fresher observation supersedes the reviewed record).
   const attestationMap = mergeAttestations(
     seedAttestationsFromCatalog(catalogFacts),
-    loadAttestations(),
+    loadCatalogAttestations(),
   );
 
   // Get primary quota scope for cross-candidate validation
@@ -3010,38 +3081,6 @@ function cmdFallback(config: Config, profileId: string, json: boolean): number {
     console.log(renderFallbackResolution(resolution));
   }
   return 0;
-}
-
-function loadAttestations(): Map<string, any> {
-  const map = new Map<string, any>();
-  const stateDir = join(agentStateDir(), "catalog");
-  if (!existsSync(stateDir)) return map;
-
-  for (const file of readdirSync(stateDir)) {
-    if (!file.endsWith(".json")) continue;
-    try {
-      const content = readFileSync(join(stateDir, file), "utf-8");
-      const data = JSON.parse(content);
-      // Catalog state stores attestations by route#model key
-      if (data.attestations && typeof data.attestations === "object") {
-        for (const [key, value] of Object.entries(data.attestations)) {
-          map.set(key, value);
-        }
-      }
-    } catch {
-      // ignore malformed files
-    }
-  }
-  return map;
-}
-
-/** The real shared allowance of a route, from the validated catalog tables. */
-function getPrimaryQuotaScope(catalog: Catalog, primaryRoute: string): string | null {
-  try {
-    return effectiveQuotaKey(catalog, primaryRoute);
-  } catch {
-    return null;
-  }
 }
 
 async function main(argv: string[]): Promise<number> {
