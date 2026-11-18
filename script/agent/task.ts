@@ -1303,6 +1303,22 @@ function gitOut(args: string[]): string | null {
  * the external observation the next run/resume compares against. Anything
  * unobservable stays null and is reported as such, never assumed safe.
  */
+/** True while the task workspace has an in-progress git operation
+ *  (merge, rebase, cherry-pick, revert, sequencer). Resuming into such a
+ *  state would interleave the continue-prompt with half-finished
+ *  external state — fail closed until the operator resolves it. */
+export function gitOperationInProgress(): boolean {
+  for (const ref of ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD"]) {
+    const p = gitOut(["rev-parse", "-q", "--git-path", ref]);
+    if (p !== null && existsSync(p)) return true;
+  }
+  for (const dir of ["rebase-merge", "rebase-apply", "sequencer"]) {
+    const p = gitOut(["rev-parse", "-q", "--git-path", dir]);
+    if (p !== null && existsSync(p)) return true;
+  }
+  return false;
+}
+
 export function captureWorkspaceBaseline(): WorkspaceBaseline | null {
   const head = gitOut(["rev-parse", "HEAD"]);
   if (head === null) return null; // not a git worktree — nothing observable
@@ -1635,6 +1651,15 @@ export async function resumeTaskAttempt(
   // replay until externally reconciled.
   const attemptKey = taskAttemptKey(state.descriptor);
   assertNoPendingEffects(attemptKey, taskId);
+  // Workspace must not be mid-git-operation: a continue prompt into an
+  // unresolved merge/rebase would race half-finished external state.
+  if (gitOperationInProgress()) {
+    throw new ContractError(
+      "state",
+      `task '${taskId}' workspace has a git operation in progress ` +
+        "(merge/rebase/cherry-pick/revert); resolve it externally before resume",
+    );
+  }
   const lease = acquireTaskLease(state.descriptor, `resume-${process.pid}`);
   // The lease covers the WHOLE resume — prompt, evidence scan, collect,
   // acceptance verification and the durable outcome write — so a concurrent
