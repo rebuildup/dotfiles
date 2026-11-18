@@ -6,7 +6,8 @@
  * layout and no domain rules.
  */
 
-import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 
 /**
  * Standard synchronous sleep; works on a Bun/Node main thread. Intended for
@@ -38,4 +39,12 @@ export function writeFileAtomic(path: string, contents: string): void {
     }
     throw error;
   }
+}
+
+/**
+ * Repository root containing config/agents.toml and script/. Resolved from
+ * this module's own location so every importer agrees on one root.
+ */
+export function dotfilesRepoRoot(): string {
+  return dirname(dirname(dirname(realpathSync(import.meta.path))));
 }

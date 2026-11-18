@@ -28,8 +28,8 @@
  * Network-free by contract: only the config file is read.
  */
 
-import { readFileSync, realpathSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   ContractError,
   isPlainObject,
@@ -43,6 +43,7 @@ import {
   type Attested,
   type QuotaScope,
 } from "./contract";
+import { dotfilesRepoRoot } from "./util";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -123,12 +124,9 @@ export interface Catalog {
 // ---------------------------------------------------------------------------
 
 export function catalogConfigPath(): string {
-  return process.env.AGENT_CONFIG || join(repoRoot(), "config", "agents.toml");
+  return process.env.AGENT_CONFIG || join(dotfilesRepoRoot(), "config", "agents.toml");
 }
 
-function repoRoot(): string {
-  return dirname(dirname(dirname(realpathSync(import.meta.path))));
-}
 
 // ---------------------------------------------------------------------------
 // Value checkers (run on the attested `value` after parseAttested)
