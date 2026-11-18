@@ -221,10 +221,11 @@ async function journaledEffect<T>(
   target: string,
   fn: () => Promise<T>,
   verdict?: (result: T) => EffectVerdict,
+  prompt?: string,
 ): Promise<T> {
   if (!lease) return fn();
   const now = Date.now();
-  journalPreEffect(taskAttemptStore, taskJournalStore, lease, { effectId, kind, target }, now);
+  journalPreEffect(taskAttemptStore, taskJournalStore, lease, { effectId, kind, target, ...(prompt !== undefined ? { prompt } : {}) }, now);
   try {
     const result = await fn();
     const v = verdict ? verdict(result) : "succeeded";
@@ -251,8 +252,11 @@ async function journaledEffect<T>(
  *  KNOWN failure; a stall or missing CLI means the prompt may or may not
  *  have landed — UNKNOWN, never recorded as sent. */
 function promptSendVerdict(r: { blocked?: boolean; stalled?: boolean; errorCode?: string }): EffectVerdict {
-  if (r.blocked === true || r.errorCode !== undefined) return "failed";
+  // A stall covers transport loss AND wait timeouts — Herdr may carry an
+  // errorCode for the timeout itself, so stalled must win over errorCode:
+  // the prompt's fate is UNKNOWN, never a confirmed send or failure.
   if (r.stalled === true) return "unknown";
+  if (r.blocked === true || r.errorCode !== undefined) return "failed";
   return "succeeded";
 }
 
@@ -1011,7 +1015,7 @@ export async function startTaskAttempt(
         // authorized.
         if (candidate === null) {
           const promptResult = await journaledEffect(opts?.lease, uniqueEffectId("prompt", attempt.herdrWorkerName!), "prompt-send", attempt.herdrWorkerName!, () =>
-            promptAgent(attempt.herdrWorkerName!, prompt, { wait: true, timeoutMs: promptTimeoutMs }), promptSendVerdict);
+            promptAgent(attempt.herdrWorkerName!, prompt, { wait: true, timeoutMs: promptTimeoutMs }), promptSendVerdict, prompt);
           const signal = promptFailureSignal(promptResult);
           if (signal) {
             const enriched = primaryProvider
@@ -1068,7 +1072,7 @@ export async function startTaskAttempt(
         let outcome: { success: boolean; error?: FailureSignal; result?: unknown } | undefined;
         try {
           const promptResult = await journaledEffect(opts?.lease, uniqueEffectId("prompt", candidateAttempt.workerName), "prompt-send", candidateAttempt.workerName, () =>
-            promptAgent(candidateAttempt.workerName, prompt, { wait: true, timeoutMs: promptTimeoutMs }), promptSendVerdict);
+            promptAgent(candidateAttempt.workerName, prompt, { wait: true, timeoutMs: promptTimeoutMs }), promptSendVerdict, prompt);
           const signal = promptFailureSignal(promptResult);
           if (signal) {
             outcome = {
@@ -1120,7 +1124,7 @@ export async function startTaskAttempt(
     } else {
       // No fallback profile - single route execution
       const promptResult = await journaledEffect(opts?.lease, uniqueEffectId("prompt", attempt.herdrWorkerName!), "prompt-send", attempt.herdrWorkerName!, () =>
-        promptAgent(attempt.herdrWorkerName!, prompt, { wait: true, timeoutMs: promptTimeoutMs }), promptSendVerdict);
+        promptAgent(attempt.herdrWorkerName!, prompt, { wait: true, timeoutMs: promptTimeoutMs }), promptSendVerdict, prompt);
       const signal = promptFailureSignal(promptResult);
       if (signal) {
         const enriched = primaryProvider
@@ -1577,7 +1581,10 @@ export async function reconcileTaskEffects(
             provider,
             cwd: process.cwd(),
             sinceMs: Number.isFinite(sinceMs) ? sinceMs : 0,
-            prompt: state.descriptor.prompt,
+            // Each effect carries the prompt ACTUALLY sent — a resume
+            // prompt differs from descriptor.prompt, and matching the
+            // wrong text would either miss real evidence or misattribute.
+            prompt: effect.prompt ?? state.descriptor.prompt,
           }));
         const ones = verdicts.filter((v) => v === "one").length;
         const manies = verdicts.filter((v) => v === "many").length;
@@ -1667,7 +1674,7 @@ export async function resumeTaskAttempt(
   let promptResult;
   try {
     promptResult = await journaledEffect(lease, uniqueEffectId("prompt", resumed.herdrWorkerName!), "prompt-send", resumed.herdrWorkerName!, () =>
-      promptAgent(resumed.herdrWorkerName!, prompt, { wait: true, timeoutMs: promptTimeoutMs }), promptSendVerdict);
+      promptAgent(resumed.herdrWorkerName!, prompt, { wait: true, timeoutMs: promptTimeoutMs }), promptSendVerdict, prompt);
   const signal = promptFailureSignal(promptResult);
   if (signal) {
     // Same evidence contract as dispatch: real provider errorStatus from
