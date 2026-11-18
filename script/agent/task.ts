@@ -14,8 +14,8 @@
  * Execution contract: [ADR-0019](../../docs/adr/ADR-0019.md).
  */
 
-import { ContractError, parseRouteId, formatRouteId, type RouteRef } from "./contract.ts";
-import { FallbackCandidate, parseFallbackProfile } from "./fallback.ts";
+import { ContractError, isPlainObject, parseRouteId, formatRouteId, parseTomlTable, requireStr, stringList, type RouteRef } from "./contract.ts";
+import { type FallbackCandidate, parseFallbackProfile } from "./fallback.ts";
 import {
   executeWithFallback,
   FallbackExhaustedError,
@@ -24,6 +24,7 @@ import {
   classifyFailure,
 } from "./fallback-exec.ts";
 import {
+  ompNeedsManagedProfile,
   ompWorkerArgs,
   prepareOmpWorker,
   type Config,
@@ -129,6 +130,183 @@ export function saveTaskState(taskId: string, state: {
   writeFileSync(taskStatePath(taskId), JSON.stringify(state, null, 2));
 }
 
+const ATTEMPT_STATUSES: readonly TaskAttempt["status"][] = [
+  "running", "completed", "failed", "blocked", "fallback",
+];
+const TASK_CLASSES: readonly TaskClass[] = ["simple", "cross-boundary", "capacity-constrained"];
+
+function optStr(raw: Record<string, unknown>, key: string): string | undefined {
+  const v = raw[key];
+  if (v === undefined) return undefined;
+  if (typeof v !== "string") throw new ContractError("schema", `task state: ${key} must be a string`);
+  return v;
+}
+
+function optNum(raw: Record<string, unknown>, key: string): number | undefined {
+  const v = raw[key];
+  if (v === undefined) return undefined;
+  if (typeof v !== "number" || !Number.isFinite(v)) {
+    throw new ContractError("schema", `task state: ${key} must be a finite number`);
+  }
+  return v;
+}
+
+function optNullableStr(raw: Record<string, unknown>, key: string): string | null | undefined {
+  const v = raw[key];
+  if (v === undefined) return undefined;
+  if (v !== null && typeof v !== "string") {
+    throw new ContractError("schema", `task state: ${key} must be a string or null`);
+  }
+  return v;
+}
+
+function optNullableNum(raw: Record<string, unknown>, key: string): number | null | undefined {
+  const v = raw[key];
+  if (v === undefined) return undefined;
+  if (v !== null && (typeof v !== "number" || !Number.isFinite(v))) {
+    throw new ContractError("schema", `task state: ${key} must be a finite number or null`);
+  }
+  return v;
+}
+
+function reqNullableStr(raw: Record<string, unknown>, key: string, where: string): string | null {
+  const v = raw[key];
+  if (v !== null && typeof v !== "string") {
+    throw new ContractError("schema", `${where}: ${key} must be a string or null`);
+  }
+  return v;
+}
+
+function reqNullableNum(raw: Record<string, unknown>, key: string, where: string): number | null {
+  const v = raw[key];
+  if (v !== null && (typeof v !== "number" || !Number.isFinite(v))) {
+    throw new ContractError("schema", `${where}: ${key} must be a finite number or null`);
+  }
+  return v;
+}
+
+/** Persisted ClassifiedError: LimitClassification fields plus quotaScopeKey. */
+function parseStoredError(raw: unknown, where: string): ClassifiedError {
+  if (!isPlainObject(raw)) throw new ContractError("schema", `${where}: error must be an object`);
+  if (typeof raw["category"] !== "string" || typeof raw["observedAt"] !== "string"
+      || typeof raw["reason"] !== "string" || typeof raw["exhausted"] !== "boolean") {
+    throw new ContractError("schema", `${where}: error classification fields invalid`);
+  }
+  const quotaScopeKey = raw["quotaScopeKey"] ?? null;
+  if (typeof quotaScopeKey !== "string" && quotaScopeKey !== null) {
+    throw new ContractError("schema", `${where}: quotaScopeKey must be a string or null`);
+  }
+  return {
+    category: raw["category"] as ClassifiedError["category"],
+    observedAt: raw["observedAt"] as string,
+    resetAt: reqNullableStr(raw, "resetAt", where),
+    retryAfterMs: reqNullableNum(raw, "retryAfterMs", where),
+    exhausted: raw["exhausted"] as boolean,
+    reason: raw["reason"] as string,
+    quotaScopeKey,
+  };
+}
+
+/** Persisted FallbackCandidate: enum members are re-validated at exec time. */
+function parseStoredCandidate(raw: unknown, where: string): FallbackCandidate {
+  if (!isPlainObject(raw)) throw new ContractError("schema", `${where}: fallbackCandidate must be an object`);
+  for (const key of ["route", "model", "billing", "credential", "scope"] as const) {
+    if (typeof raw[key] !== "string") {
+      throw new ContractError("schema", `${where}: fallbackCandidate.${key} must be a string`);
+    }
+  }
+  const note = optNullableStr(raw, "note");
+  const expiresAt = optNullableStr(raw, "expiresAt");
+  const maxSpend = optNullableNum(raw, "maxSpend");
+  return {
+    route: raw["route"] as string,
+    model: raw["model"] as string,
+    billing: raw["billing"] as FallbackCandidate["billing"],
+    credential: raw["credential"] as FallbackCandidate["credential"],
+    scope: raw["scope"] as FallbackCandidate["scope"],
+    ...(maxSpend !== undefined ? { maxSpend } : {}),
+    ...(expiresAt !== undefined ? { expiresAt } : {}),
+    ...(note !== undefined ? { note } : {}),
+  };
+}
+
+function parseStoredRoute(raw: unknown, where: string): RouteRef {
+  if (!isPlainObject(raw)) throw new ContractError("schema", `${where}: route must be an object`);
+  const harness = raw["harness"];
+  const provider = raw["provider"];
+  if (typeof harness !== "string" || typeof provider !== "string") {
+    throw new ContractError("schema", `${where}: route.harness/provider must be strings`);
+  }
+  return { harness, provider };
+}
+
+/** Validate one persisted attempt; optional complex payloads are shape-checked. */
+function parseStoredAttempt(raw: unknown, where: string): TaskAttempt {
+  if (!isPlainObject(raw)) throw new ContractError("schema", `${where}: attempt must be an object`);
+  const status = raw["status"];
+  if (typeof status !== "string" || !ATTEMPT_STATUSES.includes(status as TaskAttempt["status"])) {
+    throw new ContractError("schema", `${where}: invalid attempt status`);
+  }
+  for (const key of ["attemptNumber", "generation"] as const) {
+    const v = raw[key];
+    if (typeof v !== "number" || !Number.isFinite(v)) {
+      throw new ContractError("schema", `${where}: ${key} must be a finite number`);
+    }
+  }
+  const error = raw["error"];
+  const candidate = raw["fallbackCandidate"];
+  return {
+    id: requireStr(raw, "id", where),
+    taskId: requireStr(raw, "taskId", where),
+    route: parseStoredRoute(raw["route"], where),
+    model: requireStr(raw, "model", where),
+    attemptNumber: raw["attemptNumber"] as number,
+    startedAt: requireStr(raw, "startedAt", where),
+    status: status as TaskAttempt["status"],
+    generation: raw["generation"] as number,
+    ...(optStr(raw, "profileId") !== undefined ? { profileId: optStr(raw, "profileId")! } : {}),
+    ...(optStr(raw, "herdrPaneId") !== undefined ? { herdrPaneId: optStr(raw, "herdrPaneId")! } : {}),
+    ...(optStr(raw, "herdrWorkspaceId") !== undefined ? { herdrWorkspaceId: optStr(raw, "herdrWorkspaceId")! } : {}),
+    ...(optStr(raw, "herdrWorkerName") !== undefined ? { herdrWorkerName: optStr(raw, "herdrWorkerName")! } : {}),
+    ...(optStr(raw, "credentialScope") !== undefined ? { credentialScope: optStr(raw, "credentialScope")! } : {}),
+    ...(candidate != null ? { fallbackCandidate: parseStoredCandidate(candidate, `${where}.fallbackCandidate`) } : {}),
+    ...(error != null ? { error: parseStoredError(error, `${where}.error`) } : {}),
+    ...(raw["result"] !== undefined ? { result: raw["result"] } : {}),
+  };
+}
+
+function parseStoredDescriptor(raw: unknown, where: string): TaskDescriptor {
+  if (!isPlainObject(raw)) throw new ContractError("schema", `${where}: descriptor must be an object`);
+  const cls = raw["class"];
+  if (cls !== undefined && (typeof cls !== "string" || !TASK_CLASSES.includes(cls as TaskClass))) {
+    throw new ContractError("schema", `${where}: invalid task class`);
+  }
+  const maxAttempts = raw["maxAttempts"];
+  if (maxAttempts !== undefined && (typeof maxAttempts !== "number" || !Number.isFinite(maxAttempts))) {
+    throw new ContractError("schema", `${where}: maxAttempts must be a number`);
+  }
+  const timeoutMs = raw["timeoutMs"];
+  if (timeoutMs !== undefined && (typeof timeoutMs !== "number" || !Number.isFinite(timeoutMs))) {
+    throw new ContractError("schema", `${where}: timeoutMs must be a number`);
+  }
+  const acceptanceCriteria = raw["acceptanceCriteria"];
+  if (acceptanceCriteria !== undefined && !Array.isArray(acceptanceCriteria)) {
+    throw new ContractError("schema", `${where}: acceptanceCriteria must be an array`);
+  }
+  const profileId = optStr(raw, "profileId");
+  return {
+    id: requireStr(raw, "id", where),
+    route: requireStr(raw, "route", where),
+    model: requireStr(raw, "model", where),
+    prompt: requireStr(raw, "prompt", where),
+    ...(profileId !== undefined ? { profileId } : {}),
+    ...(cls !== undefined ? { class: cls as TaskClass } : {}),
+    ...(maxAttempts !== undefined ? { maxAttempts } : {}),
+    ...(acceptanceCriteria !== undefined ? { acceptanceCriteria: stringList(acceptanceCriteria, where, "acceptanceCriteria") } : {}),
+    ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+  };
+}
+
 export function loadTaskState(taskId: string): {
   descriptor: TaskDescriptor;
   history: TaskAttempt[];
@@ -137,7 +315,19 @@ export function loadTaskState(taskId: string): {
   const path = taskStatePath(taskId);
   if (!existsSync(path)) return null;
   try {
-    return JSON.parse(readFileSync(path, "utf-8"));
+    const raw: unknown = JSON.parse(readFileSync(path, "utf-8"));
+    if (!isPlainObject(raw)) return null;
+    const where = `task state ${taskId}`;
+    const historyRaw = raw["history"];
+    if (!Array.isArray(historyRaw)) throw new ContractError("schema", `${where}: history must be an array`);
+    const currentRaw = raw["currentAttempt"];
+    return {
+      descriptor: parseStoredDescriptor(raw["descriptor"], `${where}.descriptor`),
+      history: historyRaw.map((a, i) => parseStoredAttempt(a, `${where}.history[${i}]`)),
+      currentAttempt: currentRaw === null || currentRaw === undefined
+        ? null
+        : parseStoredAttempt(currentRaw, `${where}.currentAttempt`),
+    };
   } catch {
     return null;
   }
@@ -186,13 +376,13 @@ export function buildAgentStartOptions(
       `provider '${provider.key}' is anonymous; OMP has no credential-free route contract unless omp_custom = true`,
     );
   }
-  if (provider.omp_custom && !prepared?.profile) {
+  if (ompNeedsManagedProfile(provider) && !prepared?.profile) {
     throw new ContractError(
       "state",
-      `provider '${provider.key}' is omp_custom; buildAgentStartOptions requires prepareOmpWorker(provider) first`,
+      `provider '${provider.key}' uses a managed OMP profile; buildAgentStartOptions requires prepareOmpWorker(provider) first`,
     );
   }
-  const fallback: OmpWorkerPreparation = prepared ?? { profile: null, custom: null };
+  const fallback: OmpWorkerPreparation = prepared ?? { profile: null, managed: null };
   return ["--", ...ompWorkerArgs(provider, model, fallback)];
 }
 
@@ -228,7 +418,7 @@ export async function dispatchTask(
   let profileId = descriptor.profileId;
   if (profileId) {
     const tomlText = readFileSync(config.path, "utf-8");
-    const parsedToml = Bun.TOML.parse(tomlText) as Record<string, unknown>;
+    const parsedToml = parseTomlTable(tomlText, config.path);
     const profile = parseFallbackProfile(parsedToml, profileId);
     if (!profile) {
       throw new ContractError("identity", `Fallback profile not found: ${profileId}`);
@@ -261,7 +451,7 @@ export async function dispatchTask(
   // A Herdr worker cannot re-run them inside __exec, so they run here,
   // immediately before the worker is started.
   const prepared = prepareOmpWorker(provider);
-  await verifyOmpCustomCredential(provider);
+  await verifyOmpManagedCredential(provider);
 
   // Create Herdr workspace for the task
   const workspace = await createWorkspace(process.cwd(), `task-${descriptor.id.slice(0, 8)}`, {
@@ -372,14 +562,16 @@ function promptFailureSignal(promptResult: { blocked?: boolean; stalled?: boolea
  * whose credential is absent is a hard failure: starting the worker anyway
  * would burn a prompt on a guaranteed auth failure.
  */
-function routeWorkerEnv(provider: Provider): Record<string, string> {
+export function routeWorkerEnv(provider: Provider): Record<string, string> {
   if (provider.anonymous) return {};
-  // omp_custom providers with an Infisical secret resolve the credential
-  // inside OMP itself: models.yml `apiKey: "!infisical-key.sh <secret>"`
-  // makes OMP fetch the value from Infisical at request time. Passing the
-  // value through `herdr --env NAME=VALUE` would expose it in process argv
-  // and the Herdr server — the secret never needs to leave Infisical.
-  if (provider.omp_custom && provider.secret) return {};
+  // Managed-profile providers (omp_custom, or native require_infisical)
+  // resolve the credential inside OMP itself: models.yml
+  // `apiKey: "!infisical-key.sh <secret>"` makes OMP fetch the value from
+  // Infisical at request time. Passing the value through
+  // `herdr --env NAME=VALUE` would expose it in process argv and the Herdr
+  // server — the secret never needs to leave Infisical. Ambient-credential
+  // routes (require_infisical = false, no omp_custom) keep the env path.
+  if (provider.secret && (provider.omp_custom || provider.require_infisical)) return {};
   const envName = provider.env ?? provider.secret;
   if (!envName) {
     throw new ContractError("identity", `Provider '${provider.key}' declares no credential env name`);
@@ -404,8 +596,8 @@ function routeWorkerEnv(provider: Provider): Record<string, string> {
  * child process only to check non-emptiness; it is never stored, logged,
  * or passed on.
  */
-async function verifyOmpCustomCredential(provider: Provider): Promise<void> {
-  if (!provider.omp_custom || !provider.secret) return;
+async function verifyOmpManagedCredential(provider: Provider): Promise<void> {
+  if (!provider.secret || !(provider.omp_custom || provider.require_infisical)) return;
   const helper = join(import.meta.dir, "infisical-key.sh");
   const result = Bun.spawnSync({
     cmd: ["bash", helper, provider.secret],
@@ -414,8 +606,8 @@ async function verifyOmpCustomCredential(provider: Provider): Promise<void> {
   });
   if (result.exitCode !== 0 || result.stdout.length === 0) {
     throw new ContractError(
-      "auth",
-      `Infisical credential '${provider.secret}' for omp_custom provider ` +
+      "state",
+      `Infisical credential '${provider.secret}' for managed-profile provider ` +
         `'${provider.key}' did not resolve; the worker's apiKey command ` +
         "needs a working Infisical session for the dispatching user",
     );
@@ -596,7 +788,7 @@ export async function startTaskAttempt(
         const candidatePrepared = preparedProviders.get(routeRef.provider)
           ?? prepareOmpWorker(candidateProvider);
         preparedProviders.set(routeRef.provider, candidatePrepared);
-        await verifyOmpCustomCredential(candidateProvider);
+        await verifyOmpManagedCredential(candidateProvider);
         const options = buildAgentStartOptions(candidateProvider, model, candidatePrepared);
         const candidateAttempt = await startCandidateWorker(attempt, workerName, options, {
           ...routeWorkerEnv(candidateProvider),

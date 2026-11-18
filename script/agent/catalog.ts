@@ -36,6 +36,7 @@ import {
   parseAttested,
   parseModelId,
   parseRouteId,
+  parseTomlTable,
   quotaScopeKey,
   requireBool,
   requireStr,
@@ -310,7 +311,8 @@ function parsePricing(table: Record<string, unknown>, where: string): ModelPrici
       `${where}.pricing: 'currency' is required when a per-MTok price is declared`,
     );
   }
-  if (kind === "free" && ((input && input.value > 0) || (output && output.value > 0))) {
+  const attestedPrice = (att: Attested<number> | null): number => att?.value ?? 0;
+  if (kind === "free" && (attestedPrice(input) > 0 || attestedPrice(output) > 0)) {
     throw new ContractError(
       "schema",
       `${where}.pricing: kind 'free' contradicts a nonzero price`,
@@ -437,12 +439,7 @@ export function loadCatalog(configFile?: string): Catalog {
   } catch {
     throw new ContractError("schema", `config not found: ${path}`);
   }
-  let raw: Record<string, unknown>;
-  try {
-    raw = Bun.TOML.parse<Record<string, unknown>>(text);
-  } catch (exc) {
-    throw new ContractError("schema", `invalid TOML in ${path}: ${exc}`);
-  }
+  const raw = parseTomlTable(text, path);
 
   const providersSection = raw["providers"] ?? {};
   const routesSection = raw["routes"] ?? {};

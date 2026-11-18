@@ -83,6 +83,9 @@ function rec(overrides: Partial<UsageRecord> = {}): UsageRecord {
     wall_time_ms: 1000,
     tool_calls: 2,
     retries: 0,
+    usage_provenance: "measured",
+    wall_time_provenance: "measured",
+    error_kind: null,
     started_at: T0,
     ended_at: "2026-11-01T00:00:05Z",
     ...overrides,
@@ -159,7 +162,7 @@ describe("write-path validation", () => {
       { ...rec(), started_at: "2026-11-01 00:00:00" },
     ];
     for (const record of bad) {
-      expect(() => recordUsage(dir, record as UsageRecord)).toThrow(ContractError);
+      expect(() => recordUsage(dir, record as unknown as UsageRecord)).toThrow(ContractError);
     }
     expect(existsSync(join(dir, LEDGER_FILE))).toBeFalse();
   });
@@ -490,7 +493,7 @@ describe("retention and rotation", () => {
       recordUsage(dir, rec({ attempt: ATTEMPT_KEY.replace("nonce-1", `r${i}`), started_at: new Date(ts).toISOString(), ended_at: new Date(ts).toISOString() }));
     }
     const oneLine = Buffer.byteLength(readFileSync(join(dir, LEDGER_FILE), "utf8").split("\n")[0], "utf8") + 1;
-    const result = pruneLedger(dir, { now: Date.parse(T0) + DAY, maxBytes: oneLine * 2 + 1000 });
+    const result = pruneLedger(dir, { now: Date.parse(T0) + DAY, maxBytes: oneLine * 3 + 100 });
     expect(result.kept).toBe(3);
     expect(result.dropped).toBe(2);
     const read = readLedger(dir);

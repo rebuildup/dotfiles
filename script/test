@@ -109,4 +109,12 @@ if XDG_CONFIG_HOME="$backup_home/.config" HOME="$backup_home" "$backup_repo/scri
   exit 1
 fi
 
+# Strict typecheck of the Bun/TypeScript surface. Requires `bun install`
+# once (typescript + bun-types are devDependencies); without node_modules
+# this fails loudly rather than silently skipping the guarantee.
+(
+  cd "$repo_root"
+  bun run typecheck
+)
+
 printf 'symlink behavior tests passed\n'

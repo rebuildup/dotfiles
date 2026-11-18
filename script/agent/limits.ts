@@ -832,7 +832,7 @@ function requireBlockKey(raw: unknown, where: string): string {
   return raw;
 }
 
-function checkBlock(block: AdmissionBlock, where: string): AdmissionBlock {
+function checkBlock(block: unknown, where: string): AdmissionBlock {
   if (!isPlainObject(block)) {
     throw new ContractError("schema", `${where}: block object expected`);
   }
@@ -851,7 +851,7 @@ function checkBlock(block: AdmissionBlock, where: string): AdmissionBlock {
       : requireIsoTime(block.resetAt, `${where}: resetAt`);
   const createdAt = requireIsoTime(block.createdAt, `${where}: createdAt`);
   const observedByKey = requireStr(block, "observedBy", where);
-  parseAttemptKey(observedByKey, `${where}: observedBy`);
+  parseAttemptKey(observedByKey);
   const checked: AdmissionBlock = {
     key,
     category: block.category as LimitCategory,
@@ -887,7 +887,7 @@ function blockPath(dir: string, key: string): string {
 
 function parseBlock(raw: unknown, where: string): AdmissionBlock {
   const envelope = parseEnvelope(raw, BLOCK_FIELDS, where);
-  return checkBlock({ ...(envelope.payload as Record<string, unknown>) } as AdmissionBlock, where);
+  return checkBlock(envelope.payload, where);
 }
 
 function readBlockFile(path: string, key: string): AdmissionBlock | null {

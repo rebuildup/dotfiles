@@ -95,6 +95,12 @@ evaluation).
   Code would fall back to its own claude.ai login and silently leave the
   route. The adapter rejects `anonymous` providers instead of letting that
   happen.
+- **Managed OMP profiles.** `omp_custom` providers get a full provider
+  definition in generated `models.yml`; native `require_infisical`
+  providers (kilo, groq, opencode-go, mistral) get an `apiKey`-only
+  override merged with OMP's built-in definition. Both resolve Infisical
+  secrets inside OMP via `apiKey: "!infisical-key.sh <NAME>"` — the value
+  never transits Herdr `--env`. Ambient routes keep the env handoff.
 - **`omp.ovhcloud` / `omp.requesty` exist only via `omp_custom`.** OMP has
   no native provider id for either, so the launcher generates a managed
   `models.yml` under a `dotfiles-omp-<provider>` profile and passes
@@ -148,7 +154,7 @@ must equal the provider key. The generated `models.yml` carries the
 launcher-managed marker: a file without it is never overwritten, a stale
 managed file is rewritten atomically, and a post-plan tamper fails the
 pre-spawn sha256 recheck. Ambient `OMP_PROFILE` /
-`PI_*` overrides are rejected on `omp_custom` routes because the launcher
+`PI_*` overrides are rejected on managed-profile routes because the launcher
 passes `--profile` explicitly.
 
 `agent check` validates both, plus that a provider declaring `opencode_npm`

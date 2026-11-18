@@ -23,10 +23,23 @@ jobs:
           persist-credentials: false
       - name: Check shell syntax
         run: bash -n script/lib/managed-targets.sh script/lib/infisical-binding.sh script/link script/check script/test script/bootstrap script/secrets-doctor script/with-secrets script/check-secrets script/test-workflow script/agent/minimax script/agent/mimo home/.local/bin/agent home/.local/bin/devices config/agent-init.bash
+      - name: Install ShellCheck
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            sudo apt-get install -y shellcheck
+          else
+            brew install shellcheck
+          fi
+      - name: Lint shell scripts (ShellCheck)
+        run: shellcheck -s bash -x script/lib/managed-targets.sh script/lib/infisical-binding.sh script/link script/check script/test script/bootstrap script/secrets-doctor script/with-secrets script/check-secrets script/test-workflow config/infisical.sh home/.local/bin/agent home/.local/bin/devices config/agent-init.bash script/agent/minimax script/agent/mimo
       - name: Set up Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
         with:
           bun-version: '1.4.3'
+      - name: Install dev dependencies
+        run: bun install --frozen-lockfile
+      - name: Typecheck agent router (strict)
+        run: bun run typecheck
       - name: Test symlink behavior
         run: ./script/test
       - name: Test bootstrap and Infisical workflow

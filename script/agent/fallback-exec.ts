@@ -12,15 +12,16 @@
 import {
   ContractError,
   parseRouteId,
+  parseTomlTable,
   type RouteRef,
 } from "./contract.ts";
 import {
-  FallbackProfile,
-  FallbackCandidate,
-  FallbackResolution,
-  ResolvedCandidate,
-  RejectedCandidate,
-  FallbackRejectionReason,
+  type FallbackProfile,
+  type FallbackCandidate,
+  type FallbackResolution,
+  type ResolvedCandidate,
+  type RejectedCandidate,
+  type FallbackRejectionReason,
   parseFallbackProfile,
   resolveFallbackProfile,
   buildFallbackCatalog,
@@ -136,7 +137,7 @@ export interface FallbackAttemptRecord {
   error: FailureSignal | null;
   /** The classified verdict for `error` (or the success path's null). */
   classified: ClassifiedError | null;
-  result: any;
+  result: unknown;
 }
 
 export interface FallbackExecutionOptions {
@@ -155,12 +156,12 @@ export interface FallbackExecutionOptions {
 export async function executeWithFallback(
   config: Config,
   profileId: string,
-  taskFn: (route: RouteRef, model: string, candidate: FallbackCandidate | null) => Promise<{ success: boolean; error?: FailureSignal; result?: any }>,
+  taskFn: (route: RouteRef, model: string, candidate: FallbackCandidate | null) => Promise<{ success: boolean; error?: FailureSignal; result?: unknown }>,
   options: FallbackExecutionOptions = {}
-): Promise<{ route: RouteRef; model: string; candidate: FallbackCandidate | null; result: any }> {
+): Promise<{ route: RouteRef; model: string; candidate: FallbackCandidate | null; result: unknown }> {
   // Load and validate profile
   const tomlText = readFileSync(config.path, "utf-8");
-  const parsedToml = Bun.TOML.parse(tomlText) as Record<string, unknown>;
+  const parsedToml = parseTomlTable(tomlText, config.path);
   const profile = parseFallbackProfile(parsedToml, profileId);
   if (!profile) {
     throw new ContractError("identity", `Fallback profile not found: ${profileId}`);
@@ -268,7 +269,7 @@ export async function executeWithFallback(
       // carries no structured evidence, so it is classified as unknown. The
       // classification and the fail-fast decision below stay outside this
       // guard, so a deliberate stop is never re-labelled as "unknown".
-      let outcome: { success: boolean; error?: FailureSignal; result?: any };
+      let outcome: { success: boolean; error?: FailureSignal; result?: unknown };
       try {
         outcome = await taskFn(routeRef, model, candidate);
       } catch (error) {

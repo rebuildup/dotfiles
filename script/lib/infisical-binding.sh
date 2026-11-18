@@ -25,6 +25,8 @@ infisical_binding_check() {
     return 1
   fi
 
+  # shellcheck disable=SC2034 # env-prefix vars are consumed by the bun child
+  # shellcheck disable=SC2016 # ${...} below are JS template literals, not shell
   INFISICAL_BINDING_FILE="$config_file" \
   INFISICAL_BINDING_PROJECT="$INFISICAL_PROJECT_ID" \
   INFISICAL_BINDING_ENVIRONMENT="$INFISICAL_ENVIRONMENT" \

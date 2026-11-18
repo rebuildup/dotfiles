@@ -878,6 +878,7 @@ export function summarizeLedger(records: UsageRecord[]): LedgerSummary {
     effective: number;
     usageUnknown: number;
     costUnknown: number;
+    wallTimeUnknown: number;
     cost: CostTotals;
   }>();
   let retryObservations = 0;

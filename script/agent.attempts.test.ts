@@ -36,6 +36,7 @@ import { join } from "node:path";
 import {
   CONTRACT_VERSION,
   ContractError,
+  type ContractErrorCode,
   formatAttemptKey,
   parseJson,
 } from "./agent/contract.ts";
@@ -112,7 +113,7 @@ function checkpointOf(key: string, overrides: Partial<CheckpointRecord> = {}): C
   };
 }
 
-function expectContractError(fn: () => unknown, code?: string): void {
+function expectContractError(fn: () => unknown, code?: ContractErrorCode): void {
   try {
     fn();
   } catch (error) {

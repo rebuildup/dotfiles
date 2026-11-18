@@ -21,9 +21,10 @@ import {
   RECOMMEND_KNOWN_LIMITATIONS,
   type Recommendation,
   type RouteRecommendation,
+  type TaskRequest,
 } from "./agent/recommend";
 import { loadCatalog, type Catalog, type ProviderCatalogEntry } from "./agent/catalog";
-import { ContractError, type Evidence, type Provenance, type VerificationStatus } from "./agent/contract";
+import { ContractError, type Attested, type Evidence, type Provenance, type VerificationStatus } from "./agent/contract";
 
 const REPO = dirname(dirname(realpathSync(import.meta.path)));
 const REAL_CONFIG = join(REPO, "config", "agents.toml");
@@ -43,8 +44,8 @@ interface AttOpts {
   note?: string;
 }
 
-function att<T>(value: T | null, opts: AttOpts = {}) {
-  const out: Record<string, unknown> = {
+function att<T>(value: T | null, opts: AttOpts = {}): Attested<T> {
+  const out: Attested<T> = {
     value,
     status: opts.status ?? "verified-live",
     provenance: opts.provenance ?? "measured",
@@ -140,7 +141,7 @@ function rec(opts: RecOpts): unknown {
     retry_of: null,
     usage: opts.usage ?? null,
     cost:
-      opts.cost === undefined
+      opts.cost === undefined || opts.cost === null
         ? null
         : { amount: opts.cost.amount, currency: opts.cost.currency ?? "USD", basis: opts.cost.basis ?? "billed" },
     wall_time_ms: opts.wall ?? null,
@@ -171,7 +172,7 @@ function probeReport(
   };
 }
 
-function task(over: Record<string, unknown> = {}): Record<string, unknown> {
+function task(over: Partial<TaskRequest> = {}): TaskRequest {
   return {
     id: "task-fix-1",
     requiresToolCall: false,

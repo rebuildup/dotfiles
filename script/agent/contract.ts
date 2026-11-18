@@ -518,7 +518,7 @@ export function attest<T>(input: {
  * JSON, fixtures, foreign modules). Enforces the same matrix as `attest` —
  * including unknown-field rejection — and returns a normalized Attested.
  */
-export function parseAttested(raw: unknown, where: string): Attested<unknown> {
+export function parseAttested<T = unknown>(raw: unknown, where: string): Attested<T> {
   if (!isPlainObject(raw)) {
     throw new ContractError("schema", `${where}: object expected`);
   }
@@ -537,8 +537,8 @@ export function parseAttested(raw: unknown, where: string): Attested<unknown> {
     note,
   };
   validateAttestation(shape, where);
-  const att: Attested<unknown> = {
-    value: shape.value,
+  const att: Attested<T> = {
+    value: shape.value as T,
     status: shape.status as VerificationStatus,
     provenance: shape.provenance as Provenance,
     evidence,
@@ -807,6 +807,24 @@ export function parseJson(text: string): unknown {
 
 export function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Parse TOML text and require a table at the root. Shared by every config
+ * reader so parse failures and non-table roots fail closed with one error
+ * shape instead of seven hand-rolled variants.
+ */
+export function parseTomlTable(text: string, where: string): Record<string, unknown> {
+  let parsed: unknown;
+  try {
+    parsed = Bun.TOML.parse(text);
+  } catch (exc) {
+    throw new ContractError("schema", `invalid TOML in ${where}: ${exc}`);
+  }
+  if (!isPlainObject(parsed)) {
+    throw new ContractError("schema", `invalid TOML in ${where}: root is not a table`);
+  }
+  return parsed;
 }
 
 /**

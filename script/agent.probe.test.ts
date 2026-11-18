@@ -338,7 +338,7 @@ describe("probeRoute: live mode (mocked provider)", () => {
   test("provider classification: 401/402/403/timeout/network are distinct failures", async () => {
     const cases: Array<{
       responses: Array<ProbeTransportResponse | { error: "timeout" | "network" }>;
-      failure: string;
+      failure: "auth" | "payment" | "forbidden" | "timeout" | "network";
     }> = [
       { responses: [httpResponse(200), httpResponse(401)], failure: "auth" },
       { responses: [httpResponse(200), httpResponse(402)], failure: "payment" },

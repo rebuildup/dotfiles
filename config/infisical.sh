@@ -1,3 +1,4 @@
+# shellcheck disable=SC2034 # consumed by scripts that source this file
 # Non-secret Infisical instance metadata managed by dotfiles.
 INFISICAL_SITE_URL="https://secrets.rebuildup.dev"
 INFISICAL_API_URL="https://secrets.rebuildup.dev/api"

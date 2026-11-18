@@ -18,3 +18,4 @@ infisical-keyring/
 *.sops.json
 *.sops.yaml
 secrets/
+node_modules/

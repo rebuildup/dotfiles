@@ -10,7 +10,7 @@
  * profile only takes effect when explicitly selected and fully validated.
  */
 
-import { ContractError, agentStateDir, parseRouteId, formatRouteId, type RouteRef, attest, parseAttested, isUsable, type Attested, type Evidence, type VerificationStatus, type Provenance, type EvidenceSource, DEFAULT_MAX_EVIDENCE_AGE_MS } from "./contract.ts";
+import { ContractError, agentStateDir, parseRouteId, formatRouteId, type RouteRef, attest, parseAttested, isPlainObject, isUsable, type Attested, type Evidence, type VerificationStatus, type Provenance, type EvidenceSource, DEFAULT_MAX_EVIDENCE_AGE_MS } from "./contract.ts";
 import type { E2eObservation } from "./catalog.ts";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -44,13 +44,13 @@ export interface FallbackCandidate {
   /** Authorized credential source. */
   credential: CredentialSourceAuth;
   /** Hard spend/overage cap in the provider's currency (optional, provider-specific). */
-  maxSpend?: number;
+  maxSpend?: number | null;
   /** Task/permission scope: what this candidate is allowed to do. */
   scope: FallbackScope;
   /** ISO 8601 UTC expiration; absent = no time limit. */
-  expiresAt?: string;
+  expiresAt?: string | null;
   /** Human-readable note for audit trail. */
-  note?: string;
+  note?: string | null;
 }
 
 /** What a fallback candidate is permitted to execute. */
@@ -72,13 +72,13 @@ export interface FallbackProfile {
   /** Ordered list of authorized fallback candidates. First usable wins. */
   candidates: FallbackCandidate[];
   /** Global hard cap for total fallback spend across all candidates. */
-  globalMaxSpend?: number;
+  globalMaxSpend?: number | null;
   /** When this profile was authorized. */
   authorizedAt: string;
   /** Who authorized this profile (audit). */
   authorizedBy: string;
   /** Profile expiration; absent = no expiration. */
-  expiresAt?: string;
+  expiresAt?: string | null;
   /** Revocation flag; if true, profile is disabled regardless of dates. */
   revoked?: boolean;
 }
@@ -326,7 +326,16 @@ export function parseFallbackProfile(
     const candidateExpiresAt = optionalStrStrict(ct, "expires_at", `${key}.candidates[${idx}]`);
     if (candidateExpiresAt) validateISO8601(candidateExpiresAt, `${key}.candidates[${idx}].expires_at`);
     const note = optionalStrStrict(ct, "note", `${key}.candidates[${idx}]`);
-    return { route, model, billing, credential, maxSpend, scope, expiresAt: candidateExpiresAt, note };
+    return {
+      route,
+      model,
+      billing,
+      credential,
+      maxSpend,
+      scope,
+      expiresAt: candidateExpiresAt,
+      note,
+    };
   });
 
   return {
@@ -508,11 +517,12 @@ export function effectiveRouteQuotaKey(
  * Persisted/seeded attestation envelope: the contract-legal `value` shape
  * used for catalog evidence and local probe state (`route#model` keyed).
  */
-export type CatalogAttestation = Attested<{
+export interface CatalogAttestationValue {
   status: VerificationStatus;
   provenance: Provenance;
   evidence: Evidence;
-}>;
+}
+export type CatalogAttestation = Attested<CatalogAttestationValue>;
 export type CatalogAttestationMap = Map<string, CatalogAttestation>;
 
 /**
@@ -634,10 +644,15 @@ export function loadCatalogAttestations(): CatalogAttestationMap {
   for (const file of readdirSync(stateDir)) {
     if (!file.endsWith(".json")) continue;
     try {
-      const data = JSON.parse(readFileSync(join(stateDir, file), "utf-8"));
-      if (data.attestations && typeof data.attestations === "object") {
-        for (const [key, value] of Object.entries(data.attestations)) {
-          map.set(key, value as CatalogAttestation);
+      const data: unknown = JSON.parse(readFileSync(join(stateDir, file), "utf-8"));
+      if (!isPlainObject(data)) continue;
+      const raw = data["attestations"];
+      if (!isPlainObject(raw)) continue;
+      for (const [key, value] of Object.entries(raw)) {
+        try {
+          map.set(key, parseAttested<CatalogAttestationValue>(value, `catalog/${file}:${key}`));
+        } catch {
+          // A malformed entry is dropped: absent attestation fails closed.
         }
       }
     } catch {
@@ -868,7 +883,7 @@ export function resolveFallbackProfile(
     // Parse and validate attestation
     let parsedAttestation: CatalogAttestation;
     try {
-      parsedAttestation = parseAttested(attestation, `fallback:${attestKey}`);
+      parsedAttestation = parseAttested<CatalogAttestationValue>(attestation, `fallback:${attestKey}`);
     } catch {
       rejected.push({ candidate: cand, routeRef, reason: "validation-error" });
       continue;

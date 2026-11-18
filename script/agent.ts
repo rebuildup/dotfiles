@@ -72,7 +72,7 @@ import {
   renderFallbackResolution,
   seedAttestationsFromCatalog,
 } from "./agent/fallback";
-import { ContractError, redactJson } from "./agent/contract";
+import { ContractError, isPlainObject, parseTomlTable, redactJson } from "./agent/contract";
 import { dotfilesRepoRoot } from "./agent/util";
 
 const PROGRAM = "agent";
@@ -316,10 +316,6 @@ function withSecretsPath(): string {
   );
 }
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 /** Route keys are `<harness>.<provider>`; split at the first dot only.
  * (JS String.split's limit argument is not Python's maxsplit.) */
 function splitRouteKey(key: string): [string, string] {
@@ -469,9 +465,9 @@ export function loadConfig(path?: string): Config {
   }
   let raw: Record<string, unknown>;
   try {
-    raw = Bun.TOML.parse<Record<string, unknown>>(text);
+    raw = parseTomlTable(text, configPathResolved);
   } catch (exc) {
-    throw new AgentError(`invalid TOML in ${configPathResolved}: ${exc}`);
+    throw new AgentError(exc instanceof Error ? exc.message : String(exc));
   }
 
   const defaults = raw["defaults"] ?? {};
@@ -1655,10 +1651,42 @@ function ompModelLimits(provider: Provider, modelId: string): { contextWindow?: 
   return {};
 }
 
-/** Deterministic models.yml content for an omp_custom provider. */
+/** Whether an OMP route needs a launcher-managed profile:
+ * omp_custom providers always (the file IS the provider definition); native
+ * providers only when the credential must come from Infisical
+ * (`require_infisical` with a `secret`), so apiKey can resolve inside OMP
+ * via `!command` instead of transiting Herdr `--env`. Ambient-credential
+ * routes (`require_infisical = false`) keep the env path — unchanged. */
+export function ompNeedsManagedProfile(provider: Provider): boolean {
+  return provider.omp_custom || (provider.secret !== null && provider.require_infisical);
+}
+
+/** Deterministic models.yml content for a managed OMP profile. */
 export function renderOmpModelsYaml(provider: Provider): string {
+  if (!ompNeedsManagedProfile(provider)) {
+    throw new AgentError(
+      `provider '${provider.key}' does not need a managed OMP profile`,
+      EXIT_RUNTIME
+    );
+  }
   if (!provider.omp_custom) {
-    throw new AgentError(`provider '${provider.key}' is not omp_custom`, EXIT_RUNTIME);
+    // Native provider: models.yml only overrides the credential — OMP merges
+    // the entry with its built-in provider definition. The `!command` apiKey
+    // resolves the Infisical secret inside OMP; it never transits Herdr.
+    const secret = provider.secret;
+    if (!secret) {
+      throw new AgentError(
+        `provider '${provider.key}' managed profile requires a secret name`,
+        EXIT_RUNTIME
+      );
+    }
+    return [
+      "# Managed by the dotfiles agent launcher (config/agents.toml). Do not edit.",
+      "providers:",
+      `  ${provider.omp_id}:`,
+      `    apiKey: ${JSON.stringify(`!${ompInfisicalKeyCommand(secret)}`)}`,
+      "",
+    ].join("\n");
   }
   const lines: string[] = [
     "# Managed by the dotfiles agent launcher (config/agents.toml). Do not edit.",
@@ -1699,7 +1727,7 @@ export function renderOmpModelsYaml(provider: Provider): string {
   return lines.join("\n") + "\n";
 }
 
-export interface OmpCustomLaunch {
+export interface OmpManagedProfile {
   profile: string;
   agentDir: string;
   modelsPath: string;
@@ -1718,7 +1746,7 @@ const OMP_MODELS_MANAGED_MARKER = "# Managed by the dotfiles agent launcher";
  * env-name apiKey -> `!command`) does not wedge every route on a hash
  * mismatch.
  */
-export function ensureOmpCustomProvider(provider: Provider): OmpCustomLaunch {
+export function ensureOmpManagedProfile(provider: Provider): OmpManagedProfile {
   const profile = ompCustomProfileName(provider.key);
   const agentDir = ompCustomAgentDir(provider.key);
   const modelsPath = join(agentDir, "models.yml");
@@ -1730,7 +1758,7 @@ export function ensureOmpCustomProvider(provider: Provider): OmpCustomLaunch {
     if (existing !== content) {
       if (!existing.startsWith(OMP_MODELS_MANAGED_MARKER)) {
         throw new AgentError(
-          `OMP custom provider models.yml (${modelsPath}) exists without the ` +
+          `OMP managed models.yml (${modelsPath}) exists without the ` +
             "launcher-managed marker; refusing to overwrite a user-owned file",
           EXIT_RUNTIME
         );
@@ -1811,10 +1839,10 @@ function insideHerdr(): boolean {
 }
 
 export interface OmpWorkerPreparation {
-  /** `--profile` value for omp_custom providers, else null. */
+  /** `--profile` value for managed-profile providers, else null. */
   profile: string | null;
-  /** omp_custom launch details for the pre-spawn guard payload. */
-  custom: OmpCustomLaunch | null;
+  /** Managed-profile details for the pre-spawn guard payload. */
+  managed: OmpManagedProfile | null;
 }
 
 /**
@@ -1823,9 +1851,9 @@ export interface OmpWorkerPreparation {
  * (`script/agent/task.ts`). Runs every check the launcher owns BEFORE a
  * worker process exists:
  *
- * - omp_custom: generates/verifies the managed models.yml and rejects
- *   ambient OMP_PROFILE / PI_* / OMP_*_DIR overrides (the launcher passes
- *   --profile explicitly);
+ * - managed profile (omp_custom, or native require_infisical): generates/
+ *   verifies the managed models.yml and rejects ambient OMP_PROFILE /
+ *   PI_* / OMP_*_DIR overrides (the launcher passes --profile explicitly);
  * - every omp route: rejects implicit model-switch config;
  * - require_infisical: rejects dotenv/broker/models./stored-credential
  *   overrides that could move the credential source.
@@ -1847,9 +1875,14 @@ export function prepareOmpWorker(provider: Provider): OmpWorkerPreparation {
         "(models.yml auth: none)"
     );
   }
-  let custom: OmpCustomLaunch | null = null;
-  if (provider.omp_custom) {
-    custom = ensureOmpCustomProvider(provider);
+  // Managed profile: omp_custom (the file IS the provider definition) and
+  // native require_infisical providers (the file overrides apiKey so the
+  // Infisical secret resolves inside OMP via `!command`, never via Herdr
+  // --env). Ambient-credential routes get no profile and keep the env path.
+  const managed = ompNeedsManagedProfile(provider)
+    ? ensureOmpManagedProfile(provider)
+    : null;
+  if (managed) {
     // The launcher passes --profile explicitly; an ambient profile/agent-dir
     // override would move OMP to a different agent dir where the managed
     // models.yml does not exist.
@@ -1857,8 +1890,8 @@ export function prepareOmpWorker(provider: Provider): OmpWorkerPreparation {
       if (key in process.env) {
         throw new AgentError(
           `OMP ${key} is defined in the ambient environment for the ` +
-            `omp_custom '${provider.key}' route, which passes --profile ` +
-            `${custom.profile} explicitly; unset it or run native \`omp\`.`,
+            `managed-profile '${provider.key}' route, which passes --profile ` +
+            `${managed.profile} explicitly; unset it or run native \`omp\`.`,
           EXIT_RUNTIME
         );
       }
@@ -1868,17 +1901,17 @@ export function prepareOmpWorker(provider: Provider): OmpWorkerPreparation {
   // agents.toml forbids implicit model fallback on all routes, so
   // omp.openrouter-free must fail closed on a user fallback chain that could
   // move a rate-limited free request to a paid model. The credential-source
-  // checks below (dotenv/profile, broker, models.*, stored credentials) stay
+  // checks below (dotenv/profile, broker, models., stored credentials) stay
   // require_infisical-only.
-  guardOmpImplicitSwitch(provider.omp_id, custom?.agentDir);
+  guardOmpImplicitSwitch(provider.omp_id, managed?.agentDir);
   if (provider.require_infisical) {
     const envName = provider.env || provider.secret;
     if (!envName) {
       throw new AgentError(`provider '${provider.key}' declares no credential env name`);
     }
-    guardOmpCredentialSource(provider.omp_id, envName, custom ?? undefined);
+    guardOmpCredentialSource(provider.omp_id, envName, managed ?? undefined);
   }
-  return { profile: custom?.profile ?? null, custom };
+  return { profile: managed?.profile ?? null, managed };
 }
 
 /**
@@ -1935,9 +1968,9 @@ function planOmp(plan: Plan, harness: Harness, provider: Provider, model: string
     plan.omp_guard = {
       providerId: provider.omp_id,
       envName,
-      agentDir: prepared.custom?.agentDir ?? null,
-      modelsPath: prepared.custom?.modelsPath ?? null,
-      modelsSha256: prepared.custom?.modelsSha256 ?? null,
+      agentDir: prepared.managed?.agentDir ?? null,
+      modelsPath: prepared.managed?.modelsPath ?? null,
+      modelsSha256: prepared.managed?.modelsSha256 ?? null,
     };
   }
   // A fresh machine's first interactive run otherwise blocks on OMP's setup
@@ -2928,7 +2961,7 @@ function cmdCheck(config: Config): number {
   // fail CI here rather than at `agent fallback` time with a stack trace.
   let profileCount = 0;
   try {
-    const parsedToml = Bun.TOML.parse(readFileSync(config.path, "utf8")) as Record<string, unknown>;
+    const parsedToml = parseTomlTable(readFileSync(config.path, "utf8"), config.path);
     for (const id of listFallbackProfiles(parsedToml)) {
       parseFallbackProfile(parsedToml, id);
       profileCount++;
@@ -3016,7 +3049,7 @@ function cmdRoutes(config: Config, argv: string[]): number {
 function cmdFallback(config: Config, profileId: string, json: boolean): number {
   // Parse profile from config using Bun's native TOML parser
   const tomlText = readFileSync(config.path, "utf-8");
-  const parsedToml = Bun.TOML.parse(tomlText) as Record<string, unknown>;
+  const parsedToml = parseTomlTable(tomlText, config.path);
 
   // A malformed profile must surface as a normal launcher error, not a raw
   // ContractError stack trace (parseFallbackProfile throws on bad identity,

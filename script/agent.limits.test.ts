@@ -37,10 +37,12 @@ import {
   recordBlock,
   workerRecovery,
   type FailureSignal,
+  type LimitCategory,
   type LimitClassification,
   type RetryContext,
 } from "./agent/limits";
-import { ContractError } from "./agent/contract";
+import { ContractError, type ContractErrorCode } from "./agent/contract";
+import type { ProbeFailureKind } from "./agent/probe";
 
 const NOW = Date.parse("2026-11-06T12:00:00Z");
 const OBSERVED = "2026-11-06T12:00:00Z";
@@ -62,7 +64,7 @@ function classified(overrides: Partial<LimitClassification> = {}): LimitClassifi
   };
 }
 
-function context(overrides: RetryContext = {}): RetryContext {
+function context(overrides: Partial<RetryContext> = {}): RetryContext {
   return { attemptKind: "observational", ...overrides };
 }
 
@@ -81,7 +83,7 @@ function state(): string {
   return dir;
 }
 
-function expectContractError(fn: () => unknown, code?: string): void {
+function expectContractError(fn: () => unknown, code?: ContractErrorCode): void {
   try {
     fn();
   } catch (err) {
@@ -208,7 +210,7 @@ describe("classifyResponse", () => {
 
 describe("classifyFailure (signals)", () => {
   test("probe failure kinds map exhaustively and honestly", () => {
-    const cases: Array<[string, string]> = [
+    const cases: Array<[string, LimitCategory]> = [
       ["timeout", "network"],
       ["dns", "network"],
       ["network", "network"],
@@ -259,7 +261,7 @@ describe("classifyFailure (signals)", () => {
     expectContractError(() => classifyFailure({ exitCode: 1.5 }, OBSERVED));
     expectContractError(() => classifyFailure({ httpStatus: 0 }, OBSERVED));
     // Epoch NUMBER as resetAt is rejected (epoch-vs-ISO confusion).
-    expectContractError(() => classifyFailure({ resetAt: Date.now() }, OBSERVED));
+    expectContractError(() => classifyFailure({ resetAt: Date.now() as unknown as string }, OBSERVED));
     expectContractError(() => classifyFailure({ resetAt: "not-a-date" }, OBSERVED));
     expectContractError(() => classifyFailure({ resetAt: "2026-11-06T12:00:00+01:00" }, OBSERVED));
     expectContractError(() => classifyFailure({ usage: "nope" } as unknown as FailureSignal, OBSERVED));
