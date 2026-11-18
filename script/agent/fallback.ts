@@ -10,7 +10,7 @@
  * profile only takes effect when explicitly selected and fully validated.
  */
 
-import { ContractError, agentStateDir, parseRouteId, formatRouteId, type RouteRef, parseAttested, isPlainObject, isUsable, type Attested, type Evidence, type VerificationStatus, type Provenance, DEFAULT_MAX_EVIDENCE_AGE_MS } from "./contract.ts";;
+import { ContractError, agentStateDir, parseRouteId, formatRouteId, type RouteRef, parseAttested, isOneOf, isPlainObject, isUsable, type Attested, type Evidence, type VerificationStatus, type Provenance, DEFAULT_MAX_EVIDENCE_AGE_MS } from "./contract.ts";
 import type { E2eObservation } from "./catalog.ts";
 import { existsSync, readdirSync, readFileSync } from "node:fs";;
 import { join } from "node:path";;
@@ -102,11 +102,7 @@ export interface ResolvedCandidate {
   candidate: FallbackCandidate;
   routeRef: RouteRef;
   /** Current attestation status for this route/model. */
-  attestation: Attested<{
-    status: VerificationStatus;
-    provenance: Provenance;
-    evidence: Evidence;
-  }>;
+  attestation: CatalogAttestation;
 }
 
 /** A candidate that was rejected during resolution. */
@@ -209,22 +205,22 @@ const VALID_BILLING: readonly BillingBoundary[] = ["free", "subscription", "mete
 const VALID_CREDENTIAL: readonly CredentialSourceAuth[] = ["infisical", "native-auth", "env-file", "unset"];
 const VALID_SCOPE: readonly FallbackScope[] = ["read-only", "local-writes", "full"];
 
-function validateBilling(v: unknown, where: string): BillingBoundary {
-  if (typeof v !== "string" || !VALID_BILLING.includes(v as BillingBoundary))
+export function validateBilling(v: unknown, where: string): BillingBoundary {
+  if (!isOneOf(v, VALID_BILLING))
     throw new ContractError("schema", `${where}: invalid billing boundary "${v}"`);
-  return v as BillingBoundary;
+  return v;
 }
 
-function validateCredential(v: unknown, where: string): CredentialSourceAuth {
-  if (typeof v !== "string" || !VALID_CREDENTIAL.includes(v as CredentialSourceAuth))
+export function validateCredential(v: unknown, where: string): CredentialSourceAuth {
+  if (!isOneOf(v, VALID_CREDENTIAL))
     throw new ContractError("schema", `${where}: invalid credential source "${v}"`);
-  return v as CredentialSourceAuth;
+  return v;
 }
 
-function validateScope(v: unknown, where: string): FallbackScope {
-  if (typeof v !== "string" || !VALID_SCOPE.includes(v as FallbackScope))
+export function validateScope(v: unknown, where: string): FallbackScope {
+  if (!isOneOf(v, VALID_SCOPE))
     throw new ContractError("schema", `${where}: invalid scope "${v}"`);
-  return v as FallbackScope;
+  return v;
 }
 
 /**
@@ -276,11 +272,11 @@ export function parseFallbackProfile(
 ): FallbackProfile | null {
   // Bun.TOML.parse returns nested structure: { fallback_profile: { "omp-mistral-quota": {...} } }
   const fallbackSection = toml.fallback_profile;
-  if (!fallbackSection || typeof fallbackSection !== "object" || Array.isArray(fallbackSection)) return null;
-  const table = (fallbackSection as Record<string, unknown>)[profileId];
-  if (!table || typeof table !== "object" || Array.isArray(table)) return null;
+  if (!isPlainObject(fallbackSection)) return null;
+  const table = fallbackSection[profileId];
+  if (!isPlainObject(table)) return null;
 
-  const t = table as Record<string, unknown>;
+  const t = table;
   const key = `fallback_profile.${profileId}`;
   // Required fields
   const id = requireStr(t, "id", key);
@@ -314,9 +310,9 @@ export function parseFallbackProfile(
     throw new ContractError("schema", `${key}.candidates: must be non-empty array`);
 
   const candidates: FallbackCandidate[] = candidatesRaw.map((c, idx) => {
-    if (!c || typeof c !== "object" || Array.isArray(c))
+    if (!isPlainObject(c))
       throw new ContractError("schema", `${key}.candidates[${idx}]: must be object`);
-    const ct = c as Record<string, unknown>;
+    const ct = c;
     const route = requireStr(ct, "route", `${key}.candidates[${idx}]`);
     const model = requireStr(ct, "model", `${key}.candidates[${idx}]`);
     const billing = validateBilling(ct.billing, `${key}.candidates[${idx}].billing`);
@@ -357,8 +353,8 @@ export function parseFallbackProfile(
  */
 export function listFallbackProfiles(toml: Record<string, unknown>): string[] {
   const fallbackSection = toml.fallback_profile;
-  if (!fallbackSection || typeof fallbackSection !== "object" || Array.isArray(fallbackSection)) return [];
-  return Object.keys(fallbackSection as Record<string, unknown>).sort();
+  if (!isPlainObject(fallbackSection)) return [];
+  return Object.keys(fallbackSection).sort();
 }
 
 // ---------------------------------------------------------------------------
@@ -520,7 +516,8 @@ export function effectiveRouteQuotaKey(
 export interface CatalogAttestationValue {
   status: VerificationStatus;
   provenance: Provenance;
-  evidence: Evidence;
+  /** Mirrors the attestation's own evidence; nullable per the contract. */
+  evidence: Evidence | null;
 }
 export type CatalogAttestation = Attested<CatalogAttestationValue>;
 export type CatalogAttestationMap = Map<string, CatalogAttestation>;
@@ -553,7 +550,7 @@ export function seedAttestationsFromCatalog(
           value: {
             status: "restricted",
             provenance: restriction.provenance,
-            evidence: restriction.evidence as Evidence,
+            evidence: restriction.evidence,
           },
           status: restriction.status,
           provenance: restriction.provenance,
@@ -570,7 +567,7 @@ export function seedAttestationsFromCatalog(
         value: {
           status: e2e.status,
           provenance: e2e.provenance,
-          evidence: e2e.evidence as Evidence,
+          evidence: e2e.evidence,
         },
         status: e2e.status,
         provenance: e2e.provenance,

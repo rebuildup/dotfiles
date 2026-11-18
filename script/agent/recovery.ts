@@ -17,11 +17,12 @@
  *   - Per-account circuit breaker with explicit next action for waiting.
  */
 
-import { type Lease, type AttemptStore, readAttempt, acquireLease, isoTime } from "./attempts.ts";;
-import { type JournalStore, pendingSideEffects, type SideEffectPending } from "./checkpoint.ts";;
-import { type LimitClassification, type LimitCategory, CATEGORY_FACTS, workerRecovery, limitsStateDir } from "./limits.ts";;
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";;
-import { join } from "node:path";;
+import { type Lease, type AttemptStore, readAttempt, acquireLease, isoTime } from "./attempts.ts";
+import { type JournalStore, pendingSideEffects, type SideEffectPending } from "./checkpoint.ts";
+import { type LimitClassification, CATEGORY_FACTS, workerRecovery, limitsStateDir } from "./limits.ts";
+import { isPlainObject } from "./contract.ts";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 // ---------------------------------------------------------------------------
 // Recovery state machine
@@ -101,10 +102,10 @@ interface CircuitState {
 
 /** Validate persisted circuit state; a malformed file is treated as corrupt. */
 function parseCircuitState(raw: unknown): CircuitState {
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+  if (!isPlainObject(raw)) {
     throw new Error("circuit state: object expected");
   }
-  const r = raw as Record<string, unknown>;
+  const r = raw;
   if (typeof r["failures"] !== "number" || !Number.isFinite(r["failures"])) {
     throw new Error("circuit state: failures must be a finite number");
   }
@@ -196,9 +197,10 @@ export function probeAttemptLiveness(
   if (raw === null) return "unknown";
 
   try {
-    const lease = raw as { released?: boolean; expiresAt?: string };
-    if (lease.released) return "dead";
-    if (lease.expiresAt && Date.parse(lease.expiresAt) <= now) return "dead";
+    if (!isPlainObject(raw)) return "unknown";
+    if (raw["released"]) return "dead";
+    const expiresAt = raw["expiresAt"];
+    if (typeof expiresAt === "string" && expiresAt !== "" && Date.parse(expiresAt) <= now) return "dead";
     // Lease live and generation matches record → alive
     if (record.generation === newest) return "alive";
     return "unknown";
@@ -363,7 +365,7 @@ export function planRecovery(input: RecoveryInput): RecoveryPlan {
   }
 
   // 9. Classify the failure and decide
-  const facts = CATEGORY_FACTS[classification.category as LimitCategory] ?? CATEGORY_FACTS.unknown;
+  const facts = CATEGORY_FACTS[classification.category];
   const wr = workerRecovery(classification);
 
   // Terminal failure categories (auth, billing, context, model-invalid, unknown)

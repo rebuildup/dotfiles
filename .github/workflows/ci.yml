@@ -37,7 +37,7 @@ jobs:
       - name: Validate JSON files
         run: |
           git ls-files '*.json' | while IFS= read -r f; do
-            bun -e "JSON.parse(await Bun.file(process.argv[1]).text())" "$f" || { echo "invalid JSON: $f"; exit 1; }
+            python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$f" || { echo "invalid JSON: $f"; exit 1; }
           done
       - name: Set up Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6

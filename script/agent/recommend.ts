@@ -25,6 +25,7 @@
 
 import {
   ContractError,
+  isOneOf,
   isPlainObject,
   isStale,
   looksLikeSecretValue,
@@ -40,6 +41,8 @@ import { modelEntry, type Catalog, type ModelCatalogEntry } from "./catalog";
 import { quotaReport, type QuotaReport, type QuotaUsage } from "./quota";
 import { parseUsageRecord, type UsageRecord } from "./telemetry";
 import {
+  PROBE_FAILURE_KINDS,
+  PROBE_LAYERS,
   PROBE_LAYER_STATUSES,
   PROBE_TTL_MS,
   probeOverall,
@@ -277,20 +280,23 @@ function checkProbeReport(raw: unknown, where: string): ProbeReport {
     const w = `${where}.layers[${i}]`;
     if (!isPlainObject(item)) throw new ContractError("schema", `${w} must be a table`);
     const layer = requireStr(item["layer"], `${w}.layer`);
+    if (!isOneOf(layer, PROBE_LAYERS)) {
+      throw new ContractError("schema", `${w}.layer must be one of ${PROBE_LAYERS.join("|")}`);
+    }
     const status = requireStr(item["status"], `${w}.status`);
-    if (!(PROBE_LAYER_STATUSES as readonly string[]).includes(status)) {
+    if (!isOneOf(status, PROBE_LAYER_STATUSES)) {
       throw new ContractError("schema", `${w}.status must be one of ${PROBE_LAYER_STATUSES.join("|")}`);
     }
     const failure = item["failure"];
-    if (failure !== undefined && failure !== null && (typeof failure !== "string" || failure === "")) {
-      throw new ContractError("schema", `${w}.failure must be a non-empty string when present`);
+    if (failure !== undefined && failure !== null && !isOneOf(failure, PROBE_FAILURE_KINDS)) {
+      throw new ContractError("schema", `${w}.failure must be a ProbeFailureKind when present`);
     }
     const out: ProbeLayerResult = {
-      layer: layer as ProbeLayerResult["layer"],
-      status: status as ProbeLayerResult["status"],
+      layer,
+      status,
       evidence: null,
     };
-    if (failure !== undefined && failure !== null) out.failure = failure as ProbeFailureKind;
+    if (failure !== undefined && failure !== null) out.failure = failure;
     return out;
   });
   return {
@@ -582,7 +588,7 @@ function evaluateRoute(args: {
   const { routeId, task, catalog, records, probeByRoute, live, now, maxAgeMs } = args;
   // Live observations are validated inside quotaReport (fail-closed drop); the
   // cast only bridges the injected `unknown[]` to the declared parameter type.
-  const qr = quotaReport(catalog, routeId, { live: live as readonly QuotaUsage[], now, maxAgeMs });
+  const qr = quotaReport(catalog, routeId, { live, now, maxAgeMs });
 
   // Model resolution: latest probe report, else latest measured record.
   const probeEntry = probeByRoute.get(routeId) ?? null;
@@ -610,7 +616,7 @@ function evaluateRoute(args: {
   if (restrictionAtt && restrictionAtt.status === "restricted" && restrictionAtt.note) {
     let ev: Evidence | null = null;
     try {
-      ev = parseAttested(restrictionAtt as Attested<null>, `recommend(${routeId}).restriction`).evidence;
+      ev = parseAttested(restrictionAtt, `recommend(${routeId}).restriction`).evidence;
     } catch {
       ev = null;
     }
@@ -813,7 +819,7 @@ function evaluateRoute(args: {
   const pricing = me?.pricing ?? null;
   if (costUsd === null && pricing && freshFact(pricing.input_per_mtok, now, maxAgeMs) && freshFact(pricing.output_per_mtok, now, maxAgeMs) && stats.avgEffectiveTokens !== null) {
     if (pricing.currency === "USD" || pricing.currency === null) {
-      const perMtok = (pricing.input_per_mtok.value + pricing.output_per_mtok.value) as number;
+      const perMtok = pricing.input_per_mtok.value + pricing.output_per_mtok.value;
       costUsd = (perMtok * stats.avgEffectiveTokens) / 1_000_000;
       costBasis = "estimated";
       costEvidence = pricing.input_per_mtok.evidence;

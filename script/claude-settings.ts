@@ -167,9 +167,9 @@ const sha = (text: string) => createHash("sha256").update(text).digest("hex");
 function readJsonFile(path: string, label: string): Json {
   let parsed: Json;
   try {
-    parsed = JSON.parse(readFileSync(path, "utf8")) as Json;
+    parsed = JSON.parse(readFileSync(path, "utf8"));
   } catch (error) {
-    throw new Error(`${label} is not valid JSON: ${path} (${(error as Error).message})`);
+    throw new Error(`${label} is not valid JSON: ${path} (${error instanceof Error ? error.message : String(error)})`);
   }
   return parsed;
 }

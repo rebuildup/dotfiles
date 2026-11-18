@@ -134,7 +134,7 @@ function makeFakeRepo(tmp: string, workspaceId: string): string {
   mkdirSync(join(repo, "config"), { recursive: true });
   writeFileSync(join(repo, "script", "with-secrets.ps1"), readFileSync(WITH_SECRETS_PS1, "utf8"));
   writeFileSync(join(repo, "config", "infisical.sh"), readFileSync(INFISICAL_SH, "utf8"));
-  writeFileSync(join(repo, ".infisical.json"), JSON.stringify({ workspaceId }, null, 2));
+  writeFileSync(join(repo, ".infisical.json"), JSON.stringify({ workspaceId, defaultEnvironment: "dev" }, null, 2));
   return repo;
 }
 

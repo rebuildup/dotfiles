@@ -154,7 +154,7 @@ async function main(argv: string[]): Promise<number> {
     return cmdFallback(config, profileId, json);
   }
   if (action[0] === "task") {
-    return cmdTask(config, action[1], action[2], action[3]);
+    return cmdTask(config, action);
   }
   if (action[0] === "native") {
     const [, harnessKey, nativePassthru] = action;

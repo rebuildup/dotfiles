@@ -35,6 +35,7 @@
 import {
   ContractError,
   DEFAULT_MAX_EVIDENCE_AGE_MS,
+  isOneOf,
   isPlainObject,
   looksLikeSecretValue,
   parseEnvelope,
@@ -217,7 +218,7 @@ export function parseReviewRecord(raw: unknown, where: string): ReviewRecord {
   const reviewer = validateOwner(payload["reviewer"], `${where}.reviewer`);
   const sha = requireImmutableRef(payload["sha"], `${where}.sha`);
   const verdict = payload["verdict"];
-  if (!REVIEW_VERDICTS.includes(verdict as ReviewVerdict)) {
+  if (!isOneOf(verdict, REVIEW_VERDICTS)) {
     throw new ContractError("schema", `${where}.verdict: unknown verdict '${verdict}'`);
   }
   const diffFingerprint = payload["diffFingerprint"];
@@ -248,7 +249,7 @@ export function parseReviewRecord(raw: unknown, where: string): ReviewRecord {
   return {
     reviewer,
     sha,
-    verdict: verdict as ReviewVerdict,
+    verdict,
     diffFingerprint,
     findings,
     snapshotClean,
@@ -329,7 +330,7 @@ export function evaluateReview(input: unknown): ReviewDecision {
     throw new ContractError("schema", "evaluateReview: input must be an object");
   }
   const taskClass = input["taskClass"];
-  if (!TASK_CLASSES.includes(taskClass as TaskClass)) {
+  if (!isOneOf(taskClass, TASK_CLASSES)) {
     throw new ContractError("schema", `evaluateReview: unknown taskClass '${taskClass}'`);
   }
   const builder = validateOwner(input["builder"], "evaluateReview.builder");
@@ -347,7 +348,7 @@ export function evaluateReview(input: unknown): ReviewDecision {
     throw new ContractError("schema", "evaluateReview.maxAgeMs must be positive");
   }
 
-  const required = reviewRequirement(taskClass as TaskClass).coldReview;
+  const required = reviewRequirement(taskClass).coldReview;
   if (!required) {
     return { required: false, passed: true, reviewer: null, reasons: [], authenticityGuarantee: "distinct-only" };
   }

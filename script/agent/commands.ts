@@ -18,7 +18,7 @@ import { AgentError, EXIT_RUNTIME, EXIT_USAGE } from "./errors.ts";;
 import { finalize, launchArgv, needsInjection, runInherited, startViaWithSecrets } from "./exec.ts";;
 import { buildGuideData, buildHelpData, buildRoutesData, renderGuideText, renderRoutesText, UnknownGuideTopicError, usageText } from "./help.ts";;
 import { buildPlan, resolveModel, type Plan } from "./plan.ts";;
-import { checkPassthru } from "./args.ts";;
+import { checkPassthru, type TaskAction } from "./args.ts";
 import { parseShortcutArgs, resolveShortcut, shortcutName } from "./shortcuts.ts";;
 import { PROGRAM, which } from "./util.ts";;
 
@@ -417,15 +417,12 @@ const TASK_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
  * The task modules are imported lazily so the launcher stays importable
  * without dragging the Herdr/task stack into `agent check` etc.
  */
-export async function cmdTask(
-  config: Config,
-  sub: string,
-  arg: string | Record<string, unknown> | undefined,
-  opts?: Record<string, unknown>,
-): Promise<number> {
+export async function cmdTask(config: Config, action: TaskAction): Promise<number> {
+  const sub = action[1];
+  const arg = action[2];
   const task = await import("./task.ts");
   if (sub === "status") {
-    const taskId = arg as string;
+    const taskId = arg;
     if (!TASK_ID_PATTERN.test(taskId)) {
       throw new AgentError(`invalid task id '${taskId}'`, EXIT_USAGE);
     }
@@ -438,11 +435,11 @@ export async function cmdTask(
     return 0;
   }
   if (sub === "resume") {
-    const taskId = arg as string;
+    const taskId = arg;
     if (!TASK_ID_PATTERN.test(taskId)) {
       throw new AgentError(`invalid task id '${taskId}'`, EXIT_USAGE);
     }
-    const ro = (opts ?? {}) as { prompt: string | null; timeoutMs: number | null };
+    const ro = action[3];
     const { checkHerdrAvailable } = await import("./herdr.ts");
     const herdr = await checkHerdrAvailable();
     if (!herdr.available) {
@@ -470,11 +467,8 @@ export async function cmdTask(
     return result.success ? 0 : EXIT_RUNTIME;
   }
   // sub === "run"
-  const route = arg as string;
-  const o = (opts ?? {}) as {
-    model: string | null; fallback: string | null; prompt: string | null;
-    accept: string[]; timeoutMs: number | null;
-  };
+  const route = arg;
+  const o = action[3];
   const routeObj = config.routes[route];
   if (!routeObj) {
     throw new AgentError(`route not configured: ${route}`, EXIT_USAGE);

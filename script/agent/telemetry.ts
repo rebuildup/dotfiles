@@ -69,6 +69,7 @@ import {
   ContractError,
   agentStateDir,
   expectFields,
+  isKeyOf,
   isPlainObject,
   optionalStr,
   parseAttemptKey,
@@ -76,6 +77,7 @@ import {
   redact,
   requireStr,
   assertSameAttempt,
+  errnoCode,
   type AttemptIdentity,
 } from "./contract";
 import { sleepSync } from "./util.ts";
@@ -398,10 +400,10 @@ function parseUsageCost(raw: unknown, where: string): UsageCost {
     throw new ContractError("schema", `${where}: cost.currency must be an ISO 4217 code`);
   }
   const basis = requireStr(raw, "basis", where);
-  if (!(basis in COST_BASES)) {
+  if (!isKeyOf(basis, COST_BASES)) {
     throw new ContractError("schema", `${where}: cost.basis must be 'billed' or 'estimated'`);
   }
-  return { amount, currency, basis: basis as "billed" | "estimated" };
+  return { amount, currency, basis };
 }
 
 /**
@@ -418,7 +420,7 @@ export function parseUsageRecord(raw: unknown, where: string): UsageRecord {
 
   const attemptKey = requireStr(p, "attempt", where);
   parseAttemptKey(attemptKey); // identity rules: route/model/machine/nonce
-  const [, modelId, machineId, nonce] = attemptKey.split("#") as [string, string, string, string];
+  const [, modelId, machineId, nonce] = attemptKey.split("#");
   if (modelId.length > MODEL_MAX) {
     throw new ContractError("schema", `${where}: model id must be at most ${MODEL_MAX} characters`);
   }
@@ -427,11 +429,11 @@ export function parseUsageRecord(raw: unknown, where: string): UsageRecord {
   rejectCredentialShaped(nonce, where, "attempt.nonce");
 
   const outcome = requireStr(p, "outcome", where);
-  if (!(outcome in OUTCOMES)) {
+  if (!isKeyOf(outcome, OUTCOMES)) {
     throw new ContractError("schema", `${where}: outcome must be success|failure|killed`);
   }
   const verification = requireStr(p, "verification", where);
-  if (!(verification in VERIFICATIONS)) {
+  if (!isKeyOf(verification, VERIFICATIONS)) {
     throw new ContractError("schema", `${where}: verification must be pass|fail|skipped`);
   }
 
@@ -466,10 +468,10 @@ export function parseUsageRecord(raw: unknown, where: string): UsageRecord {
   const provenanceOf = (field: string): ProvenanceBasis => {
     const raw = p[field];
     if (raw === undefined || raw === null) return "measured";
-    if (typeof raw !== "string" || !(raw in PROVENANCE_BASES)) {
+    if (!isKeyOf(raw, PROVENANCE_BASES)) {
       throw new ContractError("schema", `${where}: '${field}' must be 'measured' or 'estimated'`);
     }
-    return raw as ProvenanceBasis;
+    return raw;
   };
   const usageProvenance = provenanceOf("usage_provenance");
   const wallTimeProvenance = provenanceOf("wall_time_provenance");
@@ -480,20 +482,20 @@ export function parseUsageRecord(raw: unknown, where: string): UsageRecord {
   const errorKindRaw = p["error_kind"];
   let errorKind: ProviderErrorKind | null = null;
   if (errorKindRaw !== undefined && errorKindRaw !== null) {
-    if (typeof errorKindRaw !== "string" || !(errorKindRaw in PROVIDER_ERROR_KINDS)) {
+    if (!isKeyOf(errorKindRaw, PROVIDER_ERROR_KINDS)) {
       throw new ContractError("schema", `${where}: 'error_kind' must be 'auth'|'payment'|'capacity'`);
     }
     if (outcome === "success") {
       throw new ContractError("schema", `${where}: 'error_kind' must not be set on a success`);
     }
-    errorKind = errorKindRaw as ProviderErrorKind;
+    errorKind = errorKindRaw;
   }
 
   return {
     attempt: attemptKey,
     task,
-    outcome: outcome as UsageOutcome,
-    verification: verification as VerificationOutcome,
+    outcome,
+    verification,
     retry_of: retryOf,
     usage,
     cost,
@@ -570,7 +572,7 @@ export function withLedgerLock<T>(
       writeFileSync(ownerPath, token);
       break;
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "EEXIST") {
+      if (errnoCode(err) !== "EEXIST") {
         throw new ContractError("state", `ledger lock unavailable: ${String(err)}`);
       }
       let stolen = false;
@@ -930,7 +932,7 @@ export function summarizeLedger(records: UsageRecord[]): LedgerSummary {
         usageUnknown: 0,
         costUnknown: 0,
         wallTimeUnknown: 0,
-        cost: {} as CostTotals,
+        cost: {},
       };
       bucket.attempts++;
       if (rec.outcome === "success") bucket.successes++;

@@ -13,7 +13,7 @@ import { ContractError, parseRouteId, parseTomlTable, type RouteRef } from "./co
 import { type FallbackCandidate, type ResolvedCandidate, parseFallbackProfile, resolveFallbackProfile, buildFallbackCatalog, loadCatalogAttestations, mergeAttestations, seedAttestationsFromCatalog } from "./fallback.ts";;
 import { type Config } from "./config.ts";;
 import { getPrimaryQuotaScope, loadCatalog } from "./catalog.ts";;
-import { CATEGORY_FACTS, CATEGORY_SEVERITY, LIMIT_CATEGORIES, classifyFailure as classifyLimitFailure, type CategoryFacts, type FailureSignal as LimitFailureSignal, type LimitCategory, type LimitClassification } from "./limits.ts";;
+import { CATEGORY_FACTS, CATEGORY_SEVERITY, LIMIT_CATEGORIES, classifyFailure as classifyLimitFailure, type CategoryFacts, type FailureSignal as LimitFailureSignal, type LimitCategory, type LimitClassification } from "./limits.ts";
 import { readFileSync } from "node:fs";;
 
 // ---------------------------------------------------------------------------

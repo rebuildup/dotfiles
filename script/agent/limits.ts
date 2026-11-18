@@ -51,7 +51,10 @@ import {
   CONTRACT_VERSION,
   ContractError,
   agentStateDir,
+  errnoCode,
   expectFields,
+  isKeyOf,
+  isOneOf,
   isPlainObject,
   looksLikeSecretValue,
   parseAttemptKey,
@@ -195,7 +198,6 @@ const PROBE_FAILURE_CATEGORY: Record<ProbeFailureKind, LimitCategory> = {
   http: "unknown",
 };
 
-const PROBE_FAILURE_KINDS: readonly string[] = Object.keys(PROBE_FAILURE_CATEGORY);
 
 /**
  * Exact provider error codes/types -> category. Only EXACT known codes are
@@ -259,7 +261,7 @@ export interface LimitClassification {
 }
 
 function checkClassification(value: LimitClassification, where: string): void {
-  if (!isPlainObject(value) || !LIMIT_CATEGORIES.includes(value.category as LimitCategory)) {
+  if (!isPlainObject(value) || !isOneOf(value.category, LIMIT_CATEGORIES)) {
     throw new ContractError("schema", `${where}: unknown limit category`);
   }
   requireIsoTime(value.observedAt, `${where}: observedAt`);
@@ -325,7 +327,7 @@ const ERROR_KIND_RE = /^[A-Za-z0-9_.-]{1,100}$/;
 
 interface CheckedSignal {
   httpStatus: number | null;
-  failureKind: string | null;
+  failureKind: ProbeFailureKind | null;
   exitCode: number | null;
   retryAfterMs: number | null;
   resetAt: string | null;
@@ -360,9 +362,9 @@ function checkSignal(raw: FailureSignal, where: string, observedMs: number): Che
   if (httpStatus !== null && httpStatus < 400) {
     throw new ContractError("schema", `${where}: httpStatus ${httpStatus} is not a failure`);
   }
-  let failureKind: string | null = null;
+  let failureKind: ProbeFailureKind | null = null;
   if (raw.failureKind !== undefined && raw.failureKind !== null) {
-    if (typeof raw.failureKind !== "string" || !PROBE_FAILURE_KINDS.includes(raw.failureKind)) {
+    if (!isKeyOf(raw.failureKind, PROBE_FAILURE_CATEGORY)) {
       throw new ContractError("schema", `${where}: unknown failureKind`);
     }
     failureKind = raw.failureKind;
@@ -446,7 +448,7 @@ export function classifyFailure(signal: FailureSignal, observedAt: string): Limi
           : "unknown";
     } else if (status >= 500) category = "network";
   } else if (checked.failureKind !== null) {
-    category = PROBE_FAILURE_CATEGORY[checked.failureKind as ProbeFailureKind];
+    category = PROBE_FAILURE_CATEGORY[checked.failureKind];
   } else if (checked.exitCode !== null) {
     category = MIRRORED_EXIT_CODES[checked.exitCode] ?? "unknown";
   }
@@ -633,8 +635,8 @@ function checkContext(ctx: RetryContext, where: string): Required<RetryContext> 
   if (typeof idempotent !== "boolean") {
     throw new ContractError("schema", `${where}: idempotent must be boolean`);
   }
-  const count = (key: string): number => {
-    const value = ctx[key as "retriesUsed" | "rechecksUsed"] ?? 0;
+  const count = (key: "retriesUsed" | "rechecksUsed"): number => {
+    const value = ctx[key] ?? 0;
     if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > 1_000_000) {
       throw new ContractError("schema", `${where}: ${key} out of range`);
     }
@@ -732,16 +734,15 @@ export function decideRetry(
       };
     }
     const floor = now + MIN_RECHECK_GAP_MS;
-    const resetMs = c.resetAt !== null ? Date.parse(c.resetAt) : null;
     const retryMs = c.retryAfterMs !== null ? now + c.retryAfterMs : null;
     // When the provider-stated reset governs, its EXACT string is kept (no
     // reformatting drift); otherwise the computed instant is formatted.
     const notBefore =
-      resetMs !== null && (retryMs === null || resetMs >= retryMs)
-        ? resetMs >= floor
-          ? (c.resetAt as string)
+      c.resetAt !== null && (retryMs === null || Date.parse(c.resetAt) >= retryMs)
+        ? Date.parse(c.resetAt) >= floor
+          ? c.resetAt
           : isoTime(floor)
-        : isoTime(Math.max(retryMs as number, floor));
+        : isoTime(Math.max(retryMs ?? 0, floor));
     return {
       action: "recheck",
       notBefore,
@@ -838,7 +839,7 @@ function checkBlock(block: unknown, where: string): AdmissionBlock {
   }
   expectFields(block, BLOCK_FIELDS, where);
   const key = requireBlockKey(block.key, where);
-  if (!LIMIT_CATEGORIES.includes(block.category as LimitCategory)) {
+  if (!isOneOf(block.category, LIMIT_CATEGORIES)) {
     throw new ContractError("schema", `${where}: unknown limit category`);
   }
   const reason = requireStr(block, "reason", where);
@@ -854,7 +855,7 @@ function checkBlock(block: unknown, where: string): AdmissionBlock {
   parseAttemptKey(observedByKey);
   const checked: AdmissionBlock = {
     key,
-    category: block.category as LimitCategory,
+    category: block.category,
     reason,
     resetAt,
     createdAt,
@@ -898,7 +899,7 @@ function readBlockFile(path: string, key: string): AdmissionBlock | null {
     // Only ENOENT means "no block recorded". Every other read error
     // (EACCES, EISDIR, ...) fails CLOSED — admission is never silently
     // granted because state could not be read.
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    if (errnoCode(err) === "ENOENT") return null;
     throw new ContractError(
       "state",
       `admission block for '${key}' unreadable (${path}): ${String(err)}`,
@@ -1014,7 +1015,7 @@ export function clearBlock(
       // Only ENOENT means "already clear" (idempotent). Every other error
       // (EACCES, EISDIR, EPERM, ...) fails closed — a block that cannot be
       // removed must keep refusing admission, never vanish silently.
-      if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      if (errnoCode(err) !== "ENOENT") {
         throw new ContractError(
           "state",
           `clearBlock: cannot remove admission block for '${key}' (${path}): ${String(err)}`,

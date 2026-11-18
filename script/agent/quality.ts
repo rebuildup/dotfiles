@@ -25,6 +25,7 @@
 import {
   ContractError,
   DEFAULT_MAX_EVIDENCE_AGE_MS,
+  isOneOf,
   isPlainObject,
   isStale,
   looksLikeSecretValue,
@@ -110,28 +111,29 @@ export function parseGateRule(raw: unknown, where: string): GateRule {
     throw new ContractError("schema", `${where}: object expected`);
   }
   const kind = raw["kind"];
-  if (!GATE_KINDS.includes(kind as GateKind)) {
+  if (!isOneOf(kind, GATE_KINDS)) {
     throw new ContractError("schema", `${where}: unknown gate kind '${kind}'`);
   }
   const name = parseGateName(raw["name"], `${where}.name`);
   const os = raw["os"];
-  if (os !== null && !OS_VALUES.includes(os as MachineOS)) {
+  if (os !== null && !isOneOf(os, OS_VALUES)) {
     throw new ContractError("schema", `${where}.os: must be null or a MachineOS value`);
   }
   const native = requireBool(raw, "native", where);
-  const triggers = raw["triggers"];
-  if (triggers !== null) {
-    if (!Array.isArray(triggers)) {
+  const triggersRaw = raw["triggers"];
+  let triggers: string[] | null = null;
+  if (triggersRaw !== null) {
+    if (!Array.isArray(triggersRaw)) {
       throw new ContractError("schema", `${where}.triggers: must be null or an array`);
     }
-    for (const trigger of triggers) parseTrigger(trigger, `${where}.triggers`);
+    triggers = triggersRaw.map((trigger) => parseTrigger(trigger, `${where}.triggers`));
   }
   return {
-    kind: kind as GateKind,
+    kind,
     name,
-    os: (os as MachineOS | null) ?? null,
+    os: os ?? null,
     native,
-    triggers: (triggers as string[] | null) ?? null,
+    triggers,
   };
 }
 
@@ -258,7 +260,7 @@ export function parseEnvironment(raw: unknown, where: string): ExecutionEnvironm
     throw new ContractError("schema", `${where}: must have exactly 'os' and 'wsl'`);
   }
   const os = raw["os"];
-  if (!OS_VALUES.includes(os as MachineOS)) {
+  if (!isOneOf(os, OS_VALUES)) {
     throw new ContractError("schema", `${where}.os: must be a MachineOS value`);
   }
   const wsl = requireBool(raw, "wsl", where);
@@ -268,7 +270,7 @@ export function parseEnvironment(raw: unknown, where: string): ExecutionEnvironm
       `${where}: WSL is linux; os='${os}' with wsl=true is a hostile misreport`,
     );
   }
-  return { os: os as MachineOS, wsl };
+  return { os, wsl };
 }
 
 /** Parse a validation record from untrusted data. Unknown/missing fields throw. */
@@ -282,14 +284,14 @@ export function parseValidationRecord(raw: unknown, where: string): ValidationRe
   const name = parseGateName(payload["name"], `${where}.name`);
   const sha = requireImmutableRef(payload["sha"], `${where}.sha`);
   const status = payload["status"];
-  if (!VALIDATION_STATUSES.includes(status as ValidationStatus)) {
+  if (!isOneOf(status, VALIDATION_STATUSES)) {
     throw new ContractError(
       "schema",
       `${where}.status: unknown status '${status}' (skipped/neutral never pass)`,
     );
   }
   const source = payload["source"];
-  if (!VALIDATION_SOURCES.includes(source as ValidationSource)) {
+  if (!isOneOf(source, VALIDATION_SOURCES)) {
     throw new ContractError(
       "schema",
       `${where}.source: '${source}' is not a validation source (self-reports and herdr markers are never validation)`,
@@ -304,8 +306,8 @@ export function parseValidationRecord(raw: unknown, where: string): ValidationRe
   return {
     name,
     sha,
-    status: status as ValidationStatus,
-    source: source as ValidationSource,
+    status,
+    source,
     environment,
     at,
     note,
@@ -389,34 +391,44 @@ export function evaluateQualityGate(input: unknown): QualityDecision {
     "evaluateQualityGate.localEnvironment",
   );
   const sourceMutated = requireBool(input, "sourceMutated", "evaluateQualityGate");
-  if (!Array.isArray(input["required"])) {
+  const requiredRaw: unknown = input["required"];
+  if (!Array.isArray(requiredRaw)) {
     throw new ContractError("schema", "evaluateQualityGate.required must be an array");
   }
-  if (!Array.isArray(input["records"])) {
+  const requiredList: unknown[] = requiredRaw;
+  const recordsRaw: unknown = input["records"];
+  if (!Array.isArray(recordsRaw)) {
     throw new ContractError("schema", "evaluateQualityGate.records must be an array");
   }
-  const required: RequiredGate[] = input["required"] as RequiredGate[];
+  const recordsList: unknown[] = recordsRaw;
+  const required: RequiredGate[] = [];
   const seen = new Set<string>();
-  for (const gate of required) {
+  for (const [i, gate] of requiredList.entries()) {
     if (
       !isPlainObject(gate) ||
-      !GATE_KINDS.includes(gate["kind"] as GateKind) ||
+      !isOneOf(gate["kind"], GATE_KINDS) ||
       typeof gate["name"] !== "string" ||
       typeof gate["native"] !== "boolean" ||
-      (gate["os"] !== null && !OS_VALUES.includes(gate["os"] as MachineOS))
+      (gate["os"] !== null && !isOneOf(gate["os"], OS_VALUES))
     ) {
       throw new ContractError("schema", "evaluateQualityGate.required[]: malformed gate");
     }
-    parseGateName(gate["name"], "evaluateQualityGate.required[].name");
-    if (seen.has(gate["name"])) {
+    const name = parseGateName(gate["name"], "evaluateQualityGate.required[].name");
+    if (seen.has(name)) {
       throw new ContractError(
         "identity",
-        `evaluateQualityGate: duplicate required gate '${gate["name"]}'`,
+        `evaluateQualityGate: duplicate required gate '${name}'`,
       );
     }
-    seen.add(gate["name"]);
+    seen.add(name);
+    required.push({
+      kind: gate["kind"],
+      name,
+      os: gate["os"] === null ? null : gate["os"],
+      native: gate["native"],
+    });
   }
-  const records = (input["records"] as unknown[]).map((raw, i) =>
+  const records = recordsList.map((raw, i) =>
     parseValidationRecord(raw, `evaluateQualityGate.records[${i}]`),
   );
 

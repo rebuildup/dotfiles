@@ -6,7 +6,7 @@
  * lifecycle operations used by the task dispatch/collect logic.
  */
 
-import { ContractError, agentStateDir, isPlainObject } from "./contract.ts";;
+import { ContractError, agentStateDir, isOneOf, isPlainObject } from "./contract.ts";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";;
 import { join } from "node:path";;
 ;
@@ -72,9 +72,7 @@ async function herdrSpawn(args: string[], cwd?: string): Promise<HerdrSpawnResul
 const PANE_STATUSES = ["idle", "working", "blocked", "done", "unknown"] as const;
 
 function herdrPaneStatus(value: unknown): HerdrPane["status"] {
-  return typeof value === "string" && (PANE_STATUSES as readonly string[]).includes(value)
-    ? (value as HerdrPane["status"])
-    : "unknown";
+  return isOneOf(value, PANE_STATUSES) ? value : "unknown";
 }
 
 function herdrStr(value: unknown): string | undefined {
@@ -526,13 +524,14 @@ export async function listAgents(): Promise<Array<{ name: string; kind: string; 
   if (result === null || result.code !== 0) return [];
   try {
     const parsed: unknown = JSON.parse(result.stdout.trim());
-    if (!parsed || typeof parsed !== "object") return [];
-    const obj = parsed as { result?: { agents?: unknown } };
-    const agents = obj.result?.agents;
+    if (!isPlainObject(parsed)) return [];
+    const resultObj = parsed["result"];
+    if (!isPlainObject(resultObj)) return [];
+    const agents = resultObj["agents"];
     if (!Array.isArray(agents)) return [];
     return agents.map((raw: unknown) => {
-      if (!raw || typeof raw !== "object") return { name: "", kind: "", paneId: "", status: "unknown" };
-      const a = raw as Record<string, unknown>;
+      if (!isPlainObject(raw)) return { name: "", kind: "", paneId: "", status: "unknown" };
+      const a = raw;
       return {
         name: typeof a.name === "string" ? a.name : typeof a.agent === "string" ? a.agent : "",
         kind: typeof a.agent === "string" ? a.agent : "",
@@ -614,7 +613,9 @@ export function loadHerdrTaskMapping(taskId: string): HerdrTaskMapping | null {
   try {
     const raw: unknown = JSON.parse(readFileSync(path, "utf-8"));
     if (!isPlainObject(raw)) return null;
-    const mapping = {} as Record<keyof HerdrTaskMapping, string>;
+    const mapping: Record<keyof HerdrTaskMapping, string> = {
+      taskId: "", workspaceId: "", paneId: "", workerName: "", createdAt: "", route: "", model: "",
+    };
     for (const key of ["taskId", "workspaceId", "paneId", "workerName", "createdAt", "route", "model"] as const) {
       const value = raw[key];
       if (typeof value !== "string") return null;

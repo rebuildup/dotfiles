@@ -275,16 +275,18 @@ function attestedText<T>(
 }
 
 function rateLimitsText(limits: RateLimits): string {
-  const unit: Record<string, string> = {
+  const unit: Record<keyof RateLimits, string> = {
     per_minute: "/min",
     per_hour: "/hour",
     per_day: "/day",
     per_month: "/month",
   };
-  return Object.entries(unit)
-    .filter(([key]) => limits[key as keyof RateLimits] !== undefined)
-    .map(([key, suffix]) => `${limits[key as keyof RateLimits]}${suffix}`)
-    .join(", ");
+  const parts: string[] = [];
+  for (const key of ["per_minute", "per_hour", "per_day", "per_month"] as const) {
+    const value = limits[key];
+    if (value !== undefined) parts.push(`${value}${unit[key]}`);
+  }
+  return parts.join(", ");
 }
 
 function e2eText(observations: E2eObservation[]): string {
