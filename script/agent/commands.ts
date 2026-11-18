@@ -475,15 +475,26 @@ export async function cmdTask(
     );
   }
   const taskId = `task-${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}`;
-  const result = await task.runTaskToCompletion(config, {
-    id: taskId,
-    route,
-    model,
-    prompt: prompt.trim(),
-    ...(o.fallback ? { profileId: o.fallback } : {}),
-    ...(o.accept.length > 0 ? { acceptanceCriteria: o.accept } : {}),
-    ...(o.timeoutMs !== null ? { timeoutMs: o.timeoutMs } : {}),
-  });
+  let result;
+  try {
+    result = await task.runTaskToCompletion(config, {
+      id: taskId,
+      route,
+      model,
+      prompt: prompt.trim(),
+      ...(o.fallback ? { profileId: o.fallback } : {}),
+      ...(o.accept.length > 0 ? { acceptanceCriteria: o.accept } : {}),
+      ...(o.timeoutMs !== null ? { timeoutMs: o.timeoutMs } : {}),
+    });
+  } catch (error) {
+    // ContractError carries the classified reason (bad route/model/profile,
+    // missing credential, Herdr state); surface it as a launcher error, not
+    // a raw stack trace.
+    if (error instanceof ContractError) {
+      throw new AgentError(error.message, EXIT_RUNTIME);
+    }
+    throw error;
+  }
   console.log(redactJson({
     taskId: result.taskId,
     success: result.success,

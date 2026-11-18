@@ -3586,3 +3586,52 @@ candidates = [
     check(checkRun.stderr.toString().includes(needle), `${label}: ${checkRun.stderr.toString()}`);
   });
 }));
+
+test("test_agent_task_cli", withFixture((fixture) => {
+  // Parse/usage failures exit 2 before config or Herdr is touched.
+  const usageCases: Array<[string[], string]> = [
+    [["task"], "task run|status"],
+    [["task", "bogus"], "task run|status"],
+    [["task", "status"], "usage: agent task status"],
+    [["task", "run"], "usage: agent task run"],
+    [["task", "run", "omp.kilo", "--bogus"], "unexpected argument"],
+    [["task", "run", "omp.kilo", "--timeout", "abc"], "--timeout"],
+    [["task", "status", "../escape"], "invalid task id"],
+    [["task", "status", "a/b"], "invalid task id"],
+  ];
+  for (const [args, needle] of usageCases) {
+    const result = fixture.run(args, { config: REAL_CONFIG });
+    check(result.exitCode === 2, `${args.join(" ")} -> ${result.exitCode}: ${result.stderr.toString()}`);
+    check(result.stderr.toString().includes(needle), `${args.join(" ")}: ${result.stderr.toString()}`);
+  }
+
+  // An unconfigured route fails before any Herdr workspace is created.
+  const badRoute = fixture.run(
+    ["task", "run", "bogus.route", "--model", "m", "--prompt", "hi"],
+    { config: REAL_CONFIG },
+  );
+  check(badRoute.exitCode !== 0, "unknown route must fail");
+  check(badRoute.stderr.toString().includes("route not configured"), badRoute.stderr.toString());
+
+  // A model outside the route allowlist and an unknown fallback profile are
+  // rejected by dispatchTask's contract checks (exit 1) — never reaching a
+  // worker. On hosts without Herdr the availability probe may fire first;
+  // either way the run must not succeed.
+  const badModel = fixture.run(
+    ["task", "run", "omp.kilo", "--model", "definitely-not-a-model", "--prompt", "hi"],
+    { config: REAL_CONFIG },
+  );
+  check(badModel.exitCode === 1, `bad model -> ${badModel.exitCode}`);
+
+  const kiloModel = "nvidia/nemotron-3-ultra-550b-a55b:free";
+  const badProfile = fixture.run(
+    ["task", "run", "omp.kilo", "--model", kiloModel, "--fallback", "no-such-profile", "--prompt", "hi"],
+    { config: REAL_CONFIG },
+  );
+  check(badProfile.exitCode === 1, `bad profile -> ${badProfile.exitCode}`);
+
+  // `task status` on a well-formed but unknown id reports no state.
+  const status = fixture.run(["task", "status", "task-does-not-exist"], { config: REAL_CONFIG });
+  check(status.exitCode === 1, `status -> ${status.exitCode}`);
+  check(status.stdout.toString().includes("no task state"), status.stdout.toString());
+}));
