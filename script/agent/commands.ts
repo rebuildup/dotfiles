@@ -434,6 +434,25 @@ export async function cmdTask(config: Config, action: TaskAction): Promise<numbe
     console.log(redactJson(status));
     return 0;
   }
+  if (sub === "reconcile") {
+    const taskId = arg;
+    if (!TASK_ID_PATTERN.test(taskId)) {
+      throw new AgentError(`invalid task id '${taskId}'`, EXIT_USAGE);
+    }
+    let report;
+    try {
+      report = await task.reconcileTaskEffects(config, taskId);
+    } catch (error) {
+      if (error instanceof ContractError) {
+        throw new AgentError(error.message, EXIT_RUNTIME);
+      }
+      throw error;
+    }
+    console.log(redactJson(report));
+    // Still-pending effects keep the task fail-closed: nonzero exit so
+    // automation cannot mistake "reconciled" for "safe to resume".
+    return report.pending.length === 0 ? 0 : EXIT_RUNTIME;
+  }
   if (sub === "resume") {
     const taskId = arg;
     if (!TASK_ID_PATTERN.test(taskId)) {
@@ -513,6 +532,7 @@ export async function cmdTask(config: Config, action: TaskAction): Promise<numbe
       ...(o.fallback ? { profileId: o.fallback } : {}),
       ...(o.accept.length > 0 ? { acceptanceCriteria: o.accept } : {}),
       ...(o.timeoutMs !== null ? { timeoutMs: o.timeoutMs } : {}),
+      ...(o.allowUnobservedEffects ? { allowUnobservedEffects: true } : {}),
     });
   } catch (error) {
     // ContractError carries the classified reason (bad route/model/profile,
