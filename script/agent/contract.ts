@@ -809,6 +809,13 @@ export function isPlainObject(value: unknown): value is Record<string, unknown> 
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** Route keys are `<harness>.<provider>`; split at the first dot only.
+ * (JS String.split's limit argument is not Python's maxsplit.) */
+export function splitRouteKey(key: string): [string, string] {
+  const index = key.indexOf(".");
+  return [key.slice(0, index), key.slice(index + 1)];
+}
+
 /**
  * Parse TOML text and require a table at the root. Shared by every config
  * reader so parse failures and non-table roots fail closed with one error

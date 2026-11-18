@@ -36,20 +36,16 @@
  * wrapped or overridden.
  */
 
-import { basename, delimiter, join } from "node:path";
+import { randomUUID } from "node:crypto";
+import { basename, join } from "node:path";
 import {
   accessSync,
   constants as fsConstants,
   existsSync,
-  lstatSync,
-  mkdirSync,
   readFileSync,
   realpathSync,
-  symlinkSync,
-  unlinkSync,
-  writeFileSync,
 } from "node:fs";
-import { constants as osConstants, homedir } from "node:os";
+import { constants as osConstants } from "node:os";
 import {
   buildGuideData,
   buildHelpData,
@@ -69,10 +65,18 @@ import {
   renderFallbackResolution,
   seedAttestationsFromCatalog,
 } from "./agent/fallback";
-import { ContractError, isPlainObject, parseTomlTable, redactJson } from "./agent/contract";
+import { ContractError, isPlainObject, parseTomlTable, redactJson, splitRouteKey } from "./agent/contract";
 import { AgentError, EXIT_RUNTIME, EXIT_USAGE } from "./agent/errors";
 import { guardOmpCredentialSource, guardOmpImplicitSwitch, planOmp } from "./agent/omp";
-import { dotfilesRepoRoot } from "./agent/util";
+import { dotfilesRepoRoot, IS_WINDOWS, which } from "./agent/util";
+import {
+  cmdShortcuts,
+  invokedScriptPath,
+  parseShortcutArgs,
+  resolveShortcut,
+  shortcutMap,
+  shortcutName,
+} from "./agent/shortcuts";
 
 const PROGRAM = "agent";
 
@@ -92,8 +96,6 @@ const PROVIDER_MARKER = "@@provider:";
 // (e.g. Cloudflare's `@cf/...`) pass through as literal values.
 const CRED_MARKER = "@@cred:";
 
-const SHORTCUT_MODEL_FLAG = "--agent-model";
-const IS_WINDOWS = process.platform === "win32";
 const LAUNCHER_BASENAME = basename(import.meta.path);
 
 const USAGE = `\
@@ -108,6 +110,9 @@ usage:
   agent guide [topic]
   agent routes [--json]
   agent fallback <profile-id> [--json]
+  agent task run <route> --model <id> [--fallback <profile-id>]
+      [--prompt <text>] [--accept <criteria>]...
+  agent task status <task-id>
   agent help
 subcommands:
   agent help                 show this help
@@ -132,6 +137,16 @@ subcommands:
   agent fallback <profile-id> [--json]  resolve and display an opt-in
                              continuity profile for authorized same-harness
                              fallback (issue #136); does not execute fallback
+  agent task run <route>               dispatch a prompt to a Herdr worker on
+                             <harness>.<provider>; --model selects the model
+                             (route default when omitted), --fallback names an
+                             opt-in continuity profile whose candidates may
+                             serve the task after a classified primary
+                             failure, --prompt supplies the task text (stdin
+                             when omitted and stdin is not a TTY), --accept
+                             records an acceptance criterion (repeatable)
+  agent task status <task-id>          show the durable state of a dispatched
+                             task (attempts, generations, classified failures)
   agent help --json          machine-readable help (quotes this text)
 
 shortcut form:
@@ -305,11 +320,10 @@ function withSecretsPath(): string {
   );
 }
 
-/** Route keys are `<harness>.<provider>`; split at the first dot only.
- * (JS String.split's limit argument is not Python's maxsplit.) */
-function splitRouteKey(key: string): [string, string] {
-  const index = key.indexOf(".");
-  return [key.slice(0, index), key.slice(index + 1)];
+/** Real path of this launcher; shortcut links must point here, never at a
+ * module inside script/agent/ (import.meta.path differs per file). */
+function launcherLinkTarget(): string {
+  return realpathSync(import.meta.path);
 }
 
 function requireStr(data: Record<string, unknown>, key: string, where: string): string {
@@ -852,361 +866,6 @@ function resolveModel(route: Route, provider: Provider, cliModel: string | null)
 }
 
 // ---------------------------------------------------------------------------
-// Shortcut form: `<harness>-<provider>` invoked directly (symlink to this
-// script on Unix, generated .cmd on Windows). The name is resolved by exact
-// match against the configured routes, never by splitting on hyphens.
-// ---------------------------------------------------------------------------
-
-function shortcutName(harnessKey: string, providerKey: string): string {
-  return `${harnessKey}-${providerKey}`;
-}
-
-function shortcutMap(config: Config): Record<string, string> {
-  const mapping: Record<string, string> = {};
-  for (const key of Object.keys(config.routes)) {
-    const [harness_key, provider_key] = splitRouteKey(key);
-    mapping[shortcutName(harness_key, provider_key)] = key;
-  }
-  return mapping;
-}
-
-function resolveShortcut(config: Config, name: string): [string, string] {
-  const routeKey = shortcutMap(config)[name];
-  if (!routeKey) {
-    if (name.startsWith("pi-")) {
-      // Stale links from the retired Pi Worker slot still point at this
-      // launcher. Name the replacement and the exact path to remove; the
-      // launcher never deletes a link it did not create in this generation.
-      throw new AgentError(
-        `'${name}' is a retired Pi Worker shortcut; the slot moved to OMP. ` +
-          `Use '${name.replace(/^pi-/, "omp-")}' after 'agent shortcuts create', ` +
-          `and remove the stale link if present: rm ${join(binDir(), name)}`
-      );
-    }
-    const known = Object.keys(shortcutMap(config)).sort().join(", ");
-    throw new AgentError(
-      `unknown shortcut '${name}'; shortcuts exist for these routes: ${known}\n` +
-        "Define the route in config/agents.toml and run 'agent shortcuts create' to link it."
-    );
-  }
-  const [harnessKey, providerKey] = splitRouteKey(routeKey);
-  return [harnessKey, providerKey];
-}
-
-function parseShortcutArgs(argv: string[]): { model: string | null; passthru: string[] } {
-  // Shortcut argv: only --agent-model is launcher-owned, the rest is the
-  // harness's own argument vector (passed verbatim, no '--' required).
-  let model: string | null = null;
-  const passthru: string[] = [];
-  let index = 0;
-  while (index < argv.length) {
-    const token = argv[index];
-    if (token === SHORTCUT_MODEL_FLAG) {
-      if (index + 1 >= argv.length) {
-        throw new AgentError(`${token} requires a value`);
-      }
-      model = argv[index + 1];
-      index += 2;
-      continue;
-    }
-    if (token.startsWith(`${SHORTCUT_MODEL_FLAG}=`)) {
-      const value = token.slice(SHORTCUT_MODEL_FLAG.length + 1);
-      if (!value) {
-        throw new AgentError(`'${token}' requires a value`);
-      }
-      model = value;
-      index += 1;
-      continue;
-    }
-    passthru.push(token);
-    index += 1;
-  }
-  if (passthru.length > 0 && passthru[0] === "--") {
-    // tolerated so `opencode-zen -- run …` matches the agent-form habit
-    passthru.shift();
-  }
-  return { model, passthru };
-}
-
-/**
- * Recover the script path this process was invoked as. Bun resolves the
- * symlinked argv[1] to the real file, so the kernel-level argv is consulted
- * instead: /proc/self/cmdline on Linux (WSL included), `ps` on macOS.
- */
-function invokedScriptPath(): string | null {
-  const a1 = process.argv[1];
-  if (a1) {
-    const base = basename(a1);
-    if (base !== LAUNCHER_BASENAME && base !== "bun") {
-      return a1; // invoked as another file (or an unresolved symlink)
-    }
-  }
-  let kernelArgv: string[] | null = null;
-  if (process.platform === "linux") {
-    try {
-      kernelArgv = readFileSync("/proc/self/cmdline", "utf8").split("\0").filter(Boolean);
-    } catch {
-      kernelArgv = null;
-    }
-  } else if (process.platform === "darwin") {
-    try {
-      const result = Bun.spawnSync(["ps", "-p", String(process.pid), "-o", "args="]);
-      if (result.exitCode === 0) {
-        kernelArgv = result.stdout.toString().trim().split(/\s+/).filter(Boolean);
-      }
-    } catch {
-      kernelArgv = null;
-    }
-  }
-  const token = kernelArgv && kernelArgv.length > 1 ? kernelArgv[1] : null;
-  if (token && basename(token) !== LAUNCHER_BASENAME && basename(token) !== "bun") {
-    return token;
-  }
-  return null;
-}
-
-function binDir(): string {
-  if (process.env.AGENT_BIN_DIR) return process.env.AGENT_BIN_DIR;
-  return join(homedir(), ".local", "bin");
-}
-
-function launcherLinkTarget(): string {
-  return realpathSync(import.meta.path);
-}
-
-function shortcutPath(name: string): string {
-  const ext = IS_WINDOWS ? ".cmd" : "";
-  return join(binDir(), `${name}${ext}`);
-}
-
-function which(cmd: string, pathEnv?: string): string | null {
-  const hasSeparator = cmd.includes("/") || (IS_WINDOWS && cmd.includes("\\"));
-  const isExecutable = (candidate: string): boolean => {
-    try {
-      accessSync(candidate, fsConstants.X_OK);
-      return true;
-    } catch {
-      return false;
-    }
-  };
-  if (hasSeparator) {
-    return isExecutable(cmd) ? cmd : null;
-  }
-  const pathValue = pathEnv ?? process.env.PATH ?? "";
-  // Windows: PATHEXT candidates BEFORE the bare name. npm generates an
-  // extensionless Bash-style shim next to `opencode.cmd` for Cygwin-style
-  // shells; that file is not a Windows executable, so trying the bare name
-  // first would pick an unrunnable target.
-  const exts = IS_WINDOWS
-    ? [...(process.env.PATHEXT || ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean), ""]
-    : [""];
-  for (const dir of pathValue.split(delimiter)) {
-    if (!dir) continue;
-    const base = join(dir, cmd);
-    for (const suffix of exts) {
-      const candidate = base + suffix;
-      if (existsSync(candidate) && isExecutable(candidate)) return candidate;
-    }
-  }
-  return null;
-}
-
-const WINDOWS_CMD_MARKER = "rem managed-by: agent-launcher";
-
-/** A Windows batch shim (.cmd/.bat, e.g. npm's cmd-shim output) cannot be
- * started by CreateProcess/Bun.spawn directly; it needs cmd.exe. */
-function isBatchShim(path: string): boolean {
-  return IS_WINDOWS && /\.(cmd|bat)$/i.test(path);
-}
-
-/**
- * Build the argv used to launch a resolved harness. Batch shims run through
- * cmd.exe, which re-parses its command tail per batch semantics and does not
- * understand the backslash-escaped quotes that CreateProcess argv
- * serialization produces — so the fully quoted command line travels through
- * an environment variable and is expanded by cmd itself (quotes in the
- * expanded text toggle cmd's quoting state, keeping `& | < > ( )` and spaces
- * inside quoted arguments literal). Double quotes and `%` cannot be
- * represented faithfully at all; those arguments are rejected up front
- * (fail closed) instead of risking corruption or injection.
- */
-function launchArgv(
-  resolved: string,
-  args: string[],
-  env: Record<string, string>
-): string[] {
-  if (!isBatchShim(resolved)) {
-    return [resolved, ...args];
-  }
-  if (resolved.includes("%")) {
-    throw new AgentError(
-      `harness path '${resolved}' contains '%' which cannot be passed safely ` +
-        "through cmd.exe; move the harness to a path without '%'",
-      EXIT_RUNTIME
-    );
-  }
-  for (const arg of args) {
-    if (/["%\r\n]/.test(arg)) {
-      throw new AgentError(
-        `harness argument ${JSON.stringify(arg)} contains \" or % which cannot be passed ` +
-          "safely through a Windows batch shim (.cmd/.bat); remove it from the " +
-          "harness arguments or invoke the harness directly",
-        EXIT_RUNTIME
-      );
-    }
-  }
-  const quote = (arg: string): string =>
-    arg === "" || /[\s&|<>^(),;]/.test(arg) ? `"${arg}"` : arg;
-  env["AGENT_LAUNCH_CMD"] = [resolved, ...args].map(quote).join(" ");
-  const comspec = process.env.ComSpec || "cmd.exe";
-  return [comspec, "/d", "/c", "%AGENT_LAUNCH_CMD%"];
-}
-
-function shortcutLinkTargetContent(target: string, name: string): string {
-  // Minimal Windows entry point generated from the routes; the name is the
-  // only thing in argv, everything else stays in script/agent.ts.
-  return `@echo off\r\n${WINDOWS_CMD_MARKER} ${target}\r\nbun "${target}" ${name} %*\r\n`;
-}
-
-function linkStatus(name: string, target: string): string {
-  const path = shortcutPath(name);
-  if (IS_WINDOWS) {
-    if (existsSync(path)) {
-      const content = readFileSync(path, "utf8");
-      return content.includes(`${WINDOWS_CMD_MARKER} ${target}`) ? "linked" : "conflict (existing file)";
-    }
-    return which(name) ? `conflict (command exists at ${which(name)})` : "missing";
-  }
-  try {
-    const stat = lstatSync(path);
-    if (stat.isSymbolicLink()) {
-      // realpathSync throws for a dangling link (e.g. after the checkout
-      // moved); treat it as a conflict so `create` never tries EEXIST and
-      // the user gets an actionable message instead of "missing".
-      try {
-        return realpathSync(path) === target ? "linked" : "conflict (foreign symlink)";
-      } catch {
-        return "conflict (dangling symlink)";
-      }
-    }
-    return "conflict (existing file)";
-  } catch {
-    return which(name) ? `conflict (command exists at ${which(name)})` : "missing";
-  }
-}
-
-function cmdShortcuts(config: Config, action: string | null): number {
-  const target = launcherLinkTarget();
-  const names = Object.keys(shortcutMap(config)).sort();
-  const where = binDir();
-
-  if (action === null || action === "list") {
-    console.log(`shortcut commands (from ${config.path}):`);
-    for (const name of names) {
-      console.log(`  ${name.padEnd(24)} ${linkStatus(name, target)}`);
-    }
-    console.log(`location: ${where}   target: ${target}`);
-    console.log("create/remove with: agent shortcuts create | remove");
-    return 0;
-  }
-
-  if (action === "check") {
-    const bad = names.filter((name) => linkStatus(name, target) !== "linked");
-    if (bad.length > 0) {
-      console.error(
-        `shortcuts not ready: ${bad.join(", ")}\n` +
-          `run 'agent shortcuts create' (location: ${where})`
-      );
-      return EXIT_RUNTIME;
-    }
-    console.log(`shortcuts OK: ${names.length} links in ${where} point at ${target}`);
-    return 0;
-  }
-
-  if (action === "create") {
-    const conflicts: string[] = [];
-    for (const name of names) {
-      const status = linkStatus(name, target);
-      if (status === "linked") continue;
-      if (status.startsWith("conflict")) {
-        conflicts.push(`${shortcutPath(name)}: ${status}`);
-      }
-    }
-    if (conflicts.length > 0) {
-      throw new AgentError(
-        `refusing to overwrite:\n  ${conflicts.join("\n  ")}\n` +
-          "remove or rename these entries, then re-run 'agent shortcuts create'",
-        EXIT_RUNTIME
-      );
-    }
-    mkdirSync(where, { recursive: true });
-    let created = 0;
-    let linked = 0;
-    for (const name of names) {
-      const path = shortcutPath(name);
-      if (existsSync(path)) {
-        linked += 1;
-        continue;
-      }
-      if (IS_WINDOWS) {
-        writeFileSync(path, shortcutLinkTargetContent(target, name));
-      } else {
-        symlinkSync(target, path);
-      }
-      created += 1;
-    }
-    console.log(`shortcuts ready: ${created} created, ${linked} already linked in ${where}`);
-    return 0;
-  }
-
-  if (action === "remove") {
-    let removed = 0;
-    for (const name of names) {
-      const path = shortcutPath(name);
-      if (IS_WINDOWS) {
-        if (existsSync(path) && readFileSync(path, "utf8").includes(`${WINDOWS_CMD_MARKER} ${target}`)) {
-          unlinkSync(path);
-          removed += 1;
-        } else if (existsSync(path)) {
-          console.log(`left untouched (not managed by the launcher): ${path}`);
-        }
-        continue;
-      }
-      try {
-        const stat = lstatSync(path);
-        if (!stat.isSymbolicLink()) {
-          console.log(`left untouched (not managed by the launcher): ${path}`);
-          continue;
-        }
-        let pointsHere = false;
-        try {
-          pointsHere = realpathSync(path) === target;
-        } catch {
-          // dangling: the target cannot be verified, so it is not provably
-          // ours — keep it and tell the user instead of silently skipping.
-          console.log(`left untouched (dangling symlink): ${path}`);
-          continue;
-        }
-        if (pointsHere) {
-          unlinkSync(path);
-          removed += 1;
-        } else {
-          console.log(`left untouched (not managed by the launcher): ${path}`);
-        }
-      } catch {
-        // nothing to remove
-      }
-    }
-    console.log(`shortcuts removed: ${removed}`);
-    return 0;
-  }
-
-  throw new AgentError(
-    `unknown shortcuts action '${action}'; use list, check, create or remove`
-  );
-}
-
-// ---------------------------------------------------------------------------
 // argv parsing (agent-form)
 // ---------------------------------------------------------------------------
 
@@ -1261,6 +920,58 @@ function checkPassthru(passthru: string[], harness: Harness): void {
   }
 }
 
+function parseTaskArgs(argv: string[]): Action {
+  const sub = argv[0];
+  if (sub === "status") {
+    if (argv.length !== 2) {
+      throw new AgentError("usage: agent task status <task-id>");
+    }
+    return ["task", "status", argv[1]];
+  }
+  if (sub !== "run") {
+    throw new AgentError(
+      `unknown task action '${sub ?? ""}'; usage: agent task run|status ...`
+    );
+  }
+  const route = argv[1];
+  if (!route || route.startsWith("-")) {
+    throw new AgentError(
+      "usage: agent task run <harness.provider> [--model <id>] [--fallback <profile-id>] " +
+        "[--prompt <text>] [--accept <criteria>]..."
+    );
+  }
+  const opts = { model: null as string | null, fallback: null as string | null,
+    prompt: null as string | null, accept: [] as string[], timeoutMs: null as number | null };
+  const rest = argv.slice(2);
+  for (let i = 0; i < rest.length; i++) {
+    const token = rest[i];
+    const take = (): string => {
+      const value = rest[++i];
+      if (value === undefined) throw new AgentError(`${token} requires a value`);
+      return value;
+    };
+    if (token === "--model" || token === "-m") opts.model = take();
+    else if (token === "--fallback") opts.fallback = take();
+    else if (token === "--prompt") opts.prompt = take();
+    else if (token === "--accept") opts.accept.push(take());
+    else if (token === "--timeout") {
+      const raw = take();
+      const ms = Number(raw);
+      if (!Number.isFinite(ms) || ms <= 0) {
+        throw new AgentError(`--timeout must be a positive number of milliseconds`);
+      }
+      opts.timeoutMs = ms;
+    } else {
+      throw new AgentError(
+        `unexpected argument '${token}'; usage: agent task run <route> ` +
+          "[--model <id>] [--fallback <profile-id>] [--prompt <text>] " +
+          "[--accept <criteria>]... [--timeout <ms>]"
+      );
+    }
+  }
+  return ["task", "run", route, opts];
+}
+
 type Action =
   | ["help", boolean]
   | ["version"]
@@ -1270,7 +981,15 @@ type Action =
   | ["shortcuts", string | null]
   | ["native", string, string[]]
   | ["run", string, string, string | null, string[]]
-  | ["fallback", string, boolean];  // profile-id, json
+  | ["fallback", string, boolean]  // profile-id, json
+  | ["task", "run", string, {
+      model: string | null;
+      fallback: string | null;
+      prompt: string | null;
+      accept: string[];
+      timeoutMs: number | null;
+    }]
+  | ["task", "status", string];
 function parseArgs(argv: string[]): Action {
   // Parse argv without touching the config.
   const head = argv[0];
@@ -1318,6 +1037,9 @@ function parseArgs(argv: string[]): Action {
       `unknown shortcuts action '${argv.slice(1).join(" ")}'; ` +
         "usage: agent shortcuts [list|check|create|remove]"
     );
+  }
+  if (head === "task") {
+    return parseTaskArgs(argv.slice(1));
   }
   if (head === "fallback") {
     if (argv.length < 2) {
@@ -1583,6 +1305,55 @@ const SIGNAL_NUMBERS: Record<string, number> = osConstants.signals as unknown as
   string,
   number
 >;
+
+/** A Windows batch shim (.cmd/.bat, e.g. npm's cmd-shim output) cannot be
+ * started by CreateProcess/Bun.spawn directly; it needs cmd.exe. */
+function isBatchShim(path: string): boolean {
+  return IS_WINDOWS && /\.(cmd|bat)$/i.test(path);
+}
+
+/**
+ * Build the argv used to launch a resolved harness. Batch shims run through
+ * cmd.exe, which re-parses its command tail per batch semantics and does not
+ * understand the backslash-escaped quotes that CreateProcess argv
+ * serialization produces — so the fully quoted command line travels through
+ * an environment variable and is expanded by cmd itself (quotes in the
+ * expanded text toggle cmd's quoting state, keeping `& | < > ( )` and spaces
+ * inside quoted arguments literal). Double quotes and `%` cannot be
+ * represented faithfully at all; those arguments are rejected up front
+ * (fail closed) instead of risking corruption or injection.
+ */
+function launchArgv(
+  resolved: string,
+  args: string[],
+  env: Record<string, string>
+): string[] {
+  if (!isBatchShim(resolved)) {
+    return [resolved, ...args];
+  }
+  if (resolved.includes("%")) {
+    throw new AgentError(
+      `harness path '${resolved}' contains '%' which cannot be passed safely ` +
+        "through cmd.exe; move the harness to a path without '%'",
+      EXIT_RUNTIME
+    );
+  }
+  for (const arg of args) {
+    if (/["%\r\n]/.test(arg)) {
+      throw new AgentError(
+        `harness argument ${JSON.stringify(arg)} contains \" or % which cannot be passed ` +
+          "safely through a Windows batch shim (.cmd/.bat); remove it from the " +
+          "harness arguments or invoke the harness directly",
+        EXIT_RUNTIME
+      );
+    }
+  }
+  const quote = (arg: string): string =>
+    arg === "" || /[\s&|<>^(),;]/.test(arg) ? `"${arg}"` : arg;
+  env["AGENT_LAUNCH_CMD"] = [resolved, ...args].map(quote).join(" ");
+  const comspec = process.env.ComSpec || "cmd.exe";
+  return [comspec, "/d", "/c", "%AGENT_LAUNCH_CMD%"];
+}
 
 async function runInherited(cmd: string[], env?: Record<string, string | undefined>): Promise<number> {
   const child = Bun.spawn({
@@ -2308,6 +2079,92 @@ function cmdFallback(config: Config, profileId: string, json: boolean): number {
   return 0;
 }
 
+const TASK_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
+/**
+ * `agent task run|status`: the thin CLI entrypoint issue #100 specifies for
+ * Herdr dispatch. `run` goes through runTaskToCompletion — dispatch, prompt
+ * with the opt-in fallback profile's candidate execution, and collect from
+ * the worker that actually served. `status` reads the durable task state.
+ * The task modules are imported lazily so the launcher stays importable
+ * without dragging the Herdr/task stack into `agent check` etc.
+ */
+async function cmdTask(
+  config: Config,
+  sub: string,
+  arg: string | Record<string, unknown> | undefined,
+  opts?: Record<string, unknown>,
+): Promise<number> {
+  const task = await import("./agent/task.ts");
+  if (sub === "status") {
+    const taskId = arg as string;
+    if (!TASK_ID_PATTERN.test(taskId)) {
+      throw new AgentError(`invalid task id '${taskId}'`, EXIT_USAGE);
+    }
+    const status = task.getTaskStatus(taskId);
+    if (!status) {
+      console.log(`no task state for '${taskId}'`);
+      return EXIT_RUNTIME;
+    }
+    console.log(redactJson(status));
+    return 0;
+  }
+  // sub === "run"
+  const route = arg as string;
+  const o = (opts ?? {}) as {
+    model: string | null; fallback: string | null; prompt: string | null;
+    accept: string[]; timeoutMs: number | null;
+  };
+  const routeObj = config.routes[route];
+  if (!routeObj) {
+    throw new AgentError(`route not configured: ${route}`, EXIT_USAGE);
+  }
+  const provider = config.providers[routeObj.provider];
+  const model = o.model ?? routeObj.default_model ?? provider?.default_model ?? null;
+  if (!model) {
+    throw new AgentError(
+      `no model for route '${route}'; pass --model <id>`, EXIT_USAGE,
+    );
+  }
+  let prompt = o.prompt;
+  if (prompt === null && !process.stdin.isTTY) {
+    prompt = await Bun.stdin.text();
+  }
+  if (prompt === null || !prompt.trim()) {
+    throw new AgentError(
+      "no task prompt; pass --prompt <text> or pipe the prompt on stdin",
+      EXIT_USAGE,
+    );
+  }
+  // Fail fast with a clear message instead of a ContractError stack when
+  // Herdr itself is unavailable.
+  const { checkHerdrAvailable } = await import("./agent/herdr.ts");
+  const herdr = await checkHerdrAvailable();
+  if (!herdr.available) {
+    throw new AgentError(
+      `Herdr is not available (${herdr.error ?? "unknown"}); task dispatch requires Herdr`,
+      EXIT_RUNTIME,
+    );
+  }
+  const taskId = `task-${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}`;
+  const result = await task.runTaskToCompletion(config, {
+    id: taskId,
+    route,
+    model,
+    prompt: prompt.trim(),
+    ...(o.fallback ? { profileId: o.fallback } : {}),
+    ...(o.accept.length > 0 ? { acceptanceCriteria: o.accept } : {}),
+    ...(o.timeoutMs !== null ? { timeoutMs: o.timeoutMs } : {}),
+  });
+  console.log(redactJson({
+    taskId: result.taskId,
+    success: result.success,
+    ...(result.error ? { error: result.error } : {}),
+    ...(result.result !== undefined ? { result: result.result } : {}),
+  }));
+  return result.success ? 0 : EXIT_RUNTIME;
+}
+
 async function main(argv: string[]): Promise<number> {
   if (argv.length > 0 && argv[0] === "__exec") {
     return cmdExec(argv.slice(1));
@@ -2317,7 +2174,7 @@ async function main(argv: string[]): Promise<number> {
   // The invoked file name is recovered from the kernel-level argv (Bun
   // resolves symlinked argv[1]); native harness commands never come through
   // here (they are separate binaries).
-  const invoked = invokedScriptPath();
+  const invoked = invokedScriptPath(LAUNCHER_BASENAME);
   if (invoked) {
     const name = basename(invoked);
     if (
@@ -2381,11 +2238,14 @@ async function main(argv: string[]): Promise<number> {
     return cmdModels(config, action[1]);
   }
   if (action[0] === "shortcuts") {
-    return cmdShortcuts(config, action[1]);
+    return cmdShortcuts(config, action[1], launcherLinkTarget());
   }
   if (action[0] === "fallback") {
     const [, profileId, json] = action;
     return cmdFallback(config, profileId, json);
+  }
+  if (action[0] === "task") {
+    return cmdTask(config, action[1], action[2], action[3]);
   }
   if (action[0] === "native") {
     const [, harnessKey, nativePassthru] = action;
