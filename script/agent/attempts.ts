@@ -54,6 +54,8 @@ import {
   CONTRACT_VERSION,
   ContractError,
   agentStateDir,
+  errnoCode,
+  isOneOf,
   isPlainObject,
   looksLikeSecretValue,
   parseAttemptKey,
@@ -291,7 +293,7 @@ export function parseAttemptRecord(raw: unknown, where: string): AttemptRecord {
     );
   }
   const status = requireStr(payload, "status", where);
-  if (!STATUSES.includes(status as AttemptStatus)) {
+  if (!isOneOf(status, STATUSES)) {
     throw new ContractError("schema", `${where}: unknown status '${status}'`);
   }
   const owner = optionalStr(payload, "owner", where);
@@ -320,7 +322,7 @@ export function parseAttemptRecord(raw: unknown, where: string): AttemptRecord {
   return {
     attemptKey,
     generation,
-    status: status as AttemptStatus,
+    status,
     owner,
     parent,
     children,
@@ -476,7 +478,7 @@ export function withFileLock<T>(lockPath: string, fn: () => T, options: FileLock
     try {
       fd = openSync(lockPath, "wx"); // O_EXCL — the atomic acquisition
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      if (errnoCode(error) !== "EEXIST") throw error;
       if (lockIsStale(lockPath, stalenessMs)) {
         try {
           unlinkSync(lockPath); // steal; the next O_EXCL decides the new holder
@@ -599,7 +601,7 @@ export class FsAttemptStore implements AttemptStore {
     try {
       fd = openSync(path, "wx"); // O_EXCL: the CAS primitive
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+      if (errnoCode(error) === "EEXIST") return false;
       throw error;
     }
     try {
@@ -640,7 +642,7 @@ export class FsAttemptStore implements AttemptStore {
     try {
       fd = openSync(path, "wx");
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+      if (errnoCode(error) === "EEXIST") return false;
       throw error;
     }
     try {
