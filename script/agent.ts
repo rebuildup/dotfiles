@@ -36,64 +36,19 @@
  * wrapped or overridden.
  */
 
-import { randomUUID } from "node:crypto";
-import { basename, join } from "node:path";
-import { readFileSync, realpathSync } from "node:fs";
-import {
-  buildGuideData,
-  buildHelpData,
-  buildRoutesData,
-  renderGuideText,
-  renderRoutesText,
-  UnknownGuideTopicError,
-} from "./agent/help";
-import { getPrimaryQuotaScope, loadCatalog, type Catalog } from "./agent/catalog";
-import {
-  buildFallbackCatalog,
-  listFallbackProfiles,
-  loadCatalogAttestations,
-  mergeAttestations,
-  parseFallbackProfile,
-  resolveFallbackProfile,
-  renderFallbackResolution,
-  seedAttestationsFromCatalog,
-} from "./agent/fallback";
-import { ContractError, isPlainObject, parseTomlTable, redactJson, splitRouteKey } from "./agent/contract";
-import { AgentError, EXIT_RUNTIME, EXIT_USAGE } from "./agent/errors";
-import { planOmp } from "./agent/omp";
-import { PROGRAM, which } from "./agent/util";
+import { basename } from "node:path";
+import { realpathSync } from "node:fs";
+import { AgentError, EXIT_USAGE } from "./agent/errors";
+import { PROGRAM } from "./agent/util";
 import {
   cmdShortcuts,
   invokedScriptPath,
-  parseShortcutArgs,
-  resolveShortcut,
   shortcutMap,
-  shortcutName,
 } from "./agent/shortcuts";
-import {
-  configPath,
-  effectiveModels,
-  loadConfig,
-  routeDefaultModel,
-  type Config,
-  type Harness,
-  type OcModelSpec,
-  type Provider,
-  type Route,
-} from "./agent/config";
-import {
-  CRED_MARKER,
-  cmdExec,
-  finalize,
-  launchArgv,
-  MODEL_MARKER,
-  needsInjection,
-  PROVIDER_MARKER,
-  runInherited,
-  startViaWithSecrets,
-  withSecretsPath,
-} from "./agent/exec";
-import { checkPassthru, parseArgs, type Action } from "./agent/args";
+import { configPath, loadConfig } from "./agent/config";
+import { parseArgs } from "./agent/args";
+import { cmdExec } from "./agent/exec";
+import { usageText } from "./agent/help";
 import {
   cmdCheck,
   cmdFallback,
@@ -107,8 +62,6 @@ import {
   cmdRunShortcut,
   cmdTask,
 } from "./agent/commands";
-import { usageText } from "./agent/help";
-import { buildPlan, resolveModel } from "./agent/plan";
 
 const LAUNCHER_BASENAME = basename(import.meta.path);
 
