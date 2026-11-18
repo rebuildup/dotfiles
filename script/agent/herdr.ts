@@ -110,7 +110,31 @@ export async function createWorkspace(
   }
   try {
     const parsed = JSON.parse(result.stdout.trim());
-    return parsed?.result ?? parsed;
+    const workspace = parsed?.result?.workspace;
+    const rootPane = parsed?.result?.root_pane;
+    const tab = parsed?.result?.tab;
+    
+    const panes: HerdrPane[] = rootPane ? [{
+      id: rootPane.pane_id,
+      label: "root",
+      agentName: undefined,
+      agentKind: undefined,
+      status: rootPane.agent_status as "idle" | "working" | "blocked" | "done" | "unknown",
+      cwd: rootPane.cwd,
+    }] : [];
+    
+    const tabs: HerdrTab[] = tab ? [{
+      id: tab.tab_id,
+      label: tab.label || "1",
+      panes,
+    }] : [];
+    
+    return {
+      id: workspace?.workspace_id || "",
+      label: workspace?.label || label,
+      rootPath: cwd,
+      tabs,
+    };
   } catch (error) {
     throw new ContractError("schema", `Failed to parse Herdr workspace create output: ${error}`);
   }
@@ -131,14 +155,44 @@ export async function listWorkspaces(): Promise<HerdrWorkspace[]> {
 }
 
 /**
- * Get workspace by ID.
+ * Get workspace by ID with full tabs and panes.
  */
 export async function getWorkspace(workspaceId: string): Promise<HerdrWorkspace | null> {
   const result = await herdrSpawn(["workspace", "get", workspaceId]);
   if (result === null || result.code !== 0) return null;
   try {
     const parsed = JSON.parse(result.stdout.trim());
-    return parsed?.result ?? null;
+    const workspace = parsed?.result?.workspace;
+    if (!workspace) return null;
+    
+    // Fetch panes for this workspace
+    const paneResult = await herdrSpawn(["pane", "list", "--workspace", workspaceId]);
+    let panes: HerdrPane[] = [];
+    if (paneResult && paneResult.code === 0) {
+      const paneParsed = JSON.parse(paneResult.stdout.trim());
+      // Map pane_id to id for our interface
+      panes = (paneParsed?.result?.panes ?? []).map((p: any) => ({
+        id: p.pane_id,
+        label: "pane",
+        agentName: undefined,
+        agentKind: undefined,
+        status: p.agent_status as "idle" | "working" | "blocked" | "done" | "unknown",
+        cwd: p.cwd,
+      }));
+    }
+    
+    // Build tabs structure
+    const tabs: HerdrTab[] = [{
+      id: workspace.active_tab_id || "",
+      label: "1",
+      panes,
+    }];
+    return {
+      id: workspace.workspace_id,
+      label: workspace.label,
+      rootPath: "",
+      tabs,
+    };
   } catch {
     return null;
   }
@@ -160,24 +214,29 @@ export interface CreatePaneOptions {
  * Create a new pane in a workspace.
  */
 export async function createPane(options: CreatePaneOptions): Promise<{ paneId: string; tabId: string }> {
-  const args = ["pane", "create", "--workspace", options.workspaceId];
+  // First get the root pane of the workspace to split from
+  const workspace = await getWorkspace(options.workspaceId);
+  if (!workspace || !workspace.tabs.length || !workspace.tabs[0].panes.length) {
+    throw new ContractError("state", `Workspace ${options.workspaceId} has no root pane to split`);
+  }
+  const rootPaneId = workspace.tabs[0].panes[0].id;
+  
+  const args = ["pane", "split", "--pane", rootPaneId, "--direction", options.split || "right"];
   if (options.label) args.push("--label", options.label);
   if (options.cwd) args.push("--cwd", options.cwd);
-  if (options.split) args.push("--split", options.split);
-  if (options.targetPaneId) args.push("--target", options.targetPaneId);
   
   const result = await herdrSpawn(args);
   if (result === null) {
     throw new ContractError("state", "Herdr CLI not available");
   }
   if (result.code !== 0) {
-    throw new ContractError("state", `Herdr pane create failed: ${result.stderr}`);
+    throw new ContractError("state", `Herdr pane split failed: ${result.stderr}`);
   }
   try {
     const parsed = JSON.parse(result.stdout.trim());
     return parsed?.result ?? parsed;
   } catch (error) {
-    throw new ContractError("schema", `Failed to parse Herdr pane create output: ${error}`);
+    throw new ContractError("schema", `Failed to parse Herdr pane split output: ${error}`);
   }
 }
 
@@ -235,7 +294,9 @@ export async function startAgent(options: StartAgentOptions): Promise<{ agentNam
   }
   try {
     const parsed = JSON.parse(result.stdout.trim());
-    return parsed?.result ?? parsed;
+    // Herdr returns agent info in .agent.name, not .result.agentName
+    const agentName = parsed?.agent?.name ?? parsed?.result?.agentName ?? options.workerName;
+    return { agentName };
   } catch (error) {
     throw new ContractError("schema", `Failed to parse Herdr agent start output: ${error}`);
   }

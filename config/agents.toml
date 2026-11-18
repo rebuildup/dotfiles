@@ -312,6 +312,15 @@ limit = { context = 262144, output = 131072 }
 # Where that cannot be proven, the provider is recorded as blocked
 # (SILICONFLOW_API_KEY today) and gets
 # no route at all — a route that cannot be proven free must not be reachable.
+# 
+# SILICONFLOW STATUS (verified 2026-11-18):
+# - api.siliconflow.com (intl): catalog works, ALL chat → 402 "balance insufficient"
+# - api.siliconflow.cn (CN): rejects .com key with 401 "Token is invalid"
+# - Free models require real-name verification (platform-wide since 2026-05-15)
+# - Account unverified (authenticated: false), NO verification UI in new console
+#   (Account Center Upgrade 2026-06-29 removed /me/account/verify path)
+# - Support contact: contact@siliconflow.com
+# - BLOCKED: no route configured until real-name verification completes
 # ---------------------------------------------------------------------------
 
 # Kilo Gateway (https://kilocode.ai/docs/gateway). OpenAI-compatible gateway

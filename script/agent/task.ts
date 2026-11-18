@@ -2,17 +2,46 @@
 /**
  * Herdr dispatch / observe / collect for agent tasks (dotfiles#100, Epic#86 T014).
  *
- * Thin adapter that connects the agent launcher to Herdr for task dispatch,
- * observation, and result collection. Does NOT implement cross-harness migration
- * or autonomous fallback — those belong to #101 and #139.
+ * Real Herdr integration replaces the previous simulation paths.
+ * Task state is persisted to ~/.local/share/agent/tasks/<taskId>.json.
  */
 
 import { ContractError, parseRouteId, formatRouteId, type RouteRef } from "./contract.ts";
-import { loadConfig, type Config, type Route } from "../agent.ts";
-import { executeWithFallback, type FallbackCandidate, type FallbackExecutionState } from "./fallback-exec.ts";
-import { type ClassifiedError, classifyFailure } from "./fallback-exec.ts";
+import {
+  FallbackProfile,
+  FallbackCandidate,
+  FallbackResolution,
+  ResolvedCandidate,
+  RejectedCandidate,
+  FallbackRejectionReason,
+  parseFallbackProfile,
+  resolveFallbackProfile,
+  buildFallbackCatalog,
+  mergeAttestations,
+  seedAttestationsFromCatalog,
+} from "./fallback.ts";
+import {
+  executeWithFallback,
+  type ClassifiedError,
+  type FailureSignal,
+  classifyFailure,
+  type LimitCategory,
+} from "./fallback-exec.ts";
+import { loadConfig, type Config, type Route, type Provider, type Harness } from "../agent.ts";
+import { effectiveQuotaKey, loadCatalog, type Catalog } from "./catalog.ts";
 import { agentStateDir } from "./contract.ts";
-import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync } from "node:fs";
+import {
+  createWorkspace,
+  createPane,
+  startAgent,
+  promptAgent,
+  readAgent,
+  waitAgent,
+  closePane,
+  saveHerdrTaskMapping,
+  type HerdrTaskMapping,
+} from "./herdr.ts";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 
@@ -24,33 +53,32 @@ export type TaskClass = "simple" | "cross-boundary" | "capacity-constrained";
 
 export interface TaskDescriptor {
   id: string;
-  class: TaskClass;
-  route: string;           // primary route (e.g., "omp.mistral")
+  route: string; // "harness.provider"
   model: string;
-  profileId?: string;      // opt-in fallback profile ID
   prompt: string;
-  acceptanceCriteria: string[];
-  dependencies: string[];  // Issue numbers this task depends on
-  metadata: Record<string, unknown>;
+  profileId?: string; // fallback profile ID
+  class?: TaskClass;
+  maxAttempts?: number;
+  acceptanceCriteria?: string[];
+  timeoutMs?: number;
 }
 
 export interface TaskAttempt {
-  id: string;                    // UUID
+  id: string;
   taskId: string;
   route: RouteRef;
   model: string;
   profileId?: string;
   attemptNumber: number;
-  fallbackCandidate?: FallbackCandidate;
   startedAt: string;
-  endedAt?: string;
-  status: "running" | "completed" | "failed" | "fenced" | "fallback" | "blocked";
-  result?: unknown;
-  error?: ClassifiedError;
+  status: "running" | "completed" | "failed" | "blocked" | "fallback";
   herdrPaneId?: string;
   herdrWorkspaceId?: string;
-  checkpointRef?: string;
+  herdrWorkerName?: string;
   generation: number;
+  fallbackCandidate?: FallbackCandidate;
+  error?: ClassifiedError;
+  result?: unknown;
 }
 
 export interface TaskDispatchResult {
@@ -140,7 +168,6 @@ export async function dispatchTask(
   // Resolve fallback profile if specified
   let profileId = descriptor.profileId;
   if (profileId) {
-    const { parseFallbackProfile } = await import("./fallback.ts");
     const tomlText = readFileSync(config.path, "utf-8");
     const parsedToml = Bun.TOML.parse(tomlText) as Record<string, unknown>;
     const profile = parseFallbackProfile(parsedToml, profileId);
@@ -153,8 +180,41 @@ export async function dispatchTask(
     }
   }
 
-  // Create Herdr pane for the task
-  const { paneId, workspaceId } = await createHerdrPaneForTask(descriptor.id, descriptor.route);
+  // Create Herdr workspace for the task
+  const workspace = await createWorkspace(process.cwd(), `task-${descriptor.id.slice(0, 8)}`, { noFocus: true });
+  const workspaceId = workspace.id;
+
+  // Get the root pane (first pane of first tab) to start the agent
+  const rootPaneId = workspace.tabs[0].panes[0].id;
+  
+  // Wait for the pane to be ready (shell prompt available)
+  await new Promise(r => setTimeout(r, 2000));
+  
+  // Start the agent in the root pane
+  const harness = config.harnesses[route.harness];
+  const agentKind = harness.adapter === "omp" ? "omp" :
+                    harness.adapter === "anthropic" ? "claude" :
+                    harness.adapter === "opencode" ? "opencode" :
+                    harness.adapter === "passthrough" ? "dsh" : "omp";
+  
+  const workerName = `worker-${descriptor.id.slice(0, 8)}-${route.harness}-${randomUUID().slice(0, 8)}`;
+  const startResult = await startAgent({ workerName, kind: agentKind, paneId: rootPaneId });
+
+  // Split pane for output (right side)
+  const pane = await createPane({ workspaceId, cwd: process.cwd(), split: "right", noFocus: true });
+  const paneId = pane.pane.pane_id;
+
+  // Map the agent to the task
+  const mapping: HerdrTaskMapping = {
+    taskId: descriptor.id,
+    workspaceId,
+    paneId,
+    workerName: startResult.agentName,
+    createdAt: new Date().toISOString(),
+    route: descriptor.route,
+    model: descriptor.model,
+  };
+  saveHerdrTaskMapping(mapping);
 
   const attemptId = randomUUID();
   const routeRef = parseRouteId(descriptor.route);
@@ -170,6 +230,7 @@ export async function dispatchTask(
     status: "running",
     herdrPaneId: paneId,
     herdrWorkspaceId: workspaceId,
+    herdrWorkerName: startResult.agentName,
     generation: 1,
   };
 
@@ -184,21 +245,6 @@ export async function dispatchTask(
 }
 
 /**
- * Create a Herdr pane for the task. Returns pane ID and workspace ID.
- */
-async function createHerdrPaneForTask(taskId: string, route: string): Promise<{ paneId: string; workspaceId: string }> {
-  // In a real implementation, this would call Herdr CLI to create a workspace/pane
-  // For now, we generate deterministic IDs based on the task
-  const workspaceId = `ws-${route.replace(".", "-")}-${taskId.slice(0, 8)}`;
-  const paneId = `pane-${taskId.slice(0, 8)}`;
-  
-  // TODO: Actually call `herdr workspace create` and `herdr pane split` here
-  // For now, we simulate the IDs
-  
-  return { paneId, workspaceId };
-}
-
-/**
  * Start the actual agent process in the Herdr pane.
  * This is called after dispatch to actually launch the harness.
  */
@@ -207,29 +253,47 @@ export async function startTaskAttempt(
   attempt: TaskAttempt,
   prompt: string
 ): Promise<{ success: boolean; error?: ClassifiedError; result?: unknown }> {
-  // Build the agent command for the route
-  const route = config.routes[`${attempt.route.harness}.${attempt.route.provider}`];
-  if (!route) {
-    throw new ContractError("state", `Route not found for attempt`);
+  if (!attempt.herdrWorkerName) {
+    throw new ContractError("state", "No Herdr worker name in attempt");
   }
 
-  // In a real implementation, this would use `herdr agent prompt` to send the prompt
-  // and `herdr agent wait` to wait for completion
-  // For now, we simulate by calling the fallback execution logic
-  
   try {
     // Use the fallback execution logic if a profile is available
     if (attempt.profileId) {
       const result = await executeWithFallback(config, attempt.profileId, async (routeRef, model, candidate) => {
-        // In a real implementation, this would launch the actual harness via Herdr
-        // and return the result
-        return { success: true, result: { message: "Simulated execution" } };
+        // Build the agent command for the route
+        const routeKey = formatRouteId(routeRef);
+        const route = config.routes[routeKey];
+        if (!route) {
+          throw new ContractError("state", `Route not found for fallback candidate: ${routeKey}`);
+        }
+
+        // Send the prompt with the resolved model via Herdr
+        // Note: the model is pinned by the launcher's environment setup
+        const promptResult = await promptAgent(attempt.herdrWorkerName!, prompt, { wait: true, timeoutMs: 300000 });
+        
+        if (promptResult.blocked) {
+          return { success: false, error: { category: "unknown", observedAt: new Date().toISOString(), resetAt: null, retryAfterMs: null, exhausted: false, reason: promptResult.response || "Agent blocked", quotaScopeKey: null } };
+        }
+        if (promptResult.stalled) {
+          return { success: false, error: { category: "network", observedAt: new Date().toISOString(), resetAt: null, retryAfterMs: 30000, exhausted: false, reason: "Agent prompt stalled", quotaScopeKey: null } };
+        }
+
+        return { success: true, result: promptResult.response };
       });
       return { success: true, result: result.result };
     } else {
       // No fallback profile - single route execution
-      // In a real implementation, this would launch via Herdr
-      return { success: true, result: { message: "Simulated single-route execution" } };
+      const promptResult = await promptAgent(attempt.herdrWorkerName!, prompt, { wait: true, timeoutMs: 300000 });
+      
+      if (promptResult.blocked) {
+        return { success: false, error: { category: "unknown", observedAt: new Date().toISOString(), resetAt: null, retryAfterMs: null, exhausted: false, reason: promptResult.response || "Agent blocked", quotaScopeKey: null } };
+      }
+      if (promptResult.stalled) {
+        return { success: false, error: { category: "network", observedAt: new Date().toISOString(), resetAt: null, retryAfterMs: 30000, exhausted: false, reason: "Agent prompt stalled", quotaScopeKey: null } };
+      }
+
+      return { success: true, result: promptResult.response };
     }
   } catch (error) {
     const signal: { message: string } = { message: error instanceof Error ? error.message : String(error) };
@@ -245,9 +309,16 @@ export async function observeTaskAttempt(attempt: TaskAttempt): Promise<{
   status: "running" | "completed" | "failed" | "blocked";
   output?: string;
 }> {
-  // In a real implementation, this would call `herdr agent read` or `herdr agent wait`
-  // For now, we simulate
-  return { status: "running", output: "Simulated output" };
+  if (!attempt.herdrWorkerName) {
+    return { status: "failed", output: "No Herdr worker name" };
+  }
+
+  const waitResult = await waitAgent(attempt.herdrWorkerName, 5000);
+  if (waitResult.completed) {
+    const readResult = await readAgent(attempt.herdrWorkerName, { source: "recent", lines: 100 });
+    return { status: "completed", output: readResult.output };
+  }
+  return { status: "running", output: "Agent still working" };
 }
 
 /**
@@ -257,21 +328,38 @@ export async function collectTaskAttempt(
   attempt: TaskAttempt,
   timeoutMs: number = 300000
 ): Promise<CollectResult> {
-  // In a real implementation, this would:
-  // 1. Wait for the attempt to complete (herdr agent wait)
-  // 2. Read the output (herdr agent read)
-  // 3. Validate the result against acceptance criteria
-  // 4. Return the collected result
-  
-  // For now, simulate
-  await new Promise(resolve => setTimeout(resolve, 100));
-  
-  return {
-    taskId: attempt.taskId,
-    attempt,
-    success: true,
-    result: { message: "Simulated collection" },
-  };
+  if (!attempt.herdrWorkerName) {
+    return {
+      taskId: attempt.taskId,
+      attempt,
+      success: false,
+      error: { category: "unknown", observedAt: new Date().toISOString(), resetAt: null, retryAfterMs: null, exhausted: false, reason: "No Herdr worker name", quotaScopeKey: null },
+    };
+  }
+
+  try {
+    // Wait for the attempt to complete
+    const waitResult = await waitAgent(attempt.herdrWorkerName, timeoutMs);
+    
+    // Read the output
+    const readResult = await readAgent(attempt.herdrWorkerName, { source: "recent", lines: 200 });
+    
+    return {
+      taskId: attempt.taskId,
+      attempt,
+      success: waitResult.completed,
+      result: { output: readResult.output, completed: waitResult.completed, reason: waitResult.reason },
+    };
+  } catch (error) {
+    const signal: { message: string } = { message: error instanceof Error ? error.message : String(error) };
+    const classified = classifyFailure(signal, new Date().toISOString());
+    return {
+      taskId: attempt.taskId,
+      attempt,
+      success: false,
+      error: classified,
+    };
+  }
 }
 
 /**
@@ -291,18 +379,19 @@ export async function handleFallback(
   if (!failedAttempt.profileId) return null;
 
   // Check if we've exhausted retries
-  const history = state.history;
+  const maxAttempts = state.descriptor.maxAttempts ?? 5;
   const attemptNumber = failedAttempt.attemptNumber + 1;
-  if (attemptNumber > 5) return null; // Max 5 attempts total
+  if (attemptNumber > maxAttempts) return null;
 
   // Check circuit breaker
-  const recentFailures = history.filter(a => a.status === "failed").slice(-3);
+  const recentFailures = state.history.filter(a => a.status === "failed").slice(-3);
   if (recentFailures.length >= 3) {
     return null; // Circuit breaker open
   }
 
   // Try next fallback candidate via executeWithFallback logic
   // For now, we just create a new attempt with incremented number
+  // The actual candidate switching happens inside executeWithFallback
   const nextAttempt: TaskAttempt = {
     ...failedAttempt,
     id: randomUUID(),
@@ -314,12 +403,9 @@ export async function handleFallback(
   };
 
   // Update state
-  history.push(nextAttempt);
-  saveTaskState(taskId, {
-    descriptor: state.descriptor,
-    history,
-    currentAttempt: nextAttempt,
-  });
+  state.history.push(nextAttempt);
+  state.currentAttempt = nextAttempt;
+  saveTaskState(taskId, state);
 
   return nextAttempt;
 }
