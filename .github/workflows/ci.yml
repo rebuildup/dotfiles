@@ -74,3 +74,19 @@ jobs:
         run: bun test script/agent.test.ts script/agent.windows.test.ts script/agent.entrypoint.windows.test.ts script/devices.test.ts
       - name: Test Windows link adapter (adoption-first symlinks)
         run: bun test script/link.windows.test.ts
+      - name: Parse-check PowerShell scripts
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem -Recurse -Filter *.ps1 script, home -ErrorAction SilentlyContinue
+          $bad = 0
+          foreach ($f in $files) {
+            $errs = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$null, [ref]$errs)
+            if ($errs.Count -gt 0) {
+              Write-Output "PARSE FAIL: $($f.FullName)"
+              $errs | ForEach-Object { Write-Output "  $($_.Message)" }
+              $bad++
+            }
+          }
+          if ($bad -gt 0) { exit 1 }
+          Write-Output "PS1 PARSE OK: $($files.Count) files"

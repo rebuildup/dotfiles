@@ -65,6 +65,69 @@ async function herdrSpawn(args: string[], cwd?: string): Promise<HerdrSpawnResul
 }
 
 // ---------------------------------------------------------------------------
+// CLI JSON boundary helpers: every `herdr ... --json`-style reply is parsed
+// into `unknown` and validated field-by-field before use.
+// ---------------------------------------------------------------------------
+
+const PANE_STATUSES = ["idle", "working", "blocked", "done", "unknown"] as const;
+
+function herdrPaneStatus(value: unknown): HerdrPane["status"] {
+  return typeof value === "string" && (PANE_STATUSES as readonly string[]).includes(value)
+    ? (value as HerdrPane["status"])
+    : "unknown";
+}
+
+function herdrStr(value: unknown): string | undefined {
+  return typeof value === "string" && value !== "" ? value : undefined;
+}
+
+/** The envelope's `result` member when it is an object, else null. */
+function herdrResultOf(parsed: unknown): Record<string, unknown> | null {
+  if (!isPlainObject(parsed)) return null;
+  const result = parsed["result"];
+  return isPlainObject(result) ? result : null;
+}
+
+function parseHerdrJson(text: string, what: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    throw new ContractError("schema", `Failed to parse Herdr ${what} output: ${error}`);
+  }
+}
+
+function parseHerdrJsonOrNull(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+/** Validate one `pane list` entry shape shared by getWorkspace callers. */
+function herdrPaneFromListEntry(raw: unknown): HerdrPane {
+  if (!isPlainObject(raw) || typeof raw["pane_id"] !== "string" || raw["pane_id"] === "") {
+    throw new ContractError("schema", "Herdr pane list: pane entry has no pane_id");
+  }
+  return {
+    id: raw["pane_id"],
+    label: "pane",
+    status: herdrPaneStatus(raw["agent_status"]),
+    cwd: herdrStr(raw["cwd"]),
+  };
+}
+
+function herdrPanesFromList(parsed: unknown): HerdrPane[] {
+  const env = herdrResultOf(parsed);
+  const rawPanes = env?.["panes"];
+  if (rawPanes === undefined || rawPanes === null) return [];
+  if (!Array.isArray(rawPanes)) {
+    throw new ContractError("schema", "Herdr pane list: 'panes' must be an array");
+  }
+  return rawPanes.map(herdrPaneFromListEntry);
+}
+
+// ---------------------------------------------------------------------------
 // Workspace operations
 // ---------------------------------------------------------------------------
 
@@ -105,7 +168,6 @@ export async function createWorkspace(
   for (const [name, value] of Object.entries(options.env ?? {})) {
     args.push("--env", `${name}=${value}`);
   }
-  if (options.noFocus) args.push("--no-focus");
   
   const result = await herdrSpawn(args, cwd);
   if (result === null) {
@@ -114,36 +176,33 @@ export async function createWorkspace(
   if (result.code !== 0) {
     throw new ContractError("state", `Herdr workspace create failed: ${result.stderr}`);
   }
-  try {
-    const parsed = JSON.parse(result.stdout.trim());
-    const workspace = parsed?.result?.workspace;
-    const rootPane = parsed?.result?.root_pane;
-    const tab = parsed?.result?.tab;
-    
-    const panes: HerdrPane[] = rootPane ? [{
-      id: rootPane.pane_id,
-      label: "root",
-      agentName: undefined,
-      agentKind: undefined,
-      status: rootPane.agent_status as "idle" | "working" | "blocked" | "done" | "unknown",
-      cwd: rootPane.cwd,
-    }] : [];
-    
-    const tabs: HerdrTab[] = tab ? [{
-      id: tab.tab_id,
-      label: tab.label || "1",
-      panes,
-    }] : [];
-    
-    return {
-      id: workspace?.workspace_id || "",
-      label: workspace?.label || label,
-      rootPath: cwd,
-      tabs,
-    };
-  } catch (error) {
-    throw new ContractError("schema", `Failed to parse Herdr workspace create output: ${error}`);
-  }
+  const parsed = parseHerdrJson(result.stdout.trim(), "workspace create");
+  const env = herdrResultOf(parsed);
+  const workspace = env?.["workspace"];
+  const rootPane = env?.["root_pane"];
+  const tab = env?.["tab"];
+
+  const panes: HerdrPane[] =
+    isPlainObject(rootPane) && typeof rootPane["pane_id"] === "string" && rootPane["pane_id"] !== ""
+      ? [{
+          id: rootPane["pane_id"],
+          label: "root",
+          status: herdrPaneStatus(rootPane["agent_status"]),
+          cwd: herdrStr(rootPane["cwd"]),
+        }]
+      : [];
+
+  const tabs: HerdrTab[] =
+    isPlainObject(tab) && typeof tab["tab_id"] === "string" && tab["tab_id"] !== ""
+      ? [{ id: tab["tab_id"], label: herdrStr(tab["label"]) ?? "1", panes }]
+      : [];
+
+  return {
+    id: isPlainObject(workspace) ? herdrStr(workspace["workspace_id"]) ?? "" : "",
+    label: isPlainObject(workspace) ? herdrStr(workspace["label"]) ?? label : label,
+    rootPath: cwd,
+    tabs,
+  };
 }
 
 /**
@@ -152,12 +211,23 @@ export async function createWorkspace(
 export async function listWorkspaces(): Promise<HerdrWorkspace[]> {
   const result = await herdrSpawn(["workspace", "list"]);
   if (result === null || result.code !== 0) return [];
-  try {
-    const parsed = JSON.parse(result.stdout.trim());
-    return parsed?.result?.workspaces ?? [];
-  } catch {
-    return [];
+  const parsed = parseHerdrJsonOrNull(result.stdout.trim());
+  const env = herdrResultOf(parsed);
+  const raw = env?.["workspaces"];
+  if (!Array.isArray(raw)) return [];
+  const out: HerdrWorkspace[] = [];
+  for (const entry of raw) {
+    if (!isPlainObject(entry)) continue;
+    const id = herdrStr(entry["workspace_id"]) ?? herdrStr(entry["id"]);
+    if (!id) continue;
+    out.push({
+      id,
+      label: herdrStr(entry["label"]) ?? "",
+      rootPath: herdrStr(entry["root_path"]) ?? herdrStr(entry["cwd"]) ?? "",
+      tabs: [],
+    });
   }
+  return out;
 }
 
 /**
@@ -166,55 +236,35 @@ export async function listWorkspaces(): Promise<HerdrWorkspace[]> {
 export async function getWorkspace(workspaceId: string): Promise<HerdrWorkspace | null> {
   const result = await herdrSpawn(["workspace", "get", workspaceId]);
   if (result === null || result.code !== 0) return null;
-  try {
-    const parsed = JSON.parse(result.stdout.trim());
-    const workspace = parsed?.result?.workspace;
-    if (!workspace) return null;
-    
-    // Fetch panes for this workspace
-    const paneResult = await herdrSpawn(["pane", "list", "--workspace", workspaceId]);
-    let panes: HerdrPane[] = [];
-    if (paneResult && paneResult.code === 0) {
-      const paneParsed: unknown = JSON.parse(paneResult.stdout.trim());
-      const rawPanes = (paneParsed as { result?: { panes?: unknown } } | null)?.result?.panes;
-      if (rawPanes !== undefined && rawPanes !== null && !Array.isArray(rawPanes)) {
-        throw new ContractError("schema", "Herdr pane list: 'panes' must be an array");
-      }
-      // Map pane_id to id for our interface
-      panes = (rawPanes ?? []).map((p) => {
-        const pane = p as { pane_id?: unknown; agent_status?: unknown; cwd?: unknown };
-        if (typeof pane.pane_id !== "string" || pane.pane_id === "") {
-          throw new ContractError("schema", "Herdr pane list: pane entry has no pane_id");
-        }
-        const status = typeof pane.agent_status === "string" ? pane.agent_status : "unknown";
-        return {
-          id: pane.pane_id,
-          label: "pane",
-          agentName: undefined,
-          agentKind: undefined,
-          status: (["idle", "working", "blocked", "done", "unknown"] as const).includes(status as never)
-            ? (status as HerdrPane["status"])
-            : "unknown",
-          cwd: typeof pane.cwd === "string" ? pane.cwd : undefined,
-        };
-      });
+  const parsed = parseHerdrJsonOrNull(result.stdout.trim());
+  const workspace = herdrResultOf(parsed)?.["workspace"];
+  if (!isPlainObject(workspace)) return null;
+  const id = herdrStr(workspace["workspace_id"]) ?? herdrStr(workspace["id"]);
+  if (!id) return null;
+
+  // Fetch panes for this workspace
+  let panes: HerdrPane[] = [];
+  const paneResult = await herdrSpawn(["pane", "list", "--workspace", workspaceId]);
+  if (paneResult && paneResult.code === 0) {
+    try {
+      panes = herdrPanesFromList(parseHerdrJsonOrNull(paneResult.stdout.trim()));
+    } catch {
+      panes = [];
     }
-    
-    // Build tabs structure
-    const tabs: HerdrTab[] = [{
-      id: workspace.active_tab_id || "",
-      label: "1",
-      panes,
-    }];
-    return {
-      id: workspace.workspace_id,
-      label: workspace.label,
-      rootPath: "",
-      tabs,
-    };
-  } catch {
-    return null;
   }
+
+  // Build tabs structure
+  const tabs: HerdrTab[] = [{
+    id: herdrStr(workspace["active_tab_id"]) ?? "",
+    label: "1",
+    panes,
+  }];
+  return {
+    id,
+    label: herdrStr(workspace["label"]) ?? "",
+    rootPath: "",
+    tabs,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -267,22 +317,17 @@ export async function createPane(options: CreatePaneOptions): Promise<{ paneId: 
   if (result.code !== 0) {
     throw new ContractError("state", `Herdr pane split failed: ${result.stderr}`);
   }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(result.stdout.trim());
-  } catch (error) {
-    throw new ContractError("schema", `Failed to parse Herdr pane split output: ${error}`);
-  }
+  const parsed = parseHerdrJson(result.stdout.trim(), "pane split");
   // The CLI answers with an envelope: `{id, result: {pane: {...}}}`. Read the
   // pane info from either the envelope or a bare object, and validate the id:
   // a missing id would otherwise surface later as an unrelated "no worker
   // name" failure.
-  const envelope = parsed as { result?: { pane?: unknown }; pane?: unknown } | null;
-  const raw = (envelope?.result?.pane ?? envelope?.pane) as
-    | { pane_id?: unknown; tab_id?: unknown }
-    | undefined;
-  const paneId = raw?.pane_id;
-  const tabId = raw?.tab_id;
+  const env = herdrResultOf(parsed);
+  const resultPane = env?.["pane"];
+  const bare = isPlainObject(parsed) ? parsed["pane"] : undefined;
+  const raw = isPlainObject(resultPane) ? resultPane : isPlainObject(bare) ? bare : null;
+  const paneId = raw?.["pane_id"];
+  const tabId = raw?.["tab_id"];
   if (typeof paneId !== "string" || !paneId) {
     throw new ContractError("schema", "Herdr pane split output has no pane id");
   }
@@ -295,12 +340,16 @@ export async function createPane(options: CreatePaneOptions): Promise<{ paneId: 
 export async function getPaneStatus(paneId: string): Promise<{ status: string; agentName?: string; agentKind?: string } | null> {
   const result = await herdrSpawn(["pane", "get", paneId]);
   if (result === null || result.code !== 0) return null;
-  try {
-    const parsed = JSON.parse(result.stdout.trim());
-    return parsed?.result ?? null;
-  } catch {
-    return null;
-  }
+  const parsed = parseHerdrJsonOrNull(result.stdout.trim());
+  const env = herdrResultOf(parsed);
+  if (!env) return null;
+  const agentName = herdrStr(env["agent_name"]) ?? herdrStr(env["agentName"]);
+  const agentKind = herdrStr(env["agent_kind"]) ?? herdrStr(env["agentKind"]);
+  return {
+    status: herdrStr(env["status"]) ?? "unknown",
+    ...(agentName !== undefined ? { agentName } : {}),
+    ...(agentKind !== undefined ? { agentKind } : {}),
+  };
 }
 
 /**
@@ -341,14 +390,15 @@ export async function startAgent(options: StartAgentOptions): Promise<{ agentNam
   if (result.code !== 0) {
     throw new ContractError("state", `Herdr agent start failed: ${result.stderr}`);
   }
-  try {
-    const parsed = JSON.parse(result.stdout.trim());
-    // Herdr returns agent info in .agent.name, not .result.agentName
-    const agentName = parsed?.agent?.name ?? parsed?.result?.agentName ?? options.workerName;
-    return { agentName };
-  } catch (error) {
-    throw new ContractError("schema", `Failed to parse Herdr agent start output: ${error}`);
-  }
+  const parsed = parseHerdrJson(result.stdout.trim(), "agent start");
+  // Herdr returns agent info in .agent.name, not .result.agentName
+  const agent = isPlainObject(parsed) ? parsed["agent"] : null;
+  const env = herdrResultOf(parsed);
+  const agentName =
+    (isPlainObject(agent) ? herdrStr(agent["name"]) : undefined) ??
+    (env ? herdrStr(env["agentName"]) ?? herdrStr(env["agent_name"]) : undefined) ??
+    options.workerName;
+  return { agentName };
 }
 
 /**
@@ -376,31 +426,32 @@ export async function promptAgent(
     // The CLI reports a structured error: {"error":{"code":"...","message":"..."}}.
     let errorCode: string | undefined;
     let message = result.stderr || "Agent prompt failed";
-    try {
-      const parsed = JSON.parse(result.stdout.trim()) as {
-        error?: { code?: unknown; message?: unknown };
-      };
-      if (typeof parsed.error?.code === "string") errorCode = parsed.error.code;
-      if (typeof parsed.error?.message === "string" && parsed.error.message) {
-        message = parsed.error.message;
-      }
-    } catch {
-      // Not a JSON envelope: keep the stderr text.
+    const parsed = parseHerdrJsonOrNull(result.stdout.trim());
+    const errorObj = isPlainObject(parsed) ? parsed["error"] : null;
+    if (isPlainObject(errorObj)) {
+      errorCode = herdrStr(errorObj["code"]);
+      const errorMessage = herdrStr(errorObj["message"]);
+      if (errorMessage) message = errorMessage;
     }
+    // Not a JSON envelope: keep the stderr text.
     // A prompt rejected because the agent is blocked is an authorization
     // refusal; a stalled prompt never reached a working state.
     const blocked = errorCode === "agent_blocked";
     const stalled = !blocked;
     return { blocked, stalled, errorCode, response: message };
   }
-  try {
-    const parsed = JSON.parse(result.stdout.trim());
-    // On success the CLI answers with the agent state, not the answer: the
-    // agent's text lives in its terminal output (readAgent).
-    return parsed?.result ?? { response: result.stdout.trim() };
-  } catch {
-    return { response: result.stdout.trim() };
-  }
+  // On success the CLI answers with the agent state, not the answer: the
+  // agent's text lives in its terminal output (readAgent).
+  const env = herdrResultOf(parseHerdrJsonOrNull(result.stdout.trim()));
+  if (!env) return { response: result.stdout.trim() };
+  const out: { response?: string; blocked?: boolean; stalled?: boolean; errorCode?: string } = {};
+  const response = herdrStr(env["response"]) ?? herdrStr(env["output"]);
+  if (response !== undefined) out.response = response;
+  if (typeof env["blocked"] === "boolean") out.blocked = env["blocked"];
+  if (typeof env["stalled"] === "boolean") out.stalled = env["stalled"];
+  const errorCode = herdrStr(env["error_code"]) ?? herdrStr(env["errorCode"]);
+  if (errorCode !== undefined) out.errorCode = errorCode;
+  return out;
 }
 
 /**
@@ -418,12 +469,12 @@ export async function readAgent(
   if (result === null || result.code !== 0) {
     return { output: "", source: options.source || "recent" };
   }
-  try {
-    const parsed = JSON.parse(result.stdout.trim());
-    return parsed?.result ?? { output: "", source: options.source || "recent" };
-  } catch {
-    return { output: result.stdout.trim(), source: options.source || "recent" };
-  }
+  const env = herdrResultOf(parseHerdrJsonOrNull(result.stdout.trim()));
+  if (!env) return { output: result.stdout.trim(), source: options.source || "recent" };
+  return {
+    output: herdrStr(env["output"]) ?? "",
+    source: herdrStr(env["source"]) ?? options.source ?? "recent",
+  };
 }
 
 /**
@@ -439,14 +490,14 @@ export async function waitAgent(
   if (result === null || result.code !== 0) {
     return { completed: false, reason: "timeout or error" };
   }
-  try {
-    const parsed = JSON.parse(result.stdout.trim());
-    const r = parsed?.result;
-    if (r && typeof r.completed === "boolean") return r;
-    return { completed: r?.status === "done" || r?.status === "idle", reason: r?.status };
-  } catch {
-    return { completed: false, reason: "parse error" };
+  const env = herdrResultOf(parseHerdrJsonOrNull(result.stdout.trim()));
+  if (!env) return { completed: false, reason: "parse error" };
+  if (typeof env["completed"] === "boolean") {
+    const reason = herdrStr(env["reason"]);
+    return { completed: env["completed"], ...(reason !== undefined ? { reason } : {}) };
   }
+  const status = herdrStr(env["status"]);
+  return { completed: status === "done" || status === "idle", ...(status !== undefined ? { reason: status } : {}) };
 }
 
 /**
@@ -505,12 +556,20 @@ export async function getAgent(workerName: string): Promise<{
 } | null> {
   const result = await herdrSpawn(["agent", "get", workerName]);
   if (result === null || result.code !== 0) return null;
-  try {
-    const parsed = JSON.parse(result.stdout.trim());
-    return parsed?.result ?? null;
-  } catch {
-    return null;
-  }
+  const env = herdrResultOf(parseHerdrJsonOrNull(result.stdout.trim()));
+  if (!env) return null;
+  const name = herdrStr(env["name"]) ?? herdrStr(env["agent_name"]) ?? herdrStr(env["agentName"]);
+  if (!name) return null;
+  const kind = herdrStr(env["kind"]) ?? herdrStr(env["agent_kind"]) ?? herdrStr(env["agentKind"]) ?? "";
+  const paneId = herdrStr(env["pane_id"]) ?? herdrStr(env["paneId"]) ?? "";
+  const status = herdrStr(env["status"]) ?? herdrStr(env["agent_status"]) ?? "unknown";
+  const workspaceId = herdrStr(env["workspace_id"]) ?? herdrStr(env["workspaceId"]);
+  const cwd = herdrStr(env["cwd"]);
+  return {
+    name, kind, paneId, status,
+    ...(workspaceId !== undefined ? { workspaceId } : {}),
+    ...(cwd !== undefined ? { cwd } : {}),
+  };
 }
 
 // ---------------------------------------------------------------------------

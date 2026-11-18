@@ -310,10 +310,16 @@ function resolveLock(
   const read = readIfPresent(repoRoot, LOCK_PATH);
   if (!read.present) return { lock: null, facts: [] };
   try {
-    const parsed = JSON.parse(read.content as string) as {
-      skills?: Record<string, LockEntry>;
-    };
-    if (!parsed.skills || typeof parsed.skills !== "object") {
+    const parsed: unknown = JSON.parse(read.content as string);
+    const skillsRaw =
+      parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)["skills"]
+        : undefined;
+    if (
+      skillsRaw === null ||
+      typeof skillsRaw !== "object" ||
+      Array.isArray(skillsRaw)
+    ) {
       return {
         lock: null,
         facts: [
@@ -325,7 +331,27 @@ function resolveLock(
         ],
       };
     }
-    return { lock: { skills: parsed.skills }, facts: [] };
+    // Entries must be objects: a null/scalar entry would crash the
+    // field reads in resolveSkills. Non-object entries are dropped and
+    // reported rather than silently shaping the lock.
+    const skills: Record<string, LockEntry> = {};
+    const dropped: string[] = [];
+    for (const [name, entry] of Object.entries(skillsRaw)) {
+      if (entry !== null && typeof entry === "object" && !Array.isArray(entry)) {
+        skills[name] = entry as LockEntry;
+      } else {
+        dropped.push(name);
+      }
+    }
+    const facts: PolicyFact[] = [];
+    if (dropped.length > 0) {
+      facts.push({
+        kind: "skills-lock-invalid",
+        severity: "conflict",
+        detail: `${LOCK_PATH}: dropped non-object skill entr${dropped.length === 1 ? "y" : "ies"}: ${dropped.join(", ")}`,
+      });
+    }
+    return { lock: { skills }, facts };
   } catch (error) {
     return {
       lock: null,
