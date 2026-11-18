@@ -34,6 +34,11 @@ jobs:
         run: shellcheck -s bash -x script/lib/managed-targets.sh script/lib/infisical-binding.sh script/link script/check script/test script/bootstrap script/secrets-doctor script/with-secrets script/check-secrets script/test-workflow config/infisical.sh home/.local/bin/agent home/.local/bin/devices config/agent-init.bash script/agent/minimax script/agent/mimo script/agent/infisical-key.sh home/.claude/statusline-command.sh evals/agent-router/controls.sh home/.local/bin/ocr-go-key
       - name: Compile-check Python scripts
         run: python3 -m py_compile script/snippet-sync.py
+      - name: Validate JSON files
+        run: |
+          git ls-files '*.json' | while IFS= read -r f; do
+            bun -e "JSON.parse(await Bun.file(process.argv[1]).text())" "$f" || { echo "invalid JSON: $f"; exit 1; }
+          done
       - name: Set up Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
         with:
