@@ -10,8 +10,10 @@
  * profile only takes effect when explicitly selected and fully validated.
  */
 
-import { ContractError, parseRouteId, formatRouteId, type RouteRef, attest, parseAttested, isUsable, type Attested, type Evidence, type VerificationStatus, type Provenance, type EvidenceSource, DEFAULT_MAX_EVIDENCE_AGE_MS } from "./contract.ts";
+import { ContractError, agentStateDir, parseRouteId, formatRouteId, type RouteRef, attest, parseAttested, isUsable, type Attested, type Evidence, type VerificationStatus, type Provenance, type EvidenceSource, DEFAULT_MAX_EVIDENCE_AGE_MS } from "./contract.ts";
 import type { E2eObservation } from "./catalog.ts";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 
 // ---------------------------------------------------------------------------
 // Schema types
@@ -503,6 +505,17 @@ export function effectiveRouteQuotaKey(
 }
 
 /**
+ * Persisted/seeded attestation envelope: the contract-legal `value` shape
+ * used for catalog evidence and local probe state (`route#model` keyed).
+ */
+export type CatalogAttestation = Attested<{
+  status: VerificationStatus;
+  provenance: Provenance;
+  evidence: Evidence;
+}>;
+export type CatalogAttestationMap = Map<string, CatalogAttestation>;
+
+/**
  * Seed the attestation map with the DURABLE catalog evidence from
  * `config/agents.toml` (`[catalog.routes.*.e2e]` / `.restriction`).
  *
@@ -517,8 +530,8 @@ export function effectiveRouteQuotaKey(
  */
 export function seedAttestationsFromCatalog(
   catalogFacts: FallbackCatalogFacts | null,
-): Map<string, Attested<{ status: VerificationStatus; provenance: Provenance; evidence: Evidence }>> {
-  const map = new Map<string, Attested<{ status: VerificationStatus; provenance: Provenance; evidence: Evidence }>>();
+): CatalogAttestationMap {
+  const map = new Map<string, CatalogAttestation>();
   if (!catalogFacts?.routes) return map;
   for (const [routeId, facts] of Object.entries(catalogFacts.routes)) {
     if (facts.restriction) {
@@ -575,9 +588,9 @@ export function seedAttestationsFromCatalog(
  * false, which is why the tie case falls through to the committed entry.
  */
 export function mergeAttestations(
-  durable: Map<string, Attested<{ status: VerificationStatus; provenance: Provenance; evidence: Evidence }>>,
-  local: Map<string, Attested<{ status: VerificationStatus; provenance: Provenance; evidence: Evidence }>>,
-): Map<string, Attested<{ status: VerificationStatus; provenance: Provenance; evidence: Evidence }>> {
+  durable: CatalogAttestationMap,
+  local: CatalogAttestationMap,
+): CatalogAttestationMap {
   const merged = new Map(durable);
   for (const [key, localEntry] of local) {
     const committed = merged.get(key);
@@ -606,11 +619,40 @@ export function mergeAttestations(
 }
 
 /**
+ * Load persisted catalog attestation state from
+ * `<agentStateDir>/catalog/*.json`. Catalog state stores attestations by
+ * `route#model` key; entries from every file are merged in readdir order.
+ * Entries are unvalidated persisted envelopes — resolution re-validates each
+ * with `parseAttested`, and malformed files are skipped (local state must
+ * never take down the launcher).
+ */
+export function loadCatalogAttestations(): CatalogAttestationMap {
+  const map = new Map<string, CatalogAttestation>();
+  const stateDir = join(agentStateDir(), "catalog");
+  if (!existsSync(stateDir)) return map;
+
+  for (const file of readdirSync(stateDir)) {
+    if (!file.endsWith(".json")) continue;
+    try {
+      const data = JSON.parse(readFileSync(join(stateDir, file), "utf-8"));
+      if (data.attestations && typeof data.attestations === "object") {
+        for (const [key, value] of Object.entries(data.attestations)) {
+          map.set(key, value as CatalogAttestation);
+        }
+      }
+    } catch {
+      // ignore malformed files
+    }
+  }
+  return map;
+}
+
+/**
  * Effective status of an attestation, tolerating the contract-legal `value:
  * null` shape used for restrictions.
  */
 function attestationStatus(
-  entry: Attested<{ status: VerificationStatus; provenance: Provenance; evidence: Evidence }>,
+  entry: CatalogAttestation,
 ): VerificationStatus {
   const value = entry.value;
   if (typeof value === "object" && value !== null && typeof value.status === "string") {
@@ -629,7 +671,7 @@ function attestationStatus(
  * only fall back to `value` when it is an object.
  */
 function isRestricted(
-  entry: Attested<{ status: VerificationStatus; provenance: Provenance; evidence: Evidence }>,
+  entry: CatalogAttestation,
 ): boolean {
   return attestationStatus(entry) === "restricted";
 }
@@ -642,7 +684,7 @@ function isRestricted(
 export function resolveFallbackProfile(
   profile: FallbackProfile,
   catalog: CatalogLike,
-  attestations: Map<string, Attested<{ status: VerificationStatus; provenance: Provenance; evidence: Evidence }>>,
+  attestations: CatalogAttestationMap,
   primaryQuotaScopeKey: string | null,
   nowMs: number = Date.now()
 ): FallbackResolution {
@@ -824,7 +866,7 @@ export function resolveFallbackProfile(
     }
 
     // Parse and validate attestation
-    let parsedAttestation: Attested<{ status: VerificationStatus; provenance: Provenance; evidence: Evidence }>;
+    let parsedAttestation: CatalogAttestation;
     try {
       parsedAttestation = parseAttested(attestation, `fallback:${attestKey}`);
     } catch {

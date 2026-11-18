@@ -78,6 +78,7 @@ import {
   assertSameAttempt,
   type AttemptIdentity,
 } from "./contract";
+import { sleepSync } from "./util.ts";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -519,9 +520,6 @@ export const LEDGER_LOCK_TIMEOUT_MS = 10_000;
 
 const LOCK_POLL_MS = 20;
 
-function sleepSync(ms: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
 
 /** True when the lock directory at `lockPath` carries our owner token. */
 function lockIsOurs(lockPath: string, token: string): boolean {
