@@ -14,7 +14,7 @@
  * Execution contract: [ADR-0019](../../docs/adr/ADR-0019.md).
  */
 
-import { ContractError, isOneOf, isPlainObject, parseRouteId, formatRouteId, parseTomlTable, requireStr, stringList, type RouteRef } from "./contract.ts";
+import { ContractError, isOneOf, isPlainObject, parseRouteId, formatRouteId, formatAttemptKey, parseTomlTable, requireStr, stringList, type RouteRef } from "./contract.ts";
 import { type FallbackCandidate, parseFallbackProfile, validateBilling, validateCredential, validateScope } from "./fallback.ts";
 import {
   executeWithFallback,
@@ -46,7 +46,20 @@ import {
 } from "./herdr.ts";
 import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { withFileLock } from "./attempts.ts";
+import {
+  withFileLock,
+  FsAttemptStore,
+  initAttempt,
+  acquireLease,
+  releaseLease,
+  type Lease,
+} from "./attempts.ts";
+import {
+  FsJournalStore,
+  journalPreEffect,
+  journalPostEffect,
+  pendingSideEffects,
+} from "./checkpoint.ts";
 import { extractProviderFailureEvidence } from "./evidence.ts";
 import { randomUUID } from "node:crypto";
 
@@ -139,6 +152,71 @@ function ensureTaskStateDir(): void {
 }
 
 const TASK_ID_SAFE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
+// ---------------------------------------------------------------------------
+// Fencing + side-effect journal (issues #99/#173)
+// ---------------------------------------------------------------------------
+//
+// Every task maps to ONE attempts.ts attemptKey (route#model#machine#taskId)
+// and ONE checkpoint.ts journal. Dispatch initializes the record; execution
+// and resume hold an exclusive generation lease across the whole run, and
+// every externally-visible operation (worker prompt, candidate dispatch) is
+// journaled pre/post. A `pre` without `post` is UNKNOWN: resume refuses to
+// replay until it is reconciled — never assumed "did not happen".
+
+const taskAttemptStore = new FsAttemptStore();
+const taskJournalStore = new FsJournalStore();
+
+function taskAttemptKey(attempt: Pick<TaskAttempt, "route" | "model" | "taskId">): string {
+  return formatAttemptKey({
+    route: formatRouteId(attempt.route),
+    model: attempt.model,
+    machine: "",
+    attempt: attempt.taskId,
+  });
+}
+
+function assertNoPendingEffects(attemptKey: string, taskId: string): void {
+  const pending = pendingSideEffects(taskJournalStore, attemptKey);
+  if (pending.length > 0) {
+    throw new ContractError(
+      "state",
+      `task '${taskId}' has ${pending.length} unreconciled side effect(s) ` +
+        `(${pending.map((e) => `${e.effectId}:${e.kind}`).join(", ")}); ` +
+        "a pre-without-post effect is UNKNOWN — reconcile externally before replay",
+    );
+  }
+}
+
+/** Run `fn` between journal pre/post entries under the caller's lease. */
+async function journaledEffect<T>(
+  lease: Lease | undefined,
+  effectId: string,
+  kind: string,
+  target: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  if (!lease) return fn();
+  const now = Date.now();
+  journalPreEffect(taskAttemptStore, taskJournalStore, lease, { effectId, kind, target }, now);
+  try {
+    const result = await fn();
+    journalPostEffect(taskAttemptStore, taskJournalStore, lease, { effectId, outcome: "succeeded", ref: null }, Date.now());
+    return result;
+  } catch (error) {
+    journalPostEffect(taskAttemptStore, taskJournalStore, lease, { effectId, outcome: "failed", ref: null }, Date.now());
+    throw error;
+  }
+}
+
+/** Acquire the exclusive execution lease for a task attempt. */
+function acquireTaskLease(attempt: TaskAttempt, owner: string): Lease {
+  const attemptKey = taskAttemptKey(attempt);
+  return acquireLease(taskAttemptStore, attemptKey, owner, {
+    now: Date.now(),
+    leaseMs: 6 * 60 * 60 * 1000,
+  });
+}
 
 function taskStatePath(taskId: string): string {
   if (!TASK_ID_SAFE.test(taskId)) {
@@ -787,6 +865,7 @@ function recordCandidateAttempt(
   },
   credentialScope: string,
 ): void {
+  withTaskLock(parent.taskId, () => {
   const state = loadTaskState(parent.taskId);
   if (!state) return;
   const served = servedWorker(record.result);
@@ -809,7 +888,8 @@ function recordCandidateAttempt(
     result: record.success ? { output: served?.output } : undefined,
   };
   state.history.push(attempt);
-  saveTaskState(parent.taskId, state);
+    saveTaskState(parent.taskId, state);
+  });
 }
 
 /**
@@ -823,7 +903,7 @@ export async function startTaskAttempt(
   config: Config,
   attempt: TaskAttempt,
   prompt: string,
-  opts?: { timeoutMs?: number; evidenceSinceMs?: number }
+  opts?: { timeoutMs?: number; evidenceSinceMs?: number; lease?: Lease }
 ): Promise<{ success: boolean; error?: ClassifiedError; result?: unknown; workerName?: string; paneId?: string }> {
   // --timeout propagates to every prompt wait in this attempt (primary and
   // each fallback candidate); the default matches the previous fixed bound.
@@ -875,7 +955,8 @@ export async function startTaskAttempt(
         // run the primary again instead of the candidate the profile
         // authorized.
         if (candidate === null) {
-          const promptResult = await promptAgent(attempt.herdrWorkerName!, prompt, { wait: true, timeoutMs: promptTimeoutMs });
+          const promptResult = await journaledEffect(opts?.lease, `prompt-${attempt.herdrWorkerName}`, "worker-prompt", attempt.herdrWorkerName!, () =>
+            promptAgent(attempt.herdrWorkerName!, prompt, { wait: true, timeoutMs: promptTimeoutMs }));
           const signal = promptFailureSignal(promptResult);
           if (signal) {
             const enriched = primaryProvider
@@ -918,7 +999,8 @@ export async function startTaskAttempt(
 
         let outcome: { success: boolean; error?: FailureSignal; result?: unknown } | undefined;
         try {
-          const promptResult = await promptAgent(candidateAttempt.workerName, prompt, { wait: true, timeoutMs: promptTimeoutMs });
+          const promptResult = await journaledEffect(opts?.lease, `prompt-${candidateAttempt.workerName}`, "worker-prompt", candidateAttempt.workerName, () =>
+            promptAgent(candidateAttempt.workerName, prompt, { wait: true, timeoutMs: promptTimeoutMs }));
           const signal = promptFailureSignal(promptResult);
           if (signal) {
             outcome = {
@@ -969,7 +1051,8 @@ export async function startTaskAttempt(
       };
     } else {
       // No fallback profile - single route execution
-      const promptResult = await promptAgent(attempt.herdrWorkerName!, prompt, { wait: true, timeoutMs: promptTimeoutMs });
+      const promptResult = await journaledEffect(opts?.lease, `prompt-${attempt.herdrWorkerName}`, "worker-prompt", attempt.herdrWorkerName!, () =>
+        promptAgent(attempt.herdrWorkerName!, prompt, { wait: true, timeoutMs: promptTimeoutMs }));
       const signal = promptFailureSignal(promptResult);
       if (signal) {
         const enriched = primaryProvider
@@ -1184,9 +1267,20 @@ export async function runTaskToCompletion(
   
   // Wait for agent to be ready
   await waitAgent(attempt.herdrWorkerName!, 30000);
-  
+
+  // Exclusive execution lease: fences any concurrent resume/dispatch on the
+  // same task and anchors journal pre/post entries for this run.
+  const lease = acquireTaskLease(attempt, `task-${process.pid}`);
+  try {
+  // Unreconciled effects from a previous run block replay — never assume
+  // an interrupted operation did not happen.
+  assertNoPendingEffects(taskAttemptKey(attempt), descriptor.id);
+
   // Start the attempt
-  const startResult = await startTaskAttempt(config, attempt, descriptor.prompt, { timeoutMs: descriptor.timeoutMs });
+  const startResult = await startTaskAttempt(config, attempt, descriptor.prompt, {
+    timeoutMs: descriptor.timeoutMs,
+    lease,
+  });
   
   if (!startResult.success) {
     // Every authorized candidate failed. The classified reason travels with
@@ -1240,10 +1334,24 @@ export async function runTaskToCompletion(
           quotaScopeKey: null,
         }
       : undefined;
-  // Record against the SERVING worker: after a fallback the candidate's
-  // worker — not the primary's — produced the result, and resume/status
-  // must target the worker that actually holds the session.
-  recordAttemptOutcome(descriptor.id, { ...attempt, herdrWorkerName: serving }, {
+  // Record against the SERVING worker AND its route/model: after a fallback
+  // the candidate's worker — not the primary's — produced the result, and
+  // resume/status/evidence must reference the provider that actually served.
+  const persisted = loadTaskState(descriptor.id);
+  const servingRecord = persisted?.history.find(
+    (a) => a.id !== attempt.id && a.herdrWorkerName === serving,
+  );
+  const recordedAttempt: TaskAttempt = servingRecord
+    ? {
+        ...attempt,
+        herdrWorkerName: serving,
+        herdrPaneId: servingRecord.herdrPaneId ?? attempt.herdrPaneId,
+        route: servingRecord.route,
+        model: servingRecord.model,
+        ...(servingRecord.fallbackCandidate ? { fallbackCandidate: servingRecord.fallbackCandidate } : {}),
+      }
+    : { ...attempt, herdrWorkerName: serving };
+  recordAttemptOutcome(descriptor.id, recordedAttempt, {
     status: taskSucceeded ? "completed" : "failed",
     error: outcomeError,
     result: storedResult,
@@ -1251,14 +1359,18 @@ export async function runTaskToCompletion(
   // A fallback candidate ran on its own pane: close it only AFTER collect
   // has read the serving worker. The primary's root pane is never closed
   // here (paneId is set only for candidate workers).
-  if (startResult.paneId) {
+  // The serving candidate's pane stays OPEN after collect, exactly like the
+  // primary's: `agent task resume` targets the recorded worker, and closing
+  // it here would make every fallback-served task unresumable. Pane cleanup
+  // is the same lifecycle as the primary worker's (operator/Herdr GC).
+  return { ...collected, ...(acceptance ? { acceptance } : {}) };
+  } finally {
     try {
-      await closePane(startResult.paneId);
+      releaseLease(taskAttemptStore, lease, Date.now());
     } catch {
-      // Cleanup must not mask the task outcome.
+      // Lease release failure must not mask the task outcome; expiry fences.
     }
   }
-  return { ...collected, ...(acceptance ? { acceptance } : {}) };
 }
 
 /**
@@ -1317,10 +1429,24 @@ export async function resumeTaskAttempt(
   // Resume is a new generation of the same attempt: fencing then refuses
   // any outcome write still holding the pre-resume generation.
   const resumed = { ...attempt, generation: attempt.generation + 1 };
-  const promptResult = await promptAgent(resumed.herdrWorkerName!, prompt, {
-    wait: true,
-    timeoutMs: promptTimeoutMs,
-  });
+
+  // Exclusive lease BEFORE the prompt leaves this process: two concurrent
+  // resumes must not both reach the worker. The attempts.ts generation
+  // advance fences any stale lease holder; pending journal effects block
+  // replay until externally reconciled.
+  const attemptKey = taskAttemptKey(resumed);
+  assertNoPendingEffects(attemptKey, taskId);
+  const lease = acquireTaskLease(resumed, `resume-${process.pid}`);
+  let promptResult;
+  try {
+    promptResult = await journaledEffect(lease, `prompt-${resumed.herdrWorkerName}`, "worker-prompt", resumed.herdrWorkerName!, () =>
+      promptAgent(resumed.herdrWorkerName!, prompt, { wait: true, timeoutMs: promptTimeoutMs }));
+  } finally {
+    // The lease covers prompt dispatch; outcome recording below is protected
+    // by the task-state lock + generation guard. Release so a later resume
+    // can proceed; expiry would fence anyway.
+    try { releaseLease(taskAttemptStore, lease, Date.now()); } catch { /* expiry fences */ }
+  }
   const signal = promptFailureSignal(promptResult);
   if (signal) {
     // Same evidence contract as dispatch: real provider errorStatus from

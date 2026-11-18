@@ -138,9 +138,10 @@ function scanSessionFile(
   const wantPrompt = normalizePrompt(prompt);
   let sessionCwd: string | null = null;
   let promptSeen = false;
-  // Every assistant outcome in the window, in order: the LAST one decides.
-  // An error followed by a successful turn is a recovered retry, not a
-  // task failure; an error as the final outcome is the provider's verdict.
+  // Assistant outcomes AFTER the matching prompt, in order: the LAST one
+  // decides. An error followed by a successful turn is a recovered retry,
+  // not a task failure; an error as the final outcome is the provider's
+  // verdict for THIS prompt.
   const outcomes: AssistantOutcome[] = [];
   for (const line of text.split("\n")) {
     if (
@@ -177,6 +178,11 @@ function scanSessionFile(
     }
     if (msg["role"] !== "assistant") continue;
     if (msg["provider"] !== undefined && msg["provider"] !== provider.omp_id) continue;
+    // Only outcomes belonging to THIS prompt's turn(s) count: events are
+    // processed in file order, so anything before the matching user message
+    // is an earlier turn in the same session and must not decide this
+    // attempt's verdict (same-session multi-turn separation).
+    if (!promptSeen) continue;
     const stop = msg["stopReason"];
     if (stop !== "error" && stop !== "stop" && stop !== "end_turn" && stop !== "end") continue;
     const status = msg["errorStatus"];
