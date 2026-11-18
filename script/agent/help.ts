@@ -21,6 +21,8 @@ import {
   REDACTED,
   type Attested,
 } from "./contract";
+import { configPath } from "./config.ts";
+import { withSecretsPath } from "./exec.ts";
 import {
   effectiveQuotaKey,
   modelEntry,
@@ -648,4 +650,113 @@ export function buildHelpData(usage: string): HelpData {
     ],
     not_yet_available: NOT_YET_AVAILABLE,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Launcher usage text (single source; rendered with live paths)
+// ---------------------------------------------------------------------------
+
+const USAGE = `\
+usage:
+  agent <harness> <provider> [--model <id>] [-- <harness args>...]
+  agent <harness> [-- <harness args>...]        # native: no provider, no injection
+  <harness>-<provider> [<harness args>...]      # shortcut (agent shortcuts create)
+  agent list
+  agent models <provider>
+  agent shortcuts [list|check|create|remove]
+  agent check
+  agent guide [topic]
+  agent routes [--json]
+  agent fallback <profile-id> [--json]
+  agent task run <route> --model <id> [--fallback <profile-id>]
+      [--prompt <text>] [--accept <criteria>]...
+  agent task status <task-id>
+  agent help
+subcommands:
+  agent help                 show this help
+  agent list                 show every configured harness/provider route
+                             (with its shortcut name)
+  agent models <provider>    show a provider's credential names and models
+  agent shortcuts            list the shortcut names derived from the routes
+                             and whether each link is in place
+  agent shortcuts check      exit non-zero unless every shortcut link is ours
+  agent shortcuts create     create ~/.local/bin/<harness>-<provider> entry
+                             points (Unix: symlinks to this launcher;
+                             Windows: generated .cmd files). Idempotent;
+                             never overwrites a file or command it does not own
+  agent shortcuts remove     remove only the entries that point at this
+                             launcher; other files are left untouched
+  agent check                validate config/agents.toml (used by CI)
+  agent guide [topic]        progressive disclosure: routes, status, limits,
+                             distributed, recovery, quality, misfire
+  agent routes               route table with catalog facts (quota scopes,
+                             rate limits, restrictions, e2e evidence);
+                             --json emits the same data as redacted JSON
+  agent fallback <profile-id> [--json]  resolve and display an opt-in
+                             continuity profile for authorized same-harness
+                             fallback (issue #136); does not execute fallback
+  agent task run <route>               dispatch a prompt to a Herdr worker on
+                             <harness>.<provider>; --model selects the model
+                             (route default when omitted), --fallback names an
+                             opt-in continuity profile whose candidates may
+                             serve the task after a classified primary
+                             failure, --prompt supplies the task text (stdin
+                             when omitted and stdin is not a TTY), --accept
+                             records an acceptance criterion (repeatable)
+  agent task status <task-id>          show the durable state of a dispatched
+                             task (attempts, generations, classified failures)
+  agent help --json          machine-readable help (quotes this text)
+
+shortcut form:
+  Invoking <harness>-<provider> (e.g. opencode-zen) is resolved by exact
+  match against the routes in config/agents.toml — never by splitting on
+  hyphens — and behaves exactly like \`agent <harness> <provider>\`.
+  \`agent <harness>-<provider>\` is the portable spelling of the same route.
+  Arguments go to the harness directly (no '--' needed; a leading '--' is
+  tolerated). The launcher-owned model option is:
+    --agent-model <id>        equals the route's --model <id> (this process
+                              only; never persisted)
+
+native mode (provider omitted):
+  \`agent <harness>\` runs the harness natively: the environment is passed
+  through untouched — no endpoint, no model and no credential injection
+  (Claude Code uses its subscription login, opencode/omp their own account).
+  A leading flag or '--' passes harness arguments:
+    agent claude -p "say ok"
+    agent opencode -- run "explain this repo"
+  --model / -m still require a provider route (exit 2); use plain
+  \`<harness>\` when you want the harness's own model flags. A failing
+  route never falls back to native mode.
+
+run options:
+  --model <id>, -m <id>      model for this process only (never persisted)
+  --                         everything after it goes to the harness verbatim
+  --help, -h                 show this help (after a route: harness -- --help
+                             is the way to ask the harness itself)
+
+model resolution for a run:
+  --model  >  route default  >  provider default  >  harness-native default
+  (harness-native applies only to passthrough harnesses such as dsh)
+
+examples:
+  agent opencode zen
+  agent opencode zen -- run "explain this repo"
+  agent opencode logfare -- run "say ok" # Logfare (explicit route; 5k req/day)
+  agent claude deepseek -- -p "say ok"
+  agent claude opencode-go -- -p "say ok"   # Go plan, default DeepSeek V4.1 Flash
+  agent omp opencode-go -- -p "hello"       # Go plan, default MiMo V2.6 Flash
+  agent claude minimax -- -p "say ok"   # default MiniMax-M3.1-Flash (--model overrides)
+  agent omp openrouter -- -p "hello"
+  agent dsh deepseek -- web
+  agent claude -p "say ok"              # native: subscription login, no injection
+  agent dsh -- web                      # native dsh (args after '--')
+  opencode-zen -- run "explain this repo"   # shortcut form
+  claude                       # plain claude keeps official native auth
+
+config: {config_path}
+credentials: {with_secrets} (Infisical, process-scoped)
+`;
+
+export function usageText(): string {
+  return USAGE.replace("{config_path}", configPath()).replace("{with_secrets}", withSecretsPath());
 }

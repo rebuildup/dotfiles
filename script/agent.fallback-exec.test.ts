@@ -3,26 +3,12 @@
  * Tests for same-harness fallback execution (dotfiles#139, T021).
  */
 
-import { describe, it, expect } from "bun:test";
-import {
-  classifyFailure,
-  executeWithFallback,
-  FallbackExhaustedError,
-  type FallbackExecutionState,
-  type ClassifiedError,
-  type LimitCategory,
-  CATEGORY_FACTS,
-  CATEGORY_SEVERITY,
-  FALLBACK_CIRCUIT_BREAKER_THRESHOLD,
-  FALLBACK_CIRCUIT_BREAKER_RESET_MS,
-  FALLBACK_MAX_RETRIES_PER_CANDIDATE,
-  FALLBACK_MAX_TOTAL_RETRIES,
-  type FallbackAttemptRecord,
-} from "./agent/fallback-exec.ts";
-import { loadConfig } from "./agent.ts";
-import { ContractError, formatRouteId, parseRouteId } from "./agent/contract.ts";
-import { dirname, join } from "node:path";
-import { realpathSync } from "node:fs";
+import { describe, it, expect } from "bun:test";;
+import { classifyFailure, executeWithFallback, FallbackExhaustedError, CATEGORY_FACTS, CATEGORY_SEVERITY, FALLBACK_CIRCUIT_BREAKER_THRESHOLD, FALLBACK_CIRCUIT_BREAKER_RESET_MS, FALLBACK_MAX_RETRIES_PER_CANDIDATE, FALLBACK_MAX_TOTAL_RETRIES, type FallbackAttemptRecord } from "./agent/fallback-exec.ts";;
+import { loadConfig } from "./agent/config.ts";;
+import { ContractError, formatRouteId, parseRouteId } from "./agent/contract.ts";;
+import { dirname, join } from "node:path";;
+import { realpathSync } from "node:fs";;
 
 /** Repo root, derived from this file's location (script/<file> -> repo). */
 function repoRoot(): string {

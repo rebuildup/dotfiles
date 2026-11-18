@@ -27,10 +27,9 @@ import {
   ompNeedsManagedProfile,
   ompWorkerArgs,
   prepareOmpWorker,
-  type Config,
   type OmpWorkerPreparation,
-  type Provider,
-} from "../agent.ts";
+} from "./omp.ts";
+import { type Config, type Provider } from "./config.ts";
 import { agentStateDir } from "./contract.ts";
 import {
   createWorkspace,

@@ -13,36 +13,13 @@
  * Run: bun test script/agent.limits.test.ts
  */
 
-import { describe, test, expect, afterAll, mock } from "bun:test";
-import { mkdtempSync, readdirSync, rmSync, existsSync, writeFileSync, chmodSync, readFileSync, renameSync, unlinkSync, mkdirSync } from "node:fs";
+import { describe, test, expect, afterAll, mock } from "bun:test";;
+import { mkdtempSync, readdirSync, rmSync, existsSync, writeFileSync, chmodSync, readFileSync, mkdirSync } from "node:fs";;
 import * as nodeFsNamespace from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import {
-  BACKOFF_MAX_MS,
-  BACKOFF_BASE_MS,
-  MAX_AUTO_RETRIES,
-  MAX_RECHECKS,
-  MAX_RETRY_AFTER_MS,
-  MIN_RECHECK_GAP_MS,
-  backoffDelay,
-  blockKeyFor,
-  checkAdmission,
-  classifyFailure,
-  classifyResponse,
-  clearBlock,
-  decideRetry,
-  evaluateRouteSwitch,
-  limitsStateDir,
-  recordBlock,
-  workerRecovery,
-  type FailureSignal,
-  type LimitCategory,
-  type LimitClassification,
-  type RetryContext,
-} from "./agent/limits";
-import { ContractError, type ContractErrorCode } from "./agent/contract";
-import type { ProbeFailureKind } from "./agent/probe";
+import { tmpdir } from "node:os";;
+import { join } from "node:path";;
+import { BACKOFF_MAX_MS, BACKOFF_BASE_MS, MAX_AUTO_RETRIES, MAX_RECHECKS, MAX_RETRY_AFTER_MS, MIN_RECHECK_GAP_MS, backoffDelay, blockKeyFor, checkAdmission, classifyFailure, classifyResponse, clearBlock, decideRetry, evaluateRouteSwitch, limitsStateDir, recordBlock, workerRecovery, type FailureSignal, type LimitCategory, type LimitClassification, type RetryContext } from "./agent/limits";;
+import { ContractError, type ContractErrorCode } from "./agent/contract";;
 
 const NOW = Date.parse("2026-11-06T12:00:00Z");
 const OBSERVED = "2026-11-06T12:00:00Z";

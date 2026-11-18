@@ -127,6 +127,14 @@ export function assertQuotaUsage(value: unknown, where: string): QuotaUsage {
   if (usage.provenance !== "measured") {
     throw new ContractError("schema", `${where}: live observations require provenance 'measured'`);
   }
+  if (evidence["sha"] !== undefined && evidence["sha"] !== null) {
+    if (typeof evidence["sha"] !== "string" || !/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(evidence["sha"])) {
+      throw new ContractError("schema", `${where}: 'evidence.sha' must be a 40- or 64-hex digest`);
+    }
+  }
+  if (evidence["note"] !== undefined && evidence["note"] !== null && typeof evidence["note"] !== "string") {
+    throw new ContractError("schema", `${where}: 'evidence.note' must be a string`);
+  }
   return {
     window: usage.window as QuotaWindow,
     metric: (usage.metric ?? null) as QuotaMetric | null,

@@ -12,7 +12,7 @@ set -euo pipefail
 
 secret_name="${1:?usage: infisical-key.sh SECRET_NAME}"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
-# shellcheck source=../../config/infisical.sh
+# shellcheck source=config/infisical.sh
 source "$repo_root/config/infisical.sh"
 
 if ! command -v infisical >/dev/null 2>&1; then

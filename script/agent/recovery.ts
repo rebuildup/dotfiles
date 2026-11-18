@@ -17,44 +17,11 @@
  *   - Per-account circuit breaker with explicit next action for waiting.
  */
 
-import {
-  ContractError,
-  parseAttemptKey,
-  formatAttemptKey,
-  type AttemptIdentity,
-  agentStateDir,
-  isStale,
-  DEFAULT_MAX_EVIDENCE_AGE_MS,
-} from "./contract.ts";
-import {
-  type AttemptRecord,
-  type Lease,
-  type AttemptStore,
-  readAttempt,
-  acquireLease,
-  releaseLease,
-  fenceAttempt,
-  assertLeaseCurrent,
-  isoTime,
-} from "./attempts.ts";
-import {
-  type CheckpointRecord,
-  type JournalStore,
-  loadLocalCheckpoint,
-  pendingSideEffects,
-  readJournal,
-  type SideEffectPending,
-} from "./checkpoint.ts";
-import {
-  type LimitClassification,
-  type LimitCategory,
-  CATEGORY_FACTS,
-  workerRecovery,
-  checkAdmission,
-  limitsStateDir,
-} from "./limits.ts";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { type Lease, type AttemptStore, readAttempt, acquireLease, isoTime } from "./attempts.ts";;
+import { type JournalStore, pendingSideEffects, type SideEffectPending } from "./checkpoint.ts";;
+import { type LimitClassification, type LimitCategory, CATEGORY_FACTS, workerRecovery, limitsStateDir } from "./limits.ts";;
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";;
+import { join } from "node:path";;
 
 // ---------------------------------------------------------------------------
 // Recovery state machine

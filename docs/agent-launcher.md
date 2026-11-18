@@ -15,6 +15,9 @@ agent <harness>                    # native mode (no injection)
 agent list | models <provider> | shortcuts [list|check|create|remove]
 agent check | help | guide [topic] | routes [--json]
 agent fallback <profile-id> [--json]
+agent task run <route> [--model <id>] [--fallback <profile-id>]
+    [--prompt <text>] [--accept <criteria>]...
+agent task status <task-id>
 ```
 
 ## Architecture
@@ -218,6 +221,24 @@ agent fallback free-kilo-quota          # Kilo exhausted -> Groq
 agent fallback opencode-requesty-quota  # Requesty exhausted -> Kilo (OpenCode)
 agent fallback <id> --json              # redacted machine-readable form
 ```
+
+To actually run the task under a profile, dispatch it through Herdr with
+`agent task run` — the same resolution/authorization checks apply, and the
+executor only advances to a candidate on a *classified* failure (unknown
+failures stop):
+
+```bash
+agent task run omp.kilo --model nvidia/nemotron-3-ultra-550b-a55b:free \
+  --fallback free-kilo-quota --prompt "fix the failing test" \
+  --accept "bun test script/ passes"
+agent task status <task-id>             # durable attempts/failures
+```
+
+`--prompt` may be omitted when stdin is piped. `agent task run` requires
+Herdr; the worker is pinned to the route's provider/model and candidates
+run on their own workers in the same harness. Task state (attempts,
+generations, classified failures, credential *scopes* — never values) is
+durable under the agent state dir.
 
 Each profile declares `global_max_spend = 0`, so the resolver's spend checks
 can never authorise paid usage. Candidates are `billing = "free"` and are

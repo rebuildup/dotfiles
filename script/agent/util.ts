@@ -6,8 +6,58 @@
  * layout and no domain rules.
  */
 
-import { mkdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import {
+  accessSync,
+  constants as fsConstants,
+  existsSync,
+  mkdirSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { delimiter, dirname, join } from "node:path";
+
+/** CLI program name used in diagnostics and version output. */
+export const PROGRAM = "agent";
+
+/** True on Windows hosts; single owner so every module agrees. */
+export const IS_WINDOWS = process.platform === "win32";
+
+/**
+ * Resolve `cmd` to an executable path: a path containing a separator is
+ * checked directly, otherwise PATH is searched. On Windows PATHEXT
+ * candidates are tried BEFORE the bare name because npm generates an
+ * extensionless Bash-style shim next to `opencode.cmd` that is not a
+ * Windows executable.
+ */
+export function which(cmd: string, pathEnv?: string): string | null {
+  const hasSeparator = cmd.includes("/") || (IS_WINDOWS && cmd.includes("\\"));
+  const isExecutable = (candidate: string): boolean => {
+    try {
+      accessSync(candidate, fsConstants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  if (hasSeparator) {
+    return isExecutable(cmd) ? cmd : null;
+  }
+  const pathValue = pathEnv ?? process.env.PATH ?? "";
+  const exts = IS_WINDOWS
+    ? [...(process.env.PATHEXT || ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean), ""]
+    : [""];
+  for (const dir of pathValue.split(delimiter)) {
+    if (!dir) continue;
+    const base = join(dir, cmd);
+    for (const suffix of exts) {
+      const candidate = base + suffix;
+      if (existsSync(candidate) && isExecutable(candidate)) return candidate;
+    }
+  }
+  return null;
+}
 
 /**
  * Standard synchronous sleep; works on a Bun/Node main thread. Intended for

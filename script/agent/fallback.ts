@@ -10,10 +10,10 @@
  * profile only takes effect when explicitly selected and fully validated.
  */
 
-import { ContractError, agentStateDir, parseRouteId, formatRouteId, type RouteRef, attest, parseAttested, isPlainObject, isUsable, type Attested, type Evidence, type VerificationStatus, type Provenance, type EvidenceSource, DEFAULT_MAX_EVIDENCE_AGE_MS } from "./contract.ts";
+import { ContractError, agentStateDir, parseRouteId, formatRouteId, type RouteRef, parseAttested, isPlainObject, isUsable, type Attested, type Evidence, type VerificationStatus, type Provenance, DEFAULT_MAX_EVIDENCE_AGE_MS } from "./contract.ts";;
 import type { E2eObservation } from "./catalog.ts";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readdirSync, readFileSync } from "node:fs";;
+import { join } from "node:path";;
 
 // ---------------------------------------------------------------------------
 // Schema types
