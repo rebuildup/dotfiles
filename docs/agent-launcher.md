@@ -19,6 +19,7 @@ agent task run <route> [--model <id>] [--fallback <profile-id>]
     [--prompt <text>] [--accept <criteria>]... [--timeout <ms>]
 agent task resume <task-id> [--prompt <text>] [--timeout <ms>]
 agent task status <task-id>
+agent task reconcile <task-id>        # resolve journal UNKNOWNs vs evidence
 ```
 
 ## Architecture
@@ -250,6 +251,22 @@ worker no secret at all — OMP re-resolves the key itself. Ambient-credential
 routes (e.g. OpenRouter/DeepSeek/MiniMax with `require_infisical = false`)
 are therefore **rejected fail-closed** by `agent task run`; they remain
 available through the interactive launcher unchanged.
+
+**Fallback scope.** A `--fallback` profile re-prompts workers whose side
+effects cannot be fully audited, so it is refused unless the scope is
+verifiable: `--accept` criteria, a git-observable workspace (drift is
+recorded on the attempt), or the explicit `--allow-unobserved-effects`
+acknowledgement.
+
+**Journal and UNKNOWN reconciliation.** Every prompt, candidate
+dispatch and resume is journaled under the attempt's exclusive lease.
+A Herdr send whose outcome cannot be proven (stall, CLI loss, crash
+between pre and post) stays `pre`-pending and blocks any subsequent run,
+candidate or resume. `agent task reconcile <task-id>` resolves pending
+effects only against observed evidence — a `prompt-send` succeeds solely
+when exactly one provider session observed that prompt turn, and a
+`worker-start` when the worker still exists; ambiguity or absence keeps
+the effect pending (non-zero exit).
 
 **Failure evidence.** Herdr lifecycle states (`blocked`, `stalled`,
 wait timeouts) are agent-state signals, not provider responses — the task
