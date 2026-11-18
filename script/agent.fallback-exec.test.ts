@@ -8,7 +8,7 @@ import {
   classifyFailure,
   executeWithFallback,
   FallbackExhaustedError,
-  FallbackExecutionState,
+  type FallbackExecutionState,
   type ClassifiedError,
   type LimitCategory,
   CATEGORY_FACTS,
@@ -37,14 +37,14 @@ describe("classifyFailure", () => {
   const baseSignal = { quotaScopeKey: "test:scope" };
   // Canonical limits.ts QuotaUsage shape: a measured live observation.
   const usageEntry = (remaining: number) => ({
-    window: "minute",
-    metric: "requests",
+    window: "minute" as const,
+    metric: "requests" as const,
     limit: 100,
     remaining,
     used: 100 - remaining,
     resetAt: null,
-    provenance: "measured",
-    evidence: { at: "2026-11-12T00:00:00Z", source: "probe" },
+    provenance: "measured" as const,
+    evidence: { at: "2026-11-12T00:00:00Z", source: "probe" as const },
   });
 
   it("classifies 429 with remaining 0 as quota-exhausted", () => {
@@ -407,7 +407,7 @@ describe("FallbackExhaustedError", () => {
       await executeWithFallback(config, "free-go-to-kilo", async () => {
         calls++;
         throw new Error("worker exploded");
-      }, { onAttempt: (r) => records.push(r) });
+      }, { onAttempt: (r) => { records.push(r); } });
       throw new Error("expected executeWithFallback to stop on an unknown failure");
     } catch (thrown) {
       if (!(thrown instanceof FallbackExhaustedError)) throw thrown;
@@ -459,7 +459,7 @@ describe("FallbackExhaustedError", () => {
           success: false,
           error: { httpStatus: 403, failureKind: "forbidden", retryAfterMs: null, resetAt: null, usage: [], errorKind: "agent-blocked" },
         };
-      }, { onAttempt: (r) => records.push(r) });
+      }, { onAttempt: (r) => { records.push(r); } });
       throw new Error("expected exhaustion");
     } catch (thrown) {
       if (!(thrown instanceof FallbackExhaustedError)) throw thrown;
