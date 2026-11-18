@@ -25,7 +25,7 @@ import { FsAttemptStore, initAttempt, acquireLease, readAttempt } from "./agent/
 import { FsJournalStore } from "./agent/checkpoint.ts";
 import { planRecovery } from "./agent/recovery.ts";
 import { dispatchTask } from "./agent/task.ts";
-import { loadConfig } from "./agent.ts";
+import { loadConfig } from "./agent/config.ts";
 
 // ---------------------------------------------------------------------------
 // Environment identity

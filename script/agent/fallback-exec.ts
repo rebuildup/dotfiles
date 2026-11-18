@@ -29,7 +29,7 @@ import {
   mergeAttestations,
   seedAttestationsFromCatalog,
 } from "./fallback.ts";
-import { loadConfig, type Config } from "../agent.ts";
+import { loadConfig, type Config } from "./config.ts";
 import { getPrimaryQuotaScope, loadCatalog, type Catalog } from "./catalog.ts";
 import {
   CATEGORY_FACTS,

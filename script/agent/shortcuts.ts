@@ -22,7 +22,7 @@ import { homedir } from "node:os";
 import { splitRouteKey } from "./contract.ts";
 import { AgentError, EXIT_RUNTIME } from "./errors.ts";
 import { IS_WINDOWS, which } from "./util.ts";
-import type { Config } from "../agent.ts";
+import type { Config } from "./config.ts";
 
 const SHORTCUT_MODEL_FLAG = "--agent-model";
 const WINDOWS_CMD_MARKER = "rem managed-by: agent-launcher";

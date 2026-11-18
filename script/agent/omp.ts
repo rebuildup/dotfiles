@@ -20,7 +20,8 @@ import {
 import { homedir } from "node:os";
 import { isPlainObject } from "./contract.ts";
 import { AgentError, EXIT_RUNTIME } from "./errors.ts";
-import type { Harness, Plan, Provider } from "../agent.ts";
+import type { Harness, Provider } from "./config.ts";
+import type { Plan } from "../agent.ts";
 
 
 const OMP_DESTRUCTIVE_GUARD = "omp-destructive-guard.ts";

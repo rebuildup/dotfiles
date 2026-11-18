@@ -19,7 +19,7 @@ import {
   FALLBACK_MAX_TOTAL_RETRIES,
   type FallbackAttemptRecord,
 } from "./agent/fallback-exec.ts";
-import { loadConfig } from "./agent.ts";
+import { loadConfig } from "./agent/config.ts";
 import { ContractError, formatRouteId, parseRouteId } from "./agent/contract.ts";
 import { dirname, join } from "node:path";
 import { realpathSync } from "node:fs";

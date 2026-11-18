@@ -18,7 +18,7 @@ import {
   routeWorkerEnv,
 } from "./agent/task.ts";
 import { ContractError } from "./agent/contract.ts";
-import { type Config, type Provider } from "./agent.ts";
+import { type Config, type Provider } from "./agent/config.ts";
 import { rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { agentStateDir } from "./agent/contract.ts";

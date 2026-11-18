@@ -29,7 +29,7 @@ import {
   prepareOmpWorker,
   type OmpWorkerPreparation,
 } from "./omp.ts";
-import { type Config, type Provider } from "../agent.ts";
+import { type Config, type Provider } from "./config.ts";
 import { agentStateDir } from "./contract.ts";
 import {
   createWorkspace,
