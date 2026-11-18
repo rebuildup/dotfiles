@@ -63,7 +63,6 @@ import {
 import { effectiveQuotaKey, loadCatalog, type Catalog } from "./agent/catalog";
 import {
   buildFallbackCatalog,
-  listFallbackProfiles,
   mergeAttestations,
   parseFallbackProfile,
   resolveFallbackProfile,
@@ -2520,14 +2519,24 @@ function cmdModels(config: Config, providerKey: string): number {
 
 function cmdCheck(config: Config): number {
   // Validate every declared fallback profile, not just the provider/route
-  // tables: a malformed profile (bad primary_route, bad cap, bad billing) must
-  // fail CI here rather than at `agent fallback` time with a stack trace.
+  // tables: a malformed profile (bad primary_route, bad cap, bad billing, or a
+  // value that is not a table at all) must fail CI here rather than at
+  // `agent fallback` time.
   let profileCount = 0;
   try {
     const parsedToml = Bun.TOML.parse(readFileSync(config.path, "utf8")) as Record<string, unknown>;
-    for (const id of listFallbackProfiles(parsedToml)) {
-      parseFallbackProfile(parsedToml, id);
-      profileCount++;
+    // Iterate every key under [fallback_profile], not listFallbackProfiles():
+    // that helper deliberately skips non-table values, which is exactly the
+    // case that must fail validation.
+    const section = parsedToml["fallback_profile"];
+    if (section !== undefined && section !== null) {
+      if (!isPlainObject(section)) {
+        throw new ContractError("schema", "fallback_profile: table expected");
+      }
+      for (const id of Object.keys(section).sort()) {
+        parseFallbackProfile(parsedToml, id);
+        profileCount++;
+      }
     }
   } catch (error) {
     if (error instanceof ContractError) {

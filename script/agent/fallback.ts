@@ -266,7 +266,11 @@ function validateProfileVersion(v: unknown, where: string): number {
 
 /**
  * Parse a fallback profile from the `[fallback_profile.<id>]` table in
- * config/agents.toml. Returns null if the profile doesn't exist.
+ * config/agents.toml.
+ *
+ * Returns `null` only when the profile is genuinely ABSENT. A profile that is
+ * present but not a table is a schema error and throws, so `agent check`
+ * cannot report a config "OK" while `agent fallback` cannot find the profile.
  */
 export function parseFallbackProfile(
   toml: Record<string, unknown>,
@@ -274,11 +278,22 @@ export function parseFallbackProfile(
 ): FallbackProfile | null {
   // Bun.TOML.parse returns nested structure: { fallback_profile: { "omp-mistral-quota": {...} } }
   const fallbackSection = toml.fallback_profile;
-  if (!fallbackSection || typeof fallbackSection !== "object" || Array.isArray(fallbackSection)) return null;
-  const table = (fallbackSection as Record<string, unknown>)[profileId];
-  if (!table || typeof table !== "object" || Array.isArray(table)) return null;
+  if (fallbackSection === undefined || fallbackSection === null) return null;
+  if (typeof fallbackSection !== "object" || Array.isArray(fallbackSection)) {
+    throw new ContractError("schema", "fallback_profile: table expected");
+  }
+  const raw = (fallbackSection as Record<string, unknown>)[profileId];
+  if (raw === undefined) return null;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    // Present but not a table: the id EXISTS, its value is wrong. Returning
+    // null here would be reported as "not found" and skipped by validation.
+    throw new ContractError(
+      "schema",
+      `fallback_profile.${profileId}: table expected (the profile is defined but is not a table)`,
+    );
+  }
 
-  const t = table as Record<string, unknown>;
+  const t = raw as Record<string, unknown>;
   const key = `fallback_profile.${profileId}`;
   // Required fields
   const id = requireStr(t, "id", key);
