@@ -39,6 +39,7 @@ import {
   ContractError,
   agentStateDir,
   expectFields,
+  isOneOf,
   isPlainObject,
   isSecretKeyName,
   looksLikeSecretValue,
@@ -180,7 +181,7 @@ export function parseCheckpoint(raw: unknown, where: string): CheckpointRecord {
   parseAttemptKey(attemptKey);
   const generation = requireGeneration(payload["generation"], `${where}.generation`);
   const kind = requireStr(payload, "kind", where);
-  if (!CHECKPOINT_KINDS.includes(kind as CheckpointKind)) {
+  if (!isOneOf(kind, CHECKPOINT_KINDS)) {
     throw new ContractError("schema", `${where}: unknown checkpoint kind '${kind}'`);
   }
   const durableRaw = payload["durable"];
@@ -198,7 +199,7 @@ export function parseCheckpoint(raw: unknown, where: string): CheckpointRecord {
   const record: CheckpointRecord = {
     attemptKey,
     generation,
-    kind: kind as CheckpointKind,
+    kind,
     inputRef: optionalImmutableRef(payload, "inputRef", where),
     resultRef: optionalImmutableRef(payload, "resultRef", where),
     children: stringList(payload["children"], where, "children"),
@@ -217,7 +218,7 @@ export function parseDurableRef(raw: unknown, where: string): DurableRef {
   }
   expectFields(raw, ["kind", "repo", "n", "sha", "url"], where);
   const kind = requireStr(raw, "kind", where);
-  if (!DURABLE_KINDS.includes(kind as DurableRef["kind"])) {
+  if (!isOneOf(kind, DURABLE_KINDS)) {
     throw new ContractError("schema", `${where}: unknown durable ref kind '${kind}'`);
   }
   const repo = requireStr(raw, "repo", where);
@@ -244,7 +245,7 @@ export function parseDurableRef(raw: unknown, where: string): DurableRef {
   } else if (n === null || n < 1) {
     throw new ContractError("schema", `${where}: '${kind}' requires a positive issue/PR number`);
   }
-  return { kind: kind as DurableRef["kind"], repo, n, sha, url };
+  return { kind, repo, n, sha, url };
 }
 
 /** Canonical JSON for persisting or posting a checkpoint (strict, sorted). */
@@ -410,7 +411,7 @@ export function parseSideEffectEntry(raw: unknown, where: string): SideEffectEnt
   parseAttemptKey(attemptKey);
   const generation = requireGeneration(payload["generation"], `${where}.generation`);
   const phase = requireStr(payload, "phase", where);
-  if (phase !== "pre" && phase !== "post") {
+  if (!isOneOf(phase, ["pre", "post"] as const)) {
     throw new ContractError("schema", `${where}: unknown phase '${phase}'`);
   }
   const kind = requireStr(payload, "kind", where);
@@ -443,7 +444,7 @@ export function parseSideEffectEntry(raw: unknown, where: string): SideEffectEnt
     effectId,
     attemptKey,
     generation,
-    phase: phase as SideEffectEntry["phase"],
+    phase,
     kind,
     target,
     outcome,

@@ -16,7 +16,8 @@ agent list | models <provider> | shortcuts [list|check|create|remove]
 agent check | help | guide [topic] | routes [--json]
 agent fallback <profile-id> [--json]
 agent task run <route> [--model <id>] [--fallback <profile-id>]
-    [--prompt <text>] [--accept <criteria>]...
+    [--prompt <text>] [--accept <criteria>]... [--timeout <ms>]
+agent task resume <task-id> [--prompt <text>] [--timeout <ms>]
 agent task status <task-id>
 ```
 
@@ -239,6 +240,37 @@ Herdr; the worker is pinned to the route's provider/model and candidates
 run on their own workers in the same harness. Task state (attempts,
 generations, classified failures, credential *scopes* — never values) is
 durable under the agent state dir.
+
+**Credential policy on the task path.** Herdr injects worker environment
+via `--env NAME=VALUE`, which exposes the value in process argv and Herdr
+server state, and Herdr offers no secret-safe alternative channel. Routes
+whose credential is resolved from Infisical into a managed `models.yml`
+profile (`omp_custom`, and `require_infisical` native providers) hand the
+worker no secret at all — OMP re-resolves the key itself. Ambient-credential
+routes (e.g. OpenRouter/DeepSeek/MiniMax with `require_infisical = false`)
+are therefore **rejected fail-closed** by `agent task run`; they remain
+available through the interactive launcher unchanged.
+
+**Failure evidence.** Herdr lifecycle states (`blocked`, `stalled`,
+wait timeouts) are agent-state signals, not provider responses — the task
+path never fabricates an HTTP status from them. Such signals classify as
+`unknown` and stop fallback rather than guessing 401/402/403/429/5xx.
+
+**`--accept`.** Each criterion is executed as a shell command in the
+task's working directory after collect; every check's exit status (or
+timeout) is recorded in the result's `acceptance` report. Task success
+requires both worker success AND all criteria passing — a completed agent
+with failing criteria exits non-zero.
+
+**`--timeout`.** Bounds every prompt wait (primary, each fallback
+candidate, and resume); it does not change the worker's own runtime.
+
+**`agent task resume`.** Re-prompts the *existing* worker of a
+single-route (non-fallback) attempt with a continue instruction — the
+worker keeps its session context, so no instruction is replayed and no
+new candidate worker is spawned. Attempts that used a fallback profile
+are refused: re-running candidate dispatch could duplicate side effects;
+re-dispatch explicitly with `agent task run --fallback` instead.
 
 Each profile declares `global_max_spend = 0`, so the resolver's spend checks
 can never authorise paid usage. Candidates are `billing = "free"` and are

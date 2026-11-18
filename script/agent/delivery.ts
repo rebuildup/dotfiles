@@ -6,10 +6,9 @@
  * and reconciliation of Issue/PR/branch state.
  */
 
-import { ContractError, agentStateDir, isPlainObject } from "./contract.ts";;
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";;
-import { join } from "node:path";;
-;
+import { ContractError, agentStateDir, isPlainObject } from "./contract.ts";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -130,19 +129,80 @@ const GH_PR_FIELDS =
 /** Validate one `gh` PR JSON object; unknown shape is a contract violation. */
 export function parseGHPullRequest(raw: unknown, where: string): GHPullRequest {
   if (!isPlainObject(raw)) throw new ContractError("state", `${where}: PR JSON must be an object`);
+  const reqStr = (key: string): string => {
+    const value = raw[key];
+    if (typeof value !== "string") {
+      throw new ContractError("state", `${where}.${key}: must be a string`);
+    }
+    return value;
+  };
   const num = raw["number"];
   if (typeof num !== "number" || !Number.isInteger(num)) {
     throw new ContractError("state", `${where}.number: must be an integer`);
   }
-  for (const key of ["headRefName", "baseRefName", "headRefOid", "baseRefOid", "state"] as const) {
-    if (typeof raw[key] !== "string") {
-      throw new ContractError("state", `${where}.${key}: must be a string`);
-    }
-  }
-  if (typeof raw["isDraft"] !== "boolean") {
+  const isDraft = raw["isDraft"];
+  if (typeof isDraft !== "boolean") {
     throw new ContractError("state", `${where}.isDraft: must be a boolean`);
   }
-  return raw as unknown as GHPullRequest;
+  const pr: GHPullRequest = {
+    number: num,
+    headRefName: reqStr("headRefName"),
+    baseRefName: reqStr("baseRefName"),
+    headRefOid: reqStr("headRefOid"),
+    baseRefOid: reqStr("baseRefOid"),
+    state: reqStr("state"),
+    isDraft,
+  };
+  const mergeable = raw["mergeable"];
+  if (mergeable !== undefined) {
+    if (typeof mergeable !== "string") {
+      throw new ContractError("state", `${where}.mergeable: must be a string`);
+    }
+    pr.mergeable = mergeable;
+  }
+  const reviews = raw["reviews"];
+  if (reviews !== undefined) {
+    if (!Array.isArray(reviews)) {
+      throw new ContractError("state", `${where}.reviews: must be an array`);
+    }
+    pr.reviews = reviews.map((entry, i) => {
+      if (!isPlainObject(entry)) {
+        throw new ContractError("state", `${where}.reviews[${i}]: must be an object`);
+      }
+      const state = entry["state"];
+      if (state !== undefined && typeof state !== "string") {
+        throw new ContractError("state", `${where}.reviews[${i}].state: must be a string`);
+      }
+      return state === undefined ? {} : { state };
+    });
+  }
+  const rollup = raw["statusCheckRollup"];
+  if (rollup !== undefined) {
+    if (!Array.isArray(rollup)) {
+      throw new ContractError("state", `${where}.statusCheckRollup: must be an array`);
+    }
+    pr.statusCheckRollup = rollup.map((entry, i) => {
+      if (!isPlainObject(entry)) {
+        throw new ContractError("state", `${where}.statusCheckRollup[${i}]: must be an object`);
+      }
+      const conclusion = entry["conclusion"];
+      if (conclusion !== undefined && conclusion !== null && typeof conclusion !== "string") {
+        throw new ContractError(
+          "state",
+          `${where}.statusCheckRollup[${i}].conclusion: must be a string or null`,
+        );
+      }
+      const status = entry["status"];
+      if (status !== undefined && typeof status !== "string") {
+        throw new ContractError("state", `${where}.statusCheckRollup[${i}].status: must be a string`);
+      }
+      const check: { conclusion?: string | null; status?: string } = {};
+      if (conclusion !== undefined) check.conclusion = conclusion;
+      if (status !== undefined) check.status = status;
+      return check;
+    });
+  }
+  return pr;
 }
 
 function parseGHPullRequestList(raw: unknown, where: string): GHPullRequest[] {

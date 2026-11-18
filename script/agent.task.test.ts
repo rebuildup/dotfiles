@@ -16,6 +16,7 @@ import {
   saveTaskState,
   buildAgentStartOptions,
   routeWorkerEnv,
+  verifyAcceptanceCriteria,
 } from "./agent/task.ts";
 import { ContractError } from "./agent/contract.ts";
 import { type Config, type Provider } from "./agent/config.ts";
@@ -666,5 +667,78 @@ describe("worker credential injection", () => {
       delete process.env.KILO_API_KEY;
       delete process.env.OPENROUTER_API_KEY;
     }
+  });
+});
+
+describe("task-path credential policy", () => {
+  const ORIGINAL = { ...process.env };
+  afterEach(() => {
+    for (const key of Object.keys(process.env)) {
+      if (!(key in ORIGINAL)) delete process.env[key];
+    }
+    for (const [key, value] of Object.entries(ORIGINAL)) {
+      if (value !== undefined) process.env[key] = value;
+    }
+  });
+
+  function ambientConfig() {
+    return {
+      path: "/fake/config/agents.toml",
+      providers: {
+        openrouter: {
+          key: "openrouter", label: "OpenRouter", base_url: null,
+          secret: "OPENROUTER_API_KEY", env: "OPENROUTER_API_KEY",
+          default_model: "m", require_model: false, models: ["m"],
+          opencode_id: "openrouter", omp_id: "openrouter",
+          require_infisical: false, anonymous: false,
+          opencode_npm: null, opencode_models: {}, opencode_base_url: null,
+          omp_custom: false, omp_api: null, omp_models: {},
+        },
+      },
+      harnesses: { omp: { key: "omp", label: "OMP", command: "omp", adapter: "omp", env: {} } },
+      routes: {
+        "omp.openrouter": {
+          key: "omp.openrouter", harness: "omp", provider: "openrouter",
+          default_model: "m", models: ["m"], require_model: false, note: "",
+        },
+      },
+      drop_env: [],
+    } as unknown as Parameters<typeof dispatchTask>[0];
+  }
+
+  it("fails closed on ambient credentials that would transit Herdr --env argv", async () => {
+    process.env.OPENROUTER_API_KEY = "ambient-secret";
+    await expect(
+      dispatchTask(ambientConfig(), {
+        id: "test-ambient-cred",
+        route: "omp.openrouter",
+        model: "m",
+        prompt: "test",
+      }),
+    ).rejects.toThrow(/ambient credential.*--env argv|--env argv/);
+  });
+});
+
+describe("acceptance criteria verification", () => {
+  it("verifies exit-0 criteria and reports failures without guessing", async () => {
+    const cwd = process.cwd();
+    const ok = await verifyAcceptanceCriteria(["true"], cwd, 5000);
+    expect(ok.verified).toBe(true);
+    expect(ok.checks[0].exitCode).toBe(0);
+
+    const bad = await verifyAcceptanceCriteria(["false"], cwd, 5000);
+    expect(bad.verified).toBe(false);
+    expect(bad.checks[0].exitCode).not.toBe(0);
+
+    const mixed = await verifyAcceptanceCriteria(["true", "false"], cwd, 5000);
+    expect(mixed.verified).toBe(false);
+    expect(mixed.checks).toHaveLength(2);
+  });
+
+  it("marks an over-time check as timed out, never as passed", async () => {
+    const report = await verifyAcceptanceCriteria(["sleep 30"], process.cwd(), 200);
+    expect(report.verified).toBe(false);
+    expect(report.checks[0].timedOut).toBe(true);
+    expect(report.checks[0].exitCode).toBeNull();
   });
 });

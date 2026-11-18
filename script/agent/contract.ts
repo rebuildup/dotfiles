@@ -56,7 +56,8 @@ export type ContractErrorCode =
   | "version" // incompatible contract version
   | "identity" // malformed, ambiguous or mismatched id
   | "evidence" // attestation/provenance/staleness violation
-  | "state"; // local-state path violation
+  | "state" // local-state path violation
+  | "policy"; // caller/launcher policy refusal (fail-closed guard)
 
 export class ContractError extends Error {
   code: ContractErrorCode;
@@ -797,7 +798,7 @@ export function parseJson(text: string): unknown {
   try {
     return JSON.parse(text);
   } catch (error) {
-    throw new ContractError("schema", `malformed JSON: ${(error as Error).message}`);
+    throw new ContractError("schema", `malformed JSON: ${errorMessage(error)}`);
   }
 }
 
@@ -807,6 +808,25 @@ export function parseJson(text: string): unknown {
 
 export function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Membership guard for closed string enums; narrows `unknown`/`string` to `T`. */
+export function isOneOf<T extends string>(value: unknown, allowed: readonly T[]): value is T {
+  return typeof value === "string" && allowed.some((member) => member === value);
+}
+
+/** Human-readable message for an unknown thrown value. */
+export function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** `code` property of an ErrnoException-style error, when present. */
+export function errnoCode(error: unknown): string | undefined {
+  if (typeof error === "object" && error !== null && "code" in error) {
+    const code = (error as { code?: unknown }).code;
+    return typeof code === "string" ? code : undefined;
+  }
+  return undefined;
 }
 
 /** Route keys are `<harness>.<provider>`; split at the first dot only.

@@ -3590,14 +3590,17 @@ candidates = [
 test("test_agent_task_cli", withFixture((fixture) => {
   // Parse/usage failures exit 2 before config or Herdr is touched.
   const usageCases: Array<[string[], string]> = [
-    [["task"], "task run|status"],
-    [["task", "bogus"], "task run|status"],
+    [["task"], "run|resume|status"],
+    [["task", "bogus"], "run|resume|status"],
     [["task", "status"], "usage: agent task status"],
     [["task", "run"], "usage: agent task run"],
     [["task", "run", "omp.kilo", "--bogus"], "unexpected argument"],
     [["task", "run", "omp.kilo", "--timeout", "abc"], "--timeout"],
     [["task", "status", "../escape"], "invalid task id"],
     [["task", "status", "a/b"], "invalid task id"],
+    [["task", "resume"], "usage: agent task resume"],
+    [["task", "resume", "a/b"], "invalid task id"],
+    [["task", "resume", "task-x", "--bogus"], "unexpected argument"],
   ];
   for (const [args, needle] of usageCases) {
     const result = fixture.run(args, { config: REAL_CONFIG });
@@ -3634,4 +3637,10 @@ test("test_agent_task_cli", withFixture((fixture) => {
   const status = fixture.run(["task", "status", "task-does-not-exist"], { config: REAL_CONFIG });
   check(status.exitCode === 1, `status -> ${status.exitCode}`);
   check(status.stdout.toString().includes("no task state"), status.stdout.toString());
+
+  // `task resume` on an unknown id fails closed: either the Herdr
+  // availability probe fires first (fixture PATH has no herdr) or the
+  // missing state is reported — never a success.
+  const resume = fixture.run(["task", "resume", "task-does-not-exist"], { config: REAL_CONFIG });
+  check(resume.exitCode === 1, `resume -> ${resume.exitCode}`);
 }));
