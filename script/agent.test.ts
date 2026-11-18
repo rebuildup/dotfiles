@@ -541,15 +541,21 @@ test(
       "omp.kilo",
       "claude.requesty",
       "opencode.requesty",
+      "omp.requesty",
       "opencode.ovhcloud",
+      "omp.ovhcloud",
       "omp.groq",
+      "claude.modelscope",
+      "opencode.modelscope",
+      "omp.modelscope",
+      "omp.logfare",
     ]) {
       check(stdout.includes(route), `list misses ${route}: ${stdout}`);
     }
     check(!stdout.includes("pi."), `the Pi routes must be gone: ${stdout}`);
     check(!stdout.includes("omp.zen"), `omp.zen is out of scope: ${stdout}`);
     // A paid/provider-blocked route must not appear just because a key exists.
-    for (const absent of ["opencode.groq", "claude.ovhcloud", "omp.ovhcloud", "opencode.modelscope"]) {
+    for (const absent of ["opencode.groq", "claude.ovhcloud"]) {
       check(!stdout.includes(absent), `unsupported route must not exist: ${absent}`);
     }
     check(
@@ -2243,15 +2249,38 @@ test(
       claudeRejected.stderr.toString(),
     );
 
-    // There is still no omp.logfare route: OMP has no native `logfare`
-    // provider id and a local models.yml endpoint override is outside this
-    // design, so selection fails closed.
-    const wrongAdapter = fixture.run(["omp", "logfare"], { config: REAL_CONFIG });
-    check(wrongAdapter.exitCode === 2, `expected exit 2, got ${wrongAdapter.exitCode}`);
+    // omp.logfare runs through the launcher-owned models.yml profile: OMP
+    // has no native `logfare` provider id, so the launcher generates
+    // ~/.omp/profiles/dotfiles-omp-logfare/agent/models.yml and passes
+    // --profile. The credential still travels as the env NAME only.
+    const ompRun = fixture.run(["omp", "logfare"], { config: REAL_CONFIG });
+    check(ompRun.exitCode === 0, ompRun.stderr.toString());
+    const [ompArgv, ompEnv] = fixture.child();
     check(
-      wrongAdapter.stderr.toString().includes("no route"),
-      wrongAdapter.stderr.toString(),
+      ompArgv.includes("--profile") && ompArgv.includes("dotfiles-omp-logfare"),
+      JSON.stringify(ompArgv),
     );
+    check(ompArgv.includes("--provider") && ompArgv.includes("logfare"), JSON.stringify(ompArgv));
+    check(
+      ompArgv.includes("--model") && ompArgv.includes("deepseek-v4.1-flash-1017"),
+      JSON.stringify(ompArgv),
+    );
+    check(ompEnv["LOGFARE_API_KEY"] === "secret-logfare", JSON.stringify(ompEnv["LOGFARE_API_KEY"]));
+    const modelsPath = join(
+      fixture.tmp,
+      ".omp",
+      "profiles",
+      "dotfiles-omp-logfare",
+      "agent",
+      "models.yml",
+    );
+    check(existsSync(modelsPath), `managed models.yml missing: ${modelsPath}`);
+    const modelsYaml = readFileSync(modelsPath, "utf8");
+    check(modelsYaml.includes('baseUrl: "https://logfare.ai/v1"'), modelsYaml);
+    check(modelsYaml.includes('apiKey: "LOGFARE_API_KEY"'), modelsYaml);
+    check(modelsYaml.includes('api: "openai-completions"'), modelsYaml);
+    check(!modelsYaml.includes("secret-logfare"), "secret value leaked into models.yml");
+    check(modelsYaml.includes('id: "glm-5.3"'), modelsYaml);
   }),
 );
 
@@ -3119,17 +3148,42 @@ test("test_anonymous_provider_is_credential_free", withFixture((fixture) => {
   check(!("KILO_API_KEY" in env), "an unrelated ambient credential leaked to the child");
   check(block?.models?.["gpt-oss-120b"]?.tool_call === true, JSON.stringify(block));
 
-  // No claude or omp route may exist: the adapter contract cannot honor a
-  // credential-free endpoint, so those combinations fail before a launch.
-  for (const harness of ["claude", "omp"]) {
-    const rejected = fixture.run([harness, "ovhcloud"], { config: REAL_CONFIG });
-    check(rejected.exitCode === 2, `${harness}: ${rejected.stderr.toString()}`);
-    check(
-      rejected.stderr.toString().includes("no route"),
-      `${harness}: ${rejected.stderr.toString()}`,
-    );
-    check(!existsSync(fixture.out), `${harness} must not start a harness`);
+  // No claude route may exist: the Anthropic adapter contract cannot honor
+  // a credential-free endpoint, so that combination fails before a launch.
+  const claudeRejected = fixture.run(["claude", "ovhcloud"], { config: REAL_CONFIG });
+  check(claudeRejected.exitCode === 2, `claude: ${claudeRejected.stderr.toString()}`);
+  check(
+    claudeRejected.stderr.toString().includes("no route"),
+    claudeRejected.stderr.toString(),
+  );
+  check(!existsSync(fixture.out), "claude must not start a harness");
+
+  // omp.ovhcloud DOES exist via omp_custom: models.yml `auth: none` is the
+  // credential-free contract the native-provider path lacked. Still no
+  // credential may be fetched or injected.
+  const ompResult = fixture.run(["omp", "ovhcloud"], { config: REAL_CONFIG });
+  check(ompResult.exitCode === 0, ompResult.stderr.toString());
+  check(!existsSync(fixture.marker), "an anonymous omp route must not run with-secrets");
+  const [ompArgv, ompEnv] = fixture.child();
+  check(
+    ompArgv.includes("--profile") && ompArgv.includes("dotfiles-omp-ovhcloud"),
+    JSON.stringify(ompArgv),
+  );
+  check(ompArgv.includes("gpt-oss-120b"), JSON.stringify(ompArgv));
+  for (const leak of ["KILO_API_KEY", "OPENROUTER_API_KEY", "LOGFARE_API_KEY"]) {
+    check(!(leak in ompEnv), `credential leaked to anonymous child: ${leak}`);
   }
+  const ovhModelsPath = join(
+    fixture.tmp,
+    ".omp",
+    "profiles",
+    "dotfiles-omp-ovhcloud",
+    "agent",
+    "models.yml",
+  );
+  const ovhYaml = readFileSync(ovhModelsPath, "utf8");
+  check(ovhYaml.includes('auth: "none"'), ovhYaml);
+  check(!ovhYaml.includes("apiKey"), `anonymous provider must not declare apiKey: ${ovhYaml}`);
 }));
 
 test("test_anonymous_config_validation", withFixture((fixture) => {
@@ -3225,6 +3279,98 @@ config_content = "OPENCODE_CONFIG_CONTENT"
   });
 }));
 });
+
+test("test_omp_custom_config_validation", withFixture((fixture) => {
+  const base = `
+[harnesses.omp]
+label = "OMP"
+command = "omp"
+adapter = "omp"
+
+[providers.c1]
+label = "C1"
+base_url = "https://c1.example/v1"
+secret = "C1_API_KEY"
+env = "C1_API_KEY"
+default_model = "m1"
+models = ["m1", "m2"]
+omp_custom = true
+omp_api = "openai-completions"
+[providers.c1.omp_models.m1]
+context = 8192
+output = 1024
+[routes."omp.c1"]
+`;
+  const okPath = join(fixture.tmp, "omp-custom-ok.toml");
+  writeFileSync(okPath, base);
+  const ok = fixture.run(["check"], { config: okPath });
+  check(ok.exitCode === 0, ok.stderr.toString());
+
+  const cases: Array<[string, string, string]> = [
+    [
+      "omp_api without omp_custom must fail",
+      base.replace("omp_custom = true\n", ""),
+      "require omp_custom = true",
+    ],
+    [
+      "omp_models without omp_custom must fail",
+      base.replace("omp_custom = true\n", ""),
+      "require omp_custom = true",
+    ],
+    [
+      "omp_custom without base_url must fail",
+      base.replace('base_url = "https://c1.example/v1"\n', ""),
+      "requires base_url",
+    ],
+    [
+      "omp_custom without a credential must fail",
+      base.replace('secret = "C1_API_KEY"\nenv = "C1_API_KEY"\n', ""),
+      "requires a credential",
+    ],
+    [
+      "an unknown omp_api must fail",
+      base.replace('omp_api = "openai-completions"', 'omp_api = "bogus-api"'),
+      "unknown omp_api",
+    ],
+    [
+      "an omp_models entry outside models must fail",
+      base.replace('[providers.c1.omp_models.m1]', '[providers.c1.omp_models."m9"]'),
+      "is not in models",
+    ],
+    [
+      "an omp_models entry missing limits must fail",
+      base.replace("context = 8192\noutput = 1024", "context = 8192"),
+      "omp_models",
+    ],
+    [
+      "a mismatched omp_id must fail",
+      base.replace("[providers.c1]", '[providers.c1]\nomp_id = "other"'),
+      "omp_id to equal the provider key",
+    ],
+  ];
+  cases.forEach(([label, toml, needle], index) => {
+    const path = join(fixture.tmp, `omp-bad-${index}.toml`);
+    writeFileSync(path, toml);
+    const result = fixture.run(["check"], { config: path });
+    check(result.exitCode === 2, `${label}: expected exit 2, got ${result.exitCode}`);
+    check(
+      result.stderr.toString().includes(needle),
+      `${label}: ${result.stderr.toString()}`,
+    );
+  });
+
+  // An anonymous omp_custom provider is valid: models.yml `auth: none` is
+  // the credential-free contract.
+  const anonPath = join(fixture.tmp, "omp-anon.toml");
+  writeFileSync(
+    anonPath,
+    base
+      .replace('secret = "C1_API_KEY"\nenv = "C1_API_KEY"\n', "anonymous = true\n")
+      .replace("[providers.c1]", '[providers.c1]\n'),
+  );
+  const anon = fixture.run(["check"], { config: anonPath });
+  check(anon.exitCode === 0, anon.stderr.toString());
+}));
 
 test("test_fallback_reads_catalog_state", withFixture((fixture) => {
   // Regression: loadAttestations used readdirSync without importing it, so
