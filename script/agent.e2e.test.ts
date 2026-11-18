@@ -16,16 +16,16 @@
  * Run: bun test script/agent.e2e.test.ts
  */
 
-import { describe, test, expect } from "bun:test";
-import { execSync } from "node:child_process";
-import { existsSync, readFileSync, mkdtempSync } from "node:fs";
-import { join } from "node:path";
-import { platform, arch, release, tmpdir } from "node:os";
-import { FsAttemptStore, initAttempt, acquireLease, readAttempt } from "./agent/attempts.ts";
-import { FsJournalStore } from "./agent/checkpoint.ts";
-import { planRecovery } from "./agent/recovery.ts";
-import { dispatchTask } from "./agent/task.ts";
-import { loadConfig } from "./agent/config.ts";
+import { describe, test, expect } from "bun:test";;
+import { execSync } from "node:child_process";;
+import { readFileSync, mkdtempSync } from "node:fs";;
+import { join } from "node:path";;
+import { platform, arch, release, tmpdir } from "node:os";;
+import { FsAttemptStore, initAttempt, acquireLease, readAttempt } from "./agent/attempts.ts";;
+import { FsJournalStore } from "./agent/checkpoint.ts";;
+import { planRecovery } from "./agent/recovery.ts";;
+import { dispatchTask } from "./agent/task.ts";;
+import { loadConfig } from "./agent/config.ts";;
 
 // ---------------------------------------------------------------------------
 // Environment identity

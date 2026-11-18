@@ -236,7 +236,7 @@ function readInlineConfig(env: Record<string, string>, name: string): Record<str
   return {};
 }
 
-export async function finalize(plan: Plan): Promise<number> {
+export async function finalize(plan: ExecStagePlan): Promise<number> {
   const baseline = new Set(plan.baseline ?? Object.keys(process.env));
   const keep = plan.keep;
   const drop = new Set(plan.drop);
@@ -343,7 +343,7 @@ interface ExecStagePlan {
   assign: Array<[string, string]>;
   require_cred: Array<[string, string]>;
   drop: string[];
-  baseline: string[];
+  baseline: string[] | null;
 }
 
 export function cmdExec(argv: string[]): Promise<number> {
@@ -429,6 +429,6 @@ export function cmdExec(argv: string[]): Promise<number> {
     guardOmpCredentialSource(ompGuardId, ompGuardEnv, customGuard);
   }
   const stage: ExecStagePlan = { command, keep, copy, unset, assign, require_cred: cred, drop, baseline };
-  return finalize(stage as unknown as Plan);
+  return finalize(stage);
 }
 

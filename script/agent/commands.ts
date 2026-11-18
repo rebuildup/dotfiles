@@ -7,55 +7,20 @@
  * dispatch.
  */
 
-import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import { getPrimaryQuotaScope, loadCatalog, type Catalog } from "./catalog.ts";
-import {
-  buildFallbackCatalog,
-  listFallbackProfiles,
-  loadCatalogAttestations,
-  mergeAttestations,
-  parseFallbackProfile,
-  resolveFallbackProfile,
-  renderFallbackResolution,
-  seedAttestationsFromCatalog,
-} from "./fallback.ts";
-import { ContractError, parseTomlTable, redactJson, splitRouteKey } from "./contract.ts";
-import {
-  configPath,
-  routeDefaultModel,
-  type Config,
-  type Harness,
-  type Provider,
-  type Route,
-} from "./config.ts";
-import { AgentError, EXIT_RUNTIME, EXIT_USAGE } from "./errors.ts";
-import {
-  finalize,
-  launchArgv,
-  needsInjection,
-  runInherited,
-  startViaWithSecrets,
-  withSecretsPath,
-} from "./exec.ts";
-import {
-  buildGuideData,
-  buildHelpData,
-  buildRoutesData,
-  renderGuideText,
-  renderRoutesText,
-  UnknownGuideTopicError,
-  usageText,
-} from "./help.ts";
-import { buildPlan, resolveModel, type Plan } from "./plan.ts";
-import { checkPassthru } from "./args.ts";
-import {
-  parseShortcutArgs,
-  resolveShortcut,
-  shortcutName,
-} from "./shortcuts.ts";
-import { PROGRAM, which } from "./util.ts";
+import { randomUUID } from "node:crypto";;
+import { readFileSync } from "node:fs";;
+import { join } from "node:path";;
+import { getPrimaryQuotaScope, loadCatalog } from "./catalog.ts";;
+import { buildFallbackCatalog, listFallbackProfiles, loadCatalogAttestations, mergeAttestations, parseFallbackProfile, resolveFallbackProfile, renderFallbackResolution, seedAttestationsFromCatalog } from "./fallback.ts";;
+import { ContractError, parseTomlTable, redactJson, splitRouteKey } from "./contract.ts";;
+import { routeDefaultModel, type Config, type Harness, type Provider, type Route } from "./config.ts";;
+import { AgentError, EXIT_RUNTIME, EXIT_USAGE } from "./errors.ts";;
+import { finalize, launchArgv, needsInjection, runInherited, startViaWithSecrets } from "./exec.ts";;
+import { buildGuideData, buildHelpData, buildRoutesData, renderGuideText, renderRoutesText, UnknownGuideTopicError, usageText } from "./help.ts";;
+import { buildPlan, resolveModel, type Plan } from "./plan.ts";;
+import { checkPassthru } from "./args.ts";;
+import { parseShortcutArgs, resolveShortcut, shortcutName } from "./shortcuts.ts";;
+import { PROGRAM, which } from "./util.ts";;
 
 // ---------------------------------------------------------------------------
 // Commands

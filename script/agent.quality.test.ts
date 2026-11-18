@@ -15,25 +15,10 @@
  *     secret-shaped ids, path traversal, empty strings) throw, never decide.
  */
 
-import { describe, expect, test } from "bun:test";
-import {
-  evaluateQualityGate,
-  parseEnvironment,
-  parseGateRule,
-  parseValidationRecord,
-  resolveRequiredGates,
-  type GateRule,
-  type QualityGateInput,
-  type ValidationRecord,
-} from "./agent/quality.ts";
-import {
-  buildReviewInput,
-  evaluateReview,
-  parseReviewRecord,
-  type ReviewRecord,
-} from "./agent/review.ts";
-import { ContractError } from "./agent/contract.ts";
-import type { MachineOS } from "./agent/machines.ts";
+import { describe, expect, test } from "bun:test";;
+import { evaluateQualityGate, parseEnvironment, parseGateRule, parseValidationRecord, resolveRequiredGates, type GateRule, type QualityGateInput, type ValidationRecord } from "./agent/quality.ts";;
+import { buildReviewInput, evaluateReview, parseReviewRecord, type ReviewRecord } from "./agent/review.ts";;
+import { ContractError } from "./agent/contract.ts";;
 import type { RequiredGate } from "./agent/quality.ts";
 import type { TaskClass } from "./agent/preflight.ts";
 

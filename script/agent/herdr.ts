@@ -6,10 +6,10 @@
  * lifecycle operations used by the task dispatch/collect logic.
  */
 
-import { ContractError, agentStateDir, isPlainObject } from "./contract.ts";
-import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync } from "node:fs";
-import { join } from "node:path";
-import { randomUUID } from "node:crypto";
+import { ContractError, agentStateDir, isPlainObject } from "./contract.ts";;
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";;
+import { join } from "node:path";;
+;
 
 // ---------------------------------------------------------------------------
 // Herdr CLI availability

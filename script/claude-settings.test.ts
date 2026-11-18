@@ -1,20 +1,8 @@
-import { describe, expect, test } from "bun:test";
-import {
-  existsSync,
-  lstatSync,
-  mkdirSync,
-  mkdtempSync,
-  readdirSync,
-  unlinkSync,
-  readFileSync,
-  rmSync,
-  realpathSync,
-  symlinkSync,
-  writeFileSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { compose, extras, merge, type Paths, plan, scalarConflict } from "./claude-settings";
+import { describe, expect, test } from "bun:test";;
+import { lstatSync, mkdirSync, mkdtempSync, readdirSync, unlinkSync, readFileSync, rmSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";;
+import { tmpdir } from "node:os";;
+import { dirname, join } from "node:path";;
+import { compose, extras, merge, type Paths, plan, scalarConflict } from "./claude-settings";;
 
 const SHARED = {
   permissions: { defaultMode: "bypassPermissions", allow: ["Bash(git status)"] },

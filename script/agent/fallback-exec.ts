@@ -9,39 +9,12 @@
  * Does NOT implement cross-harness or cross-host migration (those belong to #101).
  */
 
-import {
-  ContractError,
-  parseRouteId,
-  parseTomlTable,
-  type RouteRef,
-} from "./contract.ts";
-import {
-  type FallbackProfile,
-  type FallbackCandidate,
-  type FallbackResolution,
-  type ResolvedCandidate,
-  type RejectedCandidate,
-  type FallbackRejectionReason,
-  parseFallbackProfile,
-  resolveFallbackProfile,
-  buildFallbackCatalog,
-  loadCatalogAttestations,
-  mergeAttestations,
-  seedAttestationsFromCatalog,
-} from "./fallback.ts";
-import { loadConfig, type Config } from "./config.ts";
-import { getPrimaryQuotaScope, loadCatalog, type Catalog } from "./catalog.ts";
-import {
-  CATEGORY_FACTS,
-  CATEGORY_SEVERITY,
-  LIMIT_CATEGORIES,
-  classifyFailure as classifyLimitFailure,
-  type CategoryFacts,
-  type FailureSignal as LimitFailureSignal,
-  type LimitCategory,
-  type LimitClassification,
-} from "./limits.ts";
-import { readFileSync } from "node:fs";
+import { ContractError, parseRouteId, parseTomlTable, type RouteRef } from "./contract.ts";;
+import { type FallbackCandidate, type ResolvedCandidate, parseFallbackProfile, resolveFallbackProfile, buildFallbackCatalog, loadCatalogAttestations, mergeAttestations, seedAttestationsFromCatalog } from "./fallback.ts";;
+import { type Config } from "./config.ts";;
+import { getPrimaryQuotaScope, loadCatalog } from "./catalog.ts";;
+import { CATEGORY_FACTS, CATEGORY_SEVERITY, LIMIT_CATEGORIES, classifyFailure as classifyLimitFailure, type CategoryFacts, type FailureSignal as LimitFailureSignal, type LimitCategory, type LimitClassification } from "./limits.ts";;
+import { readFileSync } from "node:fs";;
 
 // ---------------------------------------------------------------------------
 // Error classification — canonical implementation lives in limits.ts (#92).
