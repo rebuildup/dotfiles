@@ -189,6 +189,27 @@ describe("extractProviderFailureEvidence", () => {
     })).toBeNull();
   });
 
+  it("reads assistant outcomes from type:message events (OMP 18.20+ schema)", () => {
+    // Real OMP 18.20.2 sessions record outcomes as {type:"message",
+    // message:{role:"assistant",stopReason,errorStatus}} — observed live
+    // on a requesty 429 (RC, #173). Older fixtures used message_end.
+    sessionFile([
+      userEvent(SINCE + 100),
+      {
+        type: "message",
+        message: {
+          role: "assistant", stopReason: "error", errorStatus: 429,
+          errorMessage: "429 rate limit", provider: "groq",
+          model: "llama-3.3-70b-versatile", timestamp: SINCE + 900,
+        },
+      },
+    ]);
+    const ev = extractProviderFailureEvidence({
+      provider: provider(), cwd, sinceMs: SINCE, sessionsRoot: root, prompt: PROMPT,
+    });
+    expect(ev?.httpStatus).toBe(429);
+  });
+
   it("providerTurnObserved distinguishes none/one/many for reconcile", () => {
     const opts = { provider: provider(), cwd, sinceMs: SINCE, sessionsRoot: root, prompt: PROMPT };
     expect(providerTurnObserved(opts)).toBe("none");

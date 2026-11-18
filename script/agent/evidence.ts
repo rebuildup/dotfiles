@@ -174,7 +174,15 @@ function scanSessionFile(
       const body = messageText(msg["content"]);
       if (body !== null && normalizePrompt(body) === wantPrompt) promptSeen = true;
     }
-    if (event["type"] !== "message_end" && event["type"] !== "turn_end" && event["type"] !== "agent_end") {
+    // OMP writes assistant outcomes as "message" events in current
+    // versions (message_end/turn_end/agent_end in older fixtures); the
+    // role/stopReason filters below keep plain message events out.
+    if (
+      event["type"] !== "message_end"
+      && event["type"] !== "turn_end"
+      && event["type"] !== "agent_end"
+      && event["type"] !== "message"
+    ) {
       continue;
     }
     if (msg["role"] !== "assistant") continue;
