@@ -15,7 +15,7 @@ import { AgentError, EXIT_RUNTIME } from "./errors.ts";
 import { guardOmpCredentialSource, guardOmpImplicitSwitch } from "./omp.ts";
 import { IS_WINDOWS, which } from "./util.ts";
 import { dotfilesRepoRoot } from "./util.ts";
-import type { Plan } from "../agent.ts";
+import type { Plan } from "./plan.ts";
 
 // argv-safe assign marker handled inside the child stage: only the model id
 // crosses argv, the surrounding config is merged from the environment.
