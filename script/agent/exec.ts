@@ -26,6 +26,8 @@ export const MODEL_MARKER = "@@model:";
 // value — OpenCode reads the key from the named env var — so it is safe to
 // carry in argv like every other plan token.
 export const PROVIDER_MARKER = "@@provider:";
+// argv-safe marker for a process-scoped OpenCode plugin directory.
+export const PLUGIN_MARKER = "@@opencode-plugin:";
 // argv-safe marker for "copy this secret from another env name"; kept
 // distinct from a bare `@` so real model ids that start with `@`
 // (e.g. Cloudflare's `@cf/...`) pass through as literal values.
@@ -310,6 +312,25 @@ export async function finalize(plan: ExecStagePlan): Promise<number> {
       const providers: Record<string, unknown> = isPlainObject(existing) ? existing : {};
       Object.assign(providers, parsed);
       content["provider"] = providers;
+      env[name] = JSON.stringify(content);
+    } else if (value.startsWith(PLUGIN_MARKER)) {
+      let pluginPath: unknown;
+      try {
+        pluginPath = JSON.parse(value.slice(PLUGIN_MARKER.length));
+      } catch {
+        throw new AgentError(`internal: invalid OpenCode plugin path for ${name}`, EXIT_RUNTIME);
+      }
+      if (typeof pluginPath !== "string" || pluginPath.length === 0) {
+        throw new AgentError(`internal: invalid OpenCode plugin path for ${name}`, EXIT_RUNTIME);
+      }
+      const content = readInlineConfig(env, name);
+      const existing = content["plugins"];
+      if (existing !== undefined && !Array.isArray(existing)) {
+        console.error(`agent: warning: existing ${name} plugins is not an array; replacing it`);
+      }
+      const plugins: unknown[] = Array.isArray(existing) ? existing : [];
+      if (!plugins.includes(pluginPath)) plugins.push(pluginPath);
+      content["plugins"] = plugins;
       env[name] = JSON.stringify(content);
     } else if (value.startsWith(CRED_MARKER)) {
       const source = value.slice(CRED_MARKER.length);
