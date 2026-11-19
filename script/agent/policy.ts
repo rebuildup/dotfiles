@@ -25,6 +25,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, relative, sep } from "node:path";
+import { errorMessage, isPlainObject } from "./contract";
 
 export type PolicyLayer =
   | "constitution"
@@ -131,7 +132,7 @@ function sha256(content: string): string {
 function readIfPresent(
   repoRoot: string,
   rel: string,
-): { present: boolean; content: string | null } {
+): { present: true; content: string } | { present: false; content: null } {
   const path = join(repoRoot, ...rel.split("/"));
   if (!existsSync(path)) return { present: false, content: null };
   return { present: true, content: readFileSync(path, "utf8") };
@@ -158,7 +159,7 @@ function source(
     layer,
     path: rel,
     present: read.present,
-    sha256: read.present ? sha256(read.content as string) : null,
+    sha256: read.present ? sha256(read.content) : null,
   };
 }
 
@@ -310,10 +311,13 @@ function resolveLock(
   const read = readIfPresent(repoRoot, LOCK_PATH);
   if (!read.present) return { lock: null, facts: [] };
   try {
-    const parsed = JSON.parse(read.content as string) as {
-      skills?: Record<string, LockEntry>;
-    };
-    if (!parsed.skills || typeof parsed.skills !== "object") {
+    const parsed: unknown = JSON.parse(read.content);
+    const skillsRaw = isPlainObject(parsed) ? parsed["skills"] : undefined;
+    if (
+      skillsRaw === null ||
+      typeof skillsRaw !== "object" ||
+      Array.isArray(skillsRaw)
+    ) {
       return {
         lock: null,
         facts: [
@@ -325,7 +329,27 @@ function resolveLock(
         ],
       };
     }
-    return { lock: { skills: parsed.skills }, facts: [] };
+    // Entries must be objects: a null/scalar entry would crash the
+    // field reads in resolveSkills. Non-object entries are dropped and
+    // reported rather than silently shaping the lock.
+    const skills: Record<string, LockEntry> = {};
+    const dropped: string[] = [];
+    for (const [name, entry] of Object.entries(skillsRaw)) {
+      if (isPlainObject(entry)) {
+        skills[name] = entry;
+      } else {
+        dropped.push(name);
+      }
+    }
+    const facts: PolicyFact[] = [];
+    if (dropped.length > 0) {
+      facts.push({
+        kind: "skills-lock-invalid",
+        severity: "conflict",
+        detail: `${LOCK_PATH}: dropped non-object skill entr${dropped.length === 1 ? "y" : "ies"}: ${dropped.join(", ")}`,
+      });
+    }
+    return { lock: { skills }, facts };
   } catch (error) {
     return {
       lock: null,
@@ -333,7 +357,7 @@ function resolveLock(
         {
           kind: "skills-lock-invalid",
           severity: "conflict",
-          detail: `${LOCK_PATH} is not valid JSON: ${(error as Error).message}`,
+          detail: `${LOCK_PATH} is not valid JSON: ${errorMessage(error)}`,
         },
       ],
     };

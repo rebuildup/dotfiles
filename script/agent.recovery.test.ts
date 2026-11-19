@@ -11,35 +11,14 @@
  * filesystem under a temp limits state dir.
  */
 
-import { describe, test, expect, afterAll } from "bun:test";
-import { mkdtempSync, rmSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import {
-  planRecovery,
-  executeRecovery,
-  recoveryCycle,
-  probeAttemptLiveness,
-  reconcileSideEffects,
-  circuitIsOpen,
-  circuitRecordFailure,
-  circuitReset,
-  renderRecoveryPlan,
-  CIRCUIT_BREAKER_THRESHOLD,
-  type RecoveryPlan,
-  type RecoveryInput,
-} from "./agent/recovery.ts";
-import {
-  FsAttemptStore,
-  initAttempt,
-  acquireLease,
-  releaseLease,
-  fenceAttempt,
-  recordResult,
-  type AttemptStore,
-} from "./agent/attempts.ts";
-import { FsJournalStore, journalPreEffect, journalPostEffect } from "./agent/checkpoint.ts";
-import { ContractError } from "./agent/contract.ts";
+import { describe, test, expect, afterAll } from "bun:test";;
+import { mkdtempSync, rmSync } from "node:fs";;
+import { tmpdir } from "node:os";;
+import { join } from "node:path";;
+import { planRecovery, executeRecovery, recoveryCycle, probeAttemptLiveness, reconcileSideEffects, circuitIsOpen, circuitRecordFailure, circuitReset, renderRecoveryPlan, CIRCUIT_BREAKER_THRESHOLD, type RecoveryInput } from "./agent/recovery.ts";;
+import { FsAttemptStore, initAttempt, acquireLease, releaseLease, fenceAttempt, recordResult, type AttemptStore } from "./agent/attempts.ts";;
+import { FsJournalStore, journalPreEffect, journalPostEffect } from "./agent/checkpoint.ts";;
+;
 
 const TMP = mkdtempSync(join(tmpdir(), "agent-recovery-test-"));
 afterAll(() => rmSync(TMP, { recursive: true, force: true }));

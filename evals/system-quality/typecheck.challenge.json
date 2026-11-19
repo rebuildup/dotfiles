@@ -1,0 +1,45 @@
+{
+  "command": [
+    "bash",
+    "-c",
+    "bun install --frozen-lockfile >/dev/null 2>&1 && bun run typecheck; rc=$?; if [ $rc -eq 0 ]; then exit 0; else exit 1; fi"
+  ],
+  "timeoutMs": 120000,
+  "cases": [
+    {
+      "id": "accept-typed-comment",
+      "expect": "accept",
+      "patches": [
+        {
+          "path": "script/agent/util.ts",
+          "before": "export function sleepSync(ms: number): void {",
+          "after": "export function sleepSync(ms: number): void {\n  // challenge accept probe: comment-only change"
+        }
+      ]
+    },
+    {
+      "id": "reject-implicit-any-param",
+      "expect": "reject",
+      "diagnostic": "script/agent/util.ts(66,27): error TS7006: Parameter 'ms' implicitly has an 'any' type.",
+      "patches": [
+        {
+          "path": "script/agent/util.ts",
+          "before": "export function sleepSync(ms: number): void {",
+          "after": "export function sleepSync(ms): void {"
+        }
+      ]
+    },
+    {
+      "id": "reject-broken-tuple-contract",
+      "expect": "reject",
+      "diagnostic": "script/agent/contract.ts(863,3): error TS2322: Type 'string[]' is not assignable to type 'string'.",
+      "patches": [
+        {
+          "path": "script/agent/contract.ts",
+          "before": "): [string, string] {\n  const index = key.indexOf(\".\");",
+          "after": "): string {\n  const index = key.indexOf(\".\");"
+        }
+      ]
+    }
+  ]
+}

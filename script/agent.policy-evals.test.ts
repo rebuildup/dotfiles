@@ -22,13 +22,13 @@
  * Run: bun test script/agent.policy-evals.test.ts
  */
 
-import { describe, test, expect } from "bun:test";
-import { ContractError, parseRouteId, formatRouteId, isUsable, attest, type Attested, type Evidence } from "./agent/contract.ts";
-import { parseFallbackProfile, resolveFallbackProfile, type FallbackProfile, type CatalogLike } from "./agent/fallback.ts";
-import { classifyFailure } from "./agent/fallback-exec.ts";
-import { CATEGORY_FACTS, CATEGORY_SEVERITY } from "./agent/fallback-exec.ts";
-import { evaluateReview } from "./agent/review.ts";
-import { reviewRequirement, type TaskClass } from "./agent/preflight.ts";
+import { describe, test, expect } from "bun:test";;
+;
+import { parseFallbackProfile, resolveFallbackProfile, type CatalogLike } from "./agent/fallback.ts";;
+import { classifyFailure } from "./agent/fallback-exec.ts";;
+import { CATEGORY_FACTS } from "./agent/fallback-exec.ts";;
+import { evaluateReview } from "./agent/review.ts";;
+import { reviewRequirement } from "./agent/preflight.ts";;
 
 // ---------------------------------------------------------------------------
 // Hard failure: silent paid fallback
@@ -117,7 +117,14 @@ describe("hard failure: wrong provider and unknown quota", () => {
   });
 
   test("quota-exhausted without reset never guesses a reset time", () => {
-    const c = classifyFailure({ httpStatus: 429, usage: [{ metric: "requests", remaining: 0 }] }, "2026-11-12T00:00:00Z");
+    const c = classifyFailure({
+      httpStatus: 429,
+      usage: [{
+        window: "minute", metric: "requests", limit: 100, remaining: 0, used: 100,
+        resetAt: null, provenance: "measured",
+        evidence: { at: "2026-11-12T00:00:00Z", source: "probe" },
+      }],
+    }, "2026-11-12T00:00:00Z");
     expect(c.category).toBe("quota-exhausted");
     expect(c.resetAt).toBeNull();
   });

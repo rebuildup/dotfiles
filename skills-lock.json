@@ -103,6 +103,12 @@
       "skillPath": "skills/security-maintenance/SKILL.md",
       "computedHash": "e17934113a433328b82102f06b8222793c04a420849d3f1e5a303a34e2dcb35d"
     },
+    "system-quality": {
+      "source": "rebuildup/project-init",
+      "sourceType": "github",
+      "skillPath": "skills/system-quality/SKILL.md",
+      "computedHash": "784ace2d9955fec51ef7d1dbb45a0fc304ae4390b25b0493d2a4179f6d47b668"
+    },
     "worktree-workflow": {
       "source": "rebuildup/project-init",
       "sourceType": "github",

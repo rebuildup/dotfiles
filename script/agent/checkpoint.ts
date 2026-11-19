@@ -39,6 +39,7 @@ import {
   ContractError,
   agentStateDir,
   expectFields,
+  isOneOf,
   isPlainObject,
   isSecretKeyName,
   looksLikeSecretValue,
@@ -180,7 +181,7 @@ export function parseCheckpoint(raw: unknown, where: string): CheckpointRecord {
   parseAttemptKey(attemptKey);
   const generation = requireGeneration(payload["generation"], `${where}.generation`);
   const kind = requireStr(payload, "kind", where);
-  if (!CHECKPOINT_KINDS.includes(kind as CheckpointKind)) {
+  if (!isOneOf(kind, CHECKPOINT_KINDS)) {
     throw new ContractError("schema", `${where}: unknown checkpoint kind '${kind}'`);
   }
   const durableRaw = payload["durable"];
@@ -198,7 +199,7 @@ export function parseCheckpoint(raw: unknown, where: string): CheckpointRecord {
   const record: CheckpointRecord = {
     attemptKey,
     generation,
-    kind: kind as CheckpointKind,
+    kind,
     inputRef: optionalImmutableRef(payload, "inputRef", where),
     resultRef: optionalImmutableRef(payload, "resultRef", where),
     children: stringList(payload["children"], where, "children"),
@@ -217,7 +218,7 @@ export function parseDurableRef(raw: unknown, where: string): DurableRef {
   }
   expectFields(raw, ["kind", "repo", "n", "sha", "url"], where);
   const kind = requireStr(raw, "kind", where);
-  if (!DURABLE_KINDS.includes(kind as DurableRef["kind"])) {
+  if (!isOneOf(kind, DURABLE_KINDS)) {
     throw new ContractError("schema", `${where}: unknown durable ref kind '${kind}'`);
   }
   const repo = requireStr(raw, "repo", where);
@@ -244,7 +245,7 @@ export function parseDurableRef(raw: unknown, where: string): DurableRef {
   } else if (n === null || n < 1) {
     throw new ContractError("schema", `${where}: '${kind}' requires a positive issue/PR number`);
   }
-  return { kind: kind as DurableRef["kind"], repo, n, sha, url };
+  return { kind, repo, n, sha, url };
 }
 
 /** Canonical JSON for persisting or posting a checkpoint (strict, sorted). */
@@ -317,6 +318,11 @@ export interface SideEffectEntry {
   outcome: SideEffectOutcome | null; // null on "pre"
   ref: string | null; // immutable ref of the result ("post" only)
   at: string; // ISO 8601 UTC
+  /** The exact prompt a "prompt-send" effect carried ("pre" only). Needed
+   *  so reconcile matches provider-session evidence to THIS effect's
+   *  prompt — resume prompts differ from descriptor.prompt. Same
+   *  durability class as the task descriptor's stored prompt. */
+  prompt?: string;
 }
 
 /** One declared-but-incomplete effect: its outcome is UNKNOWN. */
@@ -326,6 +332,7 @@ export interface SideEffectPending {
   kind: string;
   target: string;
   declaredAt: string;
+  prompt?: string;
 }
 
 /** Durable append-only journal storage; `readAll` returns lines in order. */
@@ -394,6 +401,7 @@ const SIDE_EFFECT_FIELDS = [
   "outcome",
   "ref",
   "at",
+  "prompt",
 ];
 
 /** Parse one journal entry from untrusted data (a JSONL line's JSON value). */
@@ -410,7 +418,7 @@ export function parseSideEffectEntry(raw: unknown, where: string): SideEffectEnt
   parseAttemptKey(attemptKey);
   const generation = requireGeneration(payload["generation"], `${where}.generation`);
   const phase = requireStr(payload, "phase", where);
-  if (phase !== "pre" && phase !== "post") {
+  if (!isOneOf(phase, ["pre", "post"] as const)) {
     throw new ContractError("schema", `${where}: unknown phase '${phase}'`);
   }
   const kind = requireStr(payload, "kind", where);
@@ -439,16 +447,28 @@ export function parseSideEffectEntry(raw: unknown, where: string): SideEffectEnt
   if (phase === "post" && outcome === null) {
     throw new ContractError("schema", `${where}: a 'post' entry requires an outcome`);
   }
+  const promptRaw = payload["prompt"];
+  let prompt: string | undefined;
+  if (promptRaw !== undefined && promptRaw !== null) {
+    if (typeof promptRaw !== "string" || promptRaw.length > 4000 || looksLikeSecretValue(promptRaw)) {
+      throw new ContractError("schema", `${where}: invalid or secret-shaped prompt`);
+    }
+    prompt = promptRaw;
+  }
+  if (phase === "post" && prompt !== undefined) {
+    throw new ContractError("schema", `${where}: a 'post' entry carries no prompt`);
+  }
   const entry: SideEffectEntry = {
     effectId,
     attemptKey,
     generation,
-    phase: phase as SideEffectEntry["phase"],
+    phase,
     kind,
     target,
     outcome,
     ref,
     at,
+    ...(prompt !== undefined ? { prompt } : {}),
   };
   assertNoSecrets(entry, where);
   return entry;
@@ -489,7 +509,7 @@ export function journalPreEffect(
   attempts: AttemptStore,
   journal: JournalStore,
   lease: Lease,
-  effect: { effectId: string; kind: string; target: string },
+  effect: { effectId: string; kind: string; target: string; prompt?: string },
   now: number,
 ): SideEffectEntry {
   assertLeaseCurrent(attempts, lease, now);
@@ -505,6 +525,7 @@ export function journalPreEffect(
       outcome: null,
       ref: null,
       at: isoTime(now),
+      ...(effect.prompt !== undefined ? { prompt: effect.prompt } : {}),
     },
     `journalPreEffect(${effect.effectId})`,
   );
@@ -605,6 +626,7 @@ export function pendingSideEffects(
         kind: pre.kind,
         target: pre.target,
         declaredAt: pre.at,
+        ...(pre.prompt !== undefined ? { prompt: pre.prompt } : {}),
       });
     }
   }

@@ -15,6 +15,11 @@ agent <harness>                    # native mode (no injection)
 agent list | models <provider> | shortcuts [list|check|create|remove]
 agent check | help | guide [topic] | routes [--json]
 agent fallback <profile-id> [--json]
+agent task run <route> [--model <id>] [--fallback <profile-id>]
+    [--prompt <text>] [--accept <criteria>]... [--timeout <ms>]
+agent task resume <task-id> [--prompt <text>] [--timeout <ms>]
+agent task status <task-id>
+agent task reconcile <task-id>        # resolve journal UNKNOWNs vs evidence
 ```
 
 ## Architecture
@@ -41,6 +46,9 @@ agent fallback <profile-id> [--json]
 | `script/agent/fallback.ts` | Opt-in continuity profile (issue #136) |
 | `script/agent/fallback-exec.ts` | Same-harness fallback execution (issue #139) |
 
+Router execution contract (primary-first, classified verdicts, per-candidate
+worker and credential): [ADR-0019](adr/ADR-0019.md).
+
 ## Free-tier providers ($0, explicit opt-in)
 
 Policy: [ADR-0018](adr/ADR-0018.md). Measurements:
@@ -58,15 +66,17 @@ agent opencode kilo          # Kilo free models (OpenAI-compatible /v1)
 agent omp kilo               # Kilo free models through OMP's native provider
 agent claude requesty        # independent free path (org-wide 200/day, 20/min)
 agent opencode requesty
+agent omp requesty           # same allowance via omp_custom models.yml
 agent opencode ovhcloud      # anonymous: NO credential, 2 req/min
+agent omp ovhcloud           # anonymous via models.yml `auth: none`, 2 req/min
 agent omp groq               # Groq free tier (8k tokens/min: OMP only)
 ```
 
 | route | default model | credential | limit that matters |
 |---|---|---|---|
 | `claude.kilo`, `opencode.kilo`, `omp.kilo` | `nvidia/nemotron-3-ultra-550b-a55b:free` | Infisical `KILO_API_KEY`, `require_infisical` | 200 req/hour anonymous; per-upstream limits |
-| `claude.requesty`, `opencode.requesty` | `nvidia/nemotron-3-ultra-550b-a55b` | Infisical `REQUESTY_API_KEY`, `require_infisical` | 200 req/day, 20 req/min per organization (all free models combined) |
-| `opencode.ovhcloud` | `gpt-oss-120b` | **none** (`anonymous = true`) | 2 req/min per IP and per model |
+| `claude.requesty`, `opencode.requesty`, `omp.requesty` | `nvidia/nemotron-3-ultra-550b-a55b` | Infisical `REQUESTY_API_KEY`, `require_infisical` | 200 req/day, 20 req/min per organization (all free models combined) |
+| `opencode.ovhcloud`, `omp.ovhcloud` | `gpt-oss-120b` | **none** (`anonymous = true`) | 2 req/min per IP and per model |
 | `omp.groq` | `openai/gpt-oss-120b` | Infisical `GROQ_API_KEY`, `require_infisical` | 8,000 tokens/min (binding), 1,000 req/day |
 
 Selectable alternatives: on `kilo`, `--model kilo-auto/free` (free-model
@@ -84,24 +94,32 @@ evaluation).
   OpenCode turn's system prompt plus tool definitions alone requests
   ~9.9–10.7k tokens, so every real turn is rejected with 429 before a
   response. OMP's smaller prompt stays under it and completes real tasks.
-- **No `claude.ovhcloud` / `omp.ovhcloud`.** The endpoint is
+- **No `claude.ovhcloud`.** The endpoint is
   OpenAI-compatible only (`POST /v1/messages` → 404), and the Anthropic
   adapter must send an auth token — with a credential-free endpoint Claude
   Code would fall back to its own claude.ai login and silently leave the
   route. The adapter rejects `anonymous` providers instead of letting that
-  happen. OMP has no native `ovhcloud` provider, and its credential ladder has
-  no proven credential-free contract, so no `omp.ovhcloud` route exists
-  either.
-- **No `omp.requesty`.** OMP has no native `requesty` or `ovhcloud`
-  provider id (`Unknown provider "requesty"`), and adding one would require
-  a local `models.yml` endpoint override, which this design does not allow.
-- **No route at all for ModelScope, SenseNova or SiliconFlow.** Their keys
-  exist in Infisical but the accounts are not entitled, and the reason for each
-  is now identified: ModelScope's token is valid but the account is not bound
-  to an Alibaba Cloud account; SenseNova's key matches neither Token Plan
-  workspace; SiliconFlow's key is valid only on the international host, where
-  the free chat IDs answer 402/403. These are account actions, not launcher
-  defects — see
+  happen.
+- **Managed OMP profiles.** `omp_custom` providers get a full provider
+  definition in generated `models.yml`; native `require_infisical`
+  providers (kilo, groq, opencode-go, mistral) get an `apiKey`-only
+  override merged with OMP's built-in definition. Both resolve Infisical
+  secrets inside OMP via `apiKey: "!infisical-key.sh <NAME>"` — the value
+  never transits Herdr `--env`. Ambient routes keep the env handoff.
+- **`omp.ovhcloud` / `omp.requesty` exist only via `omp_custom`.** OMP has
+  no native provider id for either, so the launcher generates a managed
+  `models.yml` under a `dotfiles-omp-<provider>` profile and passes
+  `--profile`. For OVHcloud the file declares `auth: none` — that IS the
+  credential-free contract the native-provider path could not provide. For
+  Infisical-backed providers `apiKey` is an OMP `!command`
+  (`script/agent/infisical-key.sh <SECRET>`): OMP runs it and uses stdout as
+  the key, so the secret travels Infisical → OMP directly and never enters
+  Herdr `--env` argv, the pane environment, or the Herdr server. The env-name
+  form remains only for providers whose credential is ambient-only.
+- **No route at all for SiliconFlow.** Its key
+  exists in Infisical but the account is not entitled: the key is valid only on the international host, where
+  the free chat IDs answer 402/403. This is an account action, not a launcher
+  defect — see
   [blocked-provider-investigation-2026-11-13](research/blocked-provider-investigation-2026-11-13.md).
   A key is not evidence that a route is free, so a route that cannot be proven
   $0 must not be reachable.
@@ -120,7 +138,29 @@ opencode_base_url = "https://api.kilo.ai/api/gateway/v1"
                                  # block (requires opencode_npm; defaults to base_url).
                                  # Claude Code appends /v1/messages itself, so its
                                  # ANTHROPIC_BASE_URL must be the bare origin.
+
+[providers.requesty]
+omp_custom = true               # OMP has no native `requesty` provider id:
+                                 # the launcher writes a managed models.yml
+                                 # under ~/.omp/profiles/dotfiles-omp-requesty/
+                                 # and starts OMP with `--profile`.
+omp_api = "openai-completions"  # optional; defaults to this. Must be one of
+                                 # OMP's documented wire protocols.
+[providers.requesty.omp_models."nvidia/nemotron-3-ultra-550b-a55b"]
+context = 1048576               # per-model contextWindow/maxTokens for the
+output = 65536                  # generated models.yml; falls back to the
+                                # opencode_models limits when absent.
 ```
+
+`omp_custom` requires `base_url` (the OpenAI-compatible spelling —
+`opencode_base_url` when set), a non-empty `models` list, and either a
+credential env/secret name or `anonymous = true`. `omp_id`, when present,
+must equal the provider key. The generated `models.yml` carries the
+launcher-managed marker: a file without it is never overwritten, a stale
+managed file is rewritten atomically, and a post-plan tamper fails the
+pre-spawn sha256 recheck. Ambient `OMP_PROFILE` /
+`PI_*` overrides are rejected on managed-profile routes because the launcher
+passes `--profile` explicitly.
 
 `agent check` validates both, plus that a provider declaring `opencode_npm`
 is reachable from at least one `opencode` route (otherwise the custom-provider
@@ -156,16 +196,14 @@ allowance, and an ambient key was measured to silently point the route at a
 different account. `opencode.ovhcloud` needs no secret at all and runs no
 Infisical stage.
 
-`MODELSCOPE_API_KEY`, `SENSENOVA_API_KEY` and `SILICONFLOW_API_KEY` are also
-stored in `dev` but are deliberately unused: the accounts are not entitled, so
-no route reads them. Each cause is identified — see
+`SILICONFLOW_API_KEY` is also
+stored in `dev` but is deliberately unused: the account is not entitled, so
+no route reads it. The cause is identified — see
 [blocked-provider-investigation-2026-11-13](research/blocked-provider-investigation-2026-11-13.md).
-All three need a one-time console action by the account owner:
+It needs a one-time console action by the account owner:
 
 | provider | action | where |
 | --- | --- | --- |
-| ModelScope | Bind an Alibaba Cloud account that has completed real-name verification. The token is already valid; the `.cn` site must be used (the international site cannot bind). | `https://modelscope.cn/my/settings/account` |
-| SenseNova | Confirm a key exists under the Free (公测) plan for the 日日新 account, or issue one from the intended TokenPlan workspace. The stored key matches neither. | `https://platform.sensenova.cn` → API Keys |
 | SiliconFlow | Complete real-name verification. The stored key is valid on the international host only; a `.cn` key would need a separate Infisical name. | SiliconFlow console → account |
 
 After the action, re-run the probe in the investigation doc; a working account
@@ -185,6 +223,87 @@ agent fallback free-kilo-quota          # Kilo exhausted -> Groq
 agent fallback opencode-requesty-quota  # Requesty exhausted -> Kilo (OpenCode)
 agent fallback <id> --json              # redacted machine-readable form
 ```
+
+To actually run the task under a profile, dispatch it through Herdr with
+`agent task run` — the same resolution/authorization checks apply, and the
+executor only advances to a candidate on a *classified* failure (unknown
+failures stop):
+
+```bash
+agent task run omp.kilo --model nvidia/nemotron-3-ultra-550b-a55b:free \
+  --fallback free-kilo-quota --prompt "fix the failing test" \
+  --accept "bun test script/ passes"
+agent task status <task-id>             # durable attempts/failures
+```
+
+`--prompt` may be omitted when stdin is piped. `agent task run` requires
+Herdr; the worker is pinned to the route's provider/model and candidates
+run on their own workers in the same harness. Task state (attempts,
+generations, classified failures, credential *scopes* — never values) is
+durable under the agent state dir.
+
+**Credential policy on the task path.** Herdr injects worker environment
+via `--env NAME=VALUE`, which exposes the value in process argv and Herdr
+server state, and Herdr offers no secret-safe alternative channel. Routes
+whose credential is resolved from Infisical into a managed `models.yml`
+profile (`omp_custom`, and `require_infisical` native providers) hand the
+worker no secret at all — OMP re-resolves the key itself. Ambient-credential
+routes (e.g. OpenRouter/DeepSeek/MiniMax with `require_infisical = false`)
+are therefore **rejected fail-closed** by `agent task run`; they remain
+available through the interactive launcher unchanged.
+
+**Fallback scope.** A `--fallback` profile re-prompts workers whose side
+effects cannot be fully audited, so it is refused unless the scope is
+verifiable: `--accept` criteria, a git-observable workspace (drift is
+recorded on the attempt), or the explicit `--allow-unobserved-effects`
+acknowledgement.
+
+**Journal and UNKNOWN reconciliation.** Every prompt, candidate
+dispatch and resume is journaled under the attempt's exclusive lease.
+A Herdr send whose outcome cannot be proven (stall, CLI loss, crash
+between pre and post) stays `pre`-pending and blocks any subsequent run,
+candidate or resume. `agent task reconcile <task-id>` resolves pending
+effects only against observed evidence — a `prompt-send` succeeds solely
+when exactly one provider session observed that prompt turn, and a
+`worker-start` when the worker still exists; ambiguity or absence keeps
+the effect pending (non-zero exit).
+
+**Failure evidence.** Herdr lifecycle states (`blocked`, `stalled`,
+wait timeouts) are agent-state signals, not provider responses — the task
+path never fabricates an HTTP status from them. Such signals classify as
+`unknown` and stop fallback rather than guessing 401/402/403/429/5xx.
+
+**`--accept`.** Each criterion is executed as a shell command in the
+task's working directory after collect; every check's exit status (or
+timeout) is recorded in the result's `acceptance` report. Task success
+requires both worker success AND all criteria passing — a completed agent
+with failing criteria exits non-zero.
+
+**`--timeout`.** Bounds every prompt wait (primary, each fallback
+candidate, and resume); it does not change the worker's own runtime.
+
+**`agent task resume`.** Re-prompts the *recorded* worker of an attempt
+with a continue instruction — for single-route and fallback-profile tasks
+alike (after a candidate served, the recorded worker IS the candidate's).
+It never re-enters dispatch or candidate selection, so no duplicate
+worker, prompt replay, or side-effect re-execution can occur; the worker
+keeps its session context. Before re-prompting, the worker's Herdr
+liveness is probed — an unreachable worker fails closed and the task
+must be re-dispatched. Acceptance criteria are re-verified on resume and
+the durable status follows the same worker-success AND
+acceptance-verified rule as dispatch: a completed worker with failing
+criteria is recorded `failed`, never `completed`.
+
+**Provider failure evidence.** Herdr lifecycle states never produce an
+HTTP status. When a prompt fails, the task path additionally scans the
+worker provider's OMP session JSONL (`~/.omp[/profiles/<p>]/agent/
+sessions/`) for `stopReason:"error"` events carrying a real integer
+`errorStatus` (400–599) that match the provider id, working directory,
+and the current execution window. A qualifying event upgrades the
+signal's `httpStatus` — and only that — so `classifyFailure` derives the
+category (auth/billing/rate-limit/...) from actual provider evidence. No
+qualifying event means the lifecycle `unknown` verdict stands and
+fallback does not advance.
 
 Each profile declares `global_max_spend = 0`, so the resolver's spend checks
 can never authorise paid usage. Candidates are `billing = "free"` and are
@@ -243,13 +362,18 @@ not usable.
 OpenAI-compatible `/v1` surface (OpenCode custom provider via
 `opencode_npm` + `opencode_base_url`) and an Anthropic-protocol
 `/v1/messages` surface at the bare origin (Claude Code appends the path
-itself). Same account budget on both routes; still explicit opt-in only.
-There is no `omp.logfare` — OMP has no native `logfare` provider id and
-`models.yml` endpoint overrides are outside this design.
+itself). `omp.logfare` reaches the same `/v1` surface through `omp_custom`
+(managed `models.yml`, `apiKey` = the `infisical-key.sh LOGFARE_API_KEY`
+command). Same account budget on
+all three routes; still explicit opt-in only.
+
+`omp.requesty`, `omp.modelscope` and `omp.ovhcloud` likewise run through
+`omp_custom` profiles; their live response/tool-call verification is still
+pending and the route notes say so.
 
 The 2026-11-17 audit of every other provider × harness gap (including why
-`claude.mistral`, `opencode.opencode-go`, `claude.groq`,
-`claude.ovhcloud`, `claude.zen` and `omp.requesty` cannot exist) is in
+`claude.mistral`, `opencode.opencode-go`, `claude.groq` and
+`claude.ovhcloud` cannot exist) is in
 [provider-route-expansion-2026-11-17](research/provider-route-expansion-2026-11-17.md).
 
 ## Policy Controls

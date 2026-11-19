@@ -4,7 +4,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 local_git_config="${DOTFILES_GIT_LOCAL_CONFIG:-$HOME/.gitconfig.local}"
 infisical_config="$repo_root/.infisical.json"
-# shellcheck source=../config/infisical.sh
+# shellcheck source=config/infisical.sh
 source "$repo_root/config/infisical.sh"
 
 require_command() {
@@ -85,6 +85,7 @@ migrate_unmanaged_gitconfig() {
         continue
         ;;
       include.path|includeif.*.path)
+        # shellcheck disable=SC2088 # quoted '~' patterns intentionally match literal include.path text
         case "$value" in
           "$HOME/.gitconfig"|"$HOME/.gitconfig.local"|"~/.gitconfig"|"~/.gitconfig.local"|"$local_git_config")
             continue

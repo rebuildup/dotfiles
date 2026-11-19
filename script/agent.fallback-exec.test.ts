@@ -3,21 +3,17 @@
  * Tests for same-harness fallback execution (dotfiles#139, T021).
  */
 
-import { describe, it, expect } from "bun:test";
-import {
-  classifyFailure,
-  executeWithFallback,
-  FallbackExecutionState,
-  type ClassifiedError,
-  type LimitCategory,
-  CATEGORY_FACTS,
-  CATEGORY_SEVERITY,
-  FALLBACK_CIRCUIT_BREAKER_THRESHOLD,
-  FALLBACK_CIRCUIT_BREAKER_RESET_MS,
-  FALLBACK_MAX_RETRIES_PER_CANDIDATE,
-  FALLBACK_MAX_TOTAL_RETRIES,
-} from "./agent/fallback-exec.ts";
-import { ContractError } from "./agent/contract.ts";
+import { describe, it, expect } from "bun:test";;
+import { classifyFailure, executeWithFallback, FallbackExhaustedError, CATEGORY_FACTS, CATEGORY_SEVERITY, FALLBACK_CIRCUIT_BREAKER_THRESHOLD, FALLBACK_CIRCUIT_BREAKER_RESET_MS, FALLBACK_MAX_RETRIES_PER_CANDIDATE, FALLBACK_MAX_TOTAL_RETRIES, type FallbackAttemptRecord } from "./agent/fallback-exec.ts";;
+import { loadConfig } from "./agent/config.ts";;
+import { ContractError, formatRouteId, parseRouteId } from "./agent/contract.ts";;
+import { dirname, join } from "node:path";;
+import { realpathSync } from "node:fs";;
+
+/** Repo root, derived from this file's location (script/<file> -> repo). */
+function repoRoot(): string {
+  return dirname(dirname(realpathSync(import.meta.path)));
+}
 
 // ---------------------------------------------------------------------------
 // Tests for classifyFailure (compatible with #92 limits.ts)
@@ -25,12 +21,23 @@ import { ContractError } from "./agent/contract.ts";
 
 describe("classifyFailure", () => {
   const baseSignal = { quotaScopeKey: "test:scope" };
+  // Canonical limits.ts QuotaUsage shape: a measured live observation.
+  const usageEntry = (remaining: number) => ({
+    window: "minute" as const,
+    metric: "requests" as const,
+    limit: 100,
+    remaining,
+    used: 100 - remaining,
+    resetAt: null,
+    provenance: "measured" as const,
+    evidence: { at: "2026-11-12T00:00:00Z", source: "probe" as const },
+  });
 
   it("classifies 429 with remaining 0 as quota-exhausted", () => {
     const result = classifyFailure({
       ...baseSignal,
       httpStatus: 429,
-      usage: [{ metric: "requests", remaining: 0 }],
+      usage: [usageEntry(0)],
     }, "2026-11-12T00:00:00Z");
     expect(result.category).toBe("quota-exhausted");
     expect(result.exhausted).toBe(true);
@@ -42,7 +49,7 @@ describe("classifyFailure", () => {
       ...baseSignal,
       httpStatus: 429,
       retryAfterMs: 60000,
-      usage: [{ metric: "requests", remaining: 10 }],
+      usage: [usageEntry(10)],
       resetAt: "2026-11-12T01:00:00Z",
     }, "2026-11-12T00:00:00Z");
     expect(result.category).toBe("rate-limit");
@@ -93,7 +100,7 @@ describe("classifyFailure", () => {
       ...baseSignal,
       httpStatus: 429,
       errorKind: "insufficient_quota",
-      usage: [{ metric: "requests", remaining: 10 }],
+      usage: [usageEntry(10)],
     }, "2026-11-12T00:00:00Z");
     expect(result.category).toBe("billing");
   });
@@ -240,4 +247,215 @@ describe("executeWithFallback", () => {
     expect(FALLBACK_MAX_RETRIES_PER_CANDIDATE).toBe(2);
     expect(FALLBACK_MAX_TOTAL_RETRIES).toBe(5);
   });
+});
+
+// ---------------------------------------------------------------------------
+// Classification propagation: the classified failure must survive the
+// executor, so a caller never has to re-derive "unknown" from a blank signal.
+// ---------------------------------------------------------------------------
+
+describe("FallbackExhaustedError", () => {
+  const realConfigPath = join(repoRoot(), "config", "agents.toml");
+
+  /** Run the executor against a real profile with a stub task function. */
+  async function exhaustWith(
+    profileId: string,
+    error: Record<string, unknown>,
+  ): Promise<FallbackExhaustedError> {
+    const config = loadConfig(realConfigPath);
+    try {
+      await executeWithFallback(config, profileId, async () => ({ success: false, error }));
+      throw new Error("expected executeWithFallback to exhaust every candidate");
+    } catch (thrown) {
+      if (!(thrown instanceof FallbackExhaustedError)) throw thrown;
+      return thrown;
+    }
+  }
+
+  it("carries the classified category for an auth failure", async () => {
+    const exhausted = await exhaustWith("free-kilo-quota", {
+      httpStatus: 403,
+      exitCode: 403,
+      failureKind: "forbidden",
+      retryAfterMs: null,
+      resetAt: null,
+      usage: [],
+      errorKind: "agent-blocked",
+    });
+    expect(exhausted.lastError?.category).toBe("auth");
+  });
+
+  it("carries the classified category for a network failure", async () => {
+    const exhausted = await exhaustWith("free-kilo-quota", {
+      httpStatus: 503,
+      exitCode: 1,
+      failureKind: "network",
+      retryAfterMs: null,
+      resetAt: null,
+      usage: [],
+      errorKind: "upstream-unavailable",
+    });
+    expect(exhausted.lastError?.category).toBe("network");
+  });
+
+  it("carries the classified category for a billing failure", async () => {
+    const exhausted = await exhaustWith("free-kilo-quota", {
+      httpStatus: 402,
+      exitCode: 402,
+      failureKind: "payment",
+      retryAfterMs: null,
+      resetAt: null,
+      usage: [],
+      errorKind: "insufficient_quota",
+    });
+    expect(exhausted.lastError?.category).toBe("billing");
+  });
+
+  it("is a ContractError so existing state handling still applies", async () => {
+    const exhausted = await exhaustWith("free-kilo-quota", {
+      httpStatus: 403,
+      failureKind: "forbidden",
+    });
+    expect(exhausted).toBeInstanceOf(ContractError);
+    expect(exhausted.code).toBe("state");
+  });
+
+  it("stops on an unrecognized failure instead of advancing the candidate", async () => {
+    // An unknown failure is not evidence that another candidate would fare
+    // better, so the executor must not keep switching accounts. This profile
+    // has two usable candidates, so advancing is observable.
+    const config = loadConfig(realConfigPath);
+    let calls = 0;
+    try {
+      await executeWithFallback(config, "free-go-to-kilo", async () => {
+        calls++;
+        // No structured evidence: the classifier cannot place this failure.
+        return { success: false, error: {} };
+      });
+      throw new Error("expected executeWithFallback to stop on an unknown failure");
+    } catch (thrown) {
+      if (!(thrown instanceof FallbackExhaustedError)) throw thrown;
+      expect(thrown.lastError?.category).toBe("unknown");
+    }
+    expect(calls).toBe(1);
+  });
+
+  it("advances to the next candidate on a classified non-transient failure", async () => {
+    // A classified failure (auth) is evidence about that route, so the
+    // executor continues with the next authorized attempt. The primary is
+    // tried first, then the profile's candidates.
+    const config = loadConfig(realConfigPath);
+    const routes: string[] = [];
+    try {
+      await executeWithFallback(config, "free-go-to-kilo", async (routeRef) => {
+        routes.push(formatRouteId(routeRef));
+        return {
+          success: false,
+          error: { httpStatus: 403, failureKind: "forbidden", retryAfterMs: null, resetAt: null, usage: [], errorKind: "agent-blocked" },
+        };
+      });
+      throw new Error("expected executeWithFallback to exhaust every candidate");
+    } catch (thrown) {
+      if (!(thrown instanceof FallbackExhaustedError)) throw thrown;
+      expect(thrown.lastError?.category).toBe("auth");
+    }
+    // The primary route first, then the profile's candidates in order.
+    expect(routes).toEqual(["omp.opencode-go", "omp.kilo", "omp.groq"]);
+  });
+  it("propagates a ContractError from the task unchanged instead of advancing", async () => {
+    // A ContractError is a launcher/config defect (missing provider,
+    // credential, adapter) — it is not provider evidence and must surface
+    // with its own code/message, not be retried or re-labelled "unknown".
+    const config = loadConfig(realConfigPath);
+    let calls = 0;
+    try {
+      await executeWithFallback(config, "free-go-to-kilo", async () => {
+        calls++;
+        throw new ContractError("identity", "provider missing");
+      });
+      throw new Error("expected the ContractError to propagate");
+    } catch (thrown) {
+      expect(thrown).toBeInstanceOf(ContractError);
+      expect((thrown as ContractError).code).toBe("identity");
+      expect((thrown as Error).message).toBe("provider missing");
+    }
+    expect(calls).toBe(1);
+  });
+
+  it("fails closed with unknown when the task throws an unexpected exception", async () => {
+    // A non-ContractError exception carries no structured evidence: record
+    // it as unknown and STOP — advancing on unknown facts could silently
+    // change account/model/billing scope (ADR-0017).
+    const config = loadConfig(realConfigPath);
+    let calls = 0;
+    const records: FallbackAttemptRecord[] = [];
+    try {
+      await executeWithFallback(config, "free-go-to-kilo", async () => {
+        calls++;
+        throw new Error("worker exploded");
+      }, { onAttempt: (r) => { records.push(r); } });
+      throw new Error("expected executeWithFallback to stop on an unknown failure");
+    } catch (thrown) {
+      if (!(thrown instanceof FallbackExhaustedError)) throw thrown;
+      expect(thrown.lastError?.category).toBe("unknown");
+    }
+    expect(calls).toBe(1);
+    expect(records).toHaveLength(1);
+    expect(records[0].success).toBe(false);
+    expect(records[0].classified?.category).toBe("unknown");
+  });
+
+  it("runs the requested primary model, not the route default", async () => {
+    // The worker was pinned to descriptor.model at dispatch; the executor
+    // must record/run THAT model or the audit trail misstates what ran.
+    const config = loadConfig(realConfigPath);
+    const route = config.routes["omp.opencode-go"];
+    const provider = config.providers[route.provider];
+    const allowed = route.models ?? provider.models ?? [];
+    const requested = allowed.find((m) => m !== route.default_model) ?? allowed[0];
+    const seen: string[] = [];
+    await executeWithFallback(config, "free-go-to-kilo", async (_routeRef, model) => {
+      seen.push(model);
+      return { success: true, result: { ok: true } };
+    }, { primaryModel: requested });
+    expect(seen[0]).toBe(requested);
+  });
+
+  it("rejects a primaryModel outside the route allowlist", async () => {
+    const config = loadConfig(realConfigPath);
+    try {
+      await executeWithFallback(config, "free-go-to-kilo", async () => ({ success: true }), {
+        primaryModel: "definitely-not-a-model",
+      });
+      throw new Error("expected a ContractError for an unlisted model");
+    } catch (thrown) {
+      expect(thrown).toBeInstanceOf(ContractError);
+      expect((thrown as ContractError).code).toBe("identity");
+    }
+  });
+
+  it("delivers an onAttempt record for every attempt including failures", async () => {
+    const config = loadConfig(realConfigPath);
+    const records: FallbackAttemptRecord[] = [];
+    const routes: string[] = [];
+    try {
+      await executeWithFallback(config, "free-go-to-kilo", async (routeRef) => {
+        routes.push(formatRouteId(routeRef));
+        return {
+          success: false,
+          error: { httpStatus: 403, failureKind: "forbidden", retryAfterMs: null, resetAt: null, usage: [], errorKind: "agent-blocked" },
+        };
+      }, { onAttempt: (r) => { records.push(r); } });
+      throw new Error("expected exhaustion");
+    } catch (thrown) {
+      if (!(thrown instanceof FallbackExhaustedError)) throw thrown;
+    }
+    // One record per attempt: primary + each candidate (auth advances).
+    expect(records).toHaveLength(routes.length);
+    expect(records.every((r) => !r.success && r.classified?.category === "auth")).toBe(true);
+    expect(records[0].route).toEqual(parseRouteId("omp.opencode-go"));
+    expect(records[0].candidate).toBeNull();
+    expect(records[1].candidate).not.toBeNull();
+  });
+
 });

@@ -109,4 +109,41 @@ if XDG_CONFIG_HOME="$backup_home/.config" HOME="$backup_home" "$backup_repo/scri
   exit 1
 fi
 
+# Strict typecheck of the Bun/TypeScript surface. Requires `bun install`
+# once (typescript + bun-types are devDependencies); without node_modules
+# this fails loudly rather than silently skipping the guarantee.
+(
+  cd "$repo_root"
+  bun run typecheck
+)
+
+# Static gates shared with CI (same file list, single owner:
+# script/shell-files.txt). These fail loudly when the tool is missing —
+# a skipped check is not a passed check.
+shell_files=()
+while IFS= read -r f; do
+  [[ -n "$f" ]] && shell_files+=("$f")
+done < "$repo_root/script/shell-files.txt"
+for f in "${shell_files[@]}"; do
+  bash -n "$repo_root/$f"
+done
+if ! command -v shellcheck >/dev/null 2>&1; then
+  printf 'shellcheck not found; install it (brew install shellcheck / apt install shellcheck) — the static gate cannot be skipped\n' >&2
+  exit 1
+fi
+(
+  cd "$repo_root"
+  shellcheck -s bash -x "${shell_files[@]}"
+)
+python3 -m py_compile "$repo_root/script/snippet-sync.py"
+(
+  cd "$repo_root"
+  git ls-files '*.json' | while IFS= read -r f; do
+    bun -e 'JSON.parse(await Bun.file(process.argv[1]).text())' "$f" || {
+      printf 'invalid JSON: %s\n' "$f" >&2
+      exit 1
+    }
+  done
+)
+
 printf 'symlink behavior tests passed\n'

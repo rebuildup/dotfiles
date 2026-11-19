@@ -211,7 +211,7 @@ export function checkCommand(command: string): string | undefined {
 export default function destructiveGuard(pi: ExtensionApi): void {
   pi.on("tool_call", async (event) => {
     if (event.toolName !== "bash") return;
-    const command = (event.input as { command?: unknown } | undefined)?.command;
+    const command = event.input?.["command"];
     if (typeof command !== "string" || command.trim() === "") return;
 
     const reason = checkCommand(command);

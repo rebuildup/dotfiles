@@ -18,3 +18,6 @@ infisical-keyring/
 *.sops.json
 *.sops.yaml
 secrets/
+node_modules/
+__pycache__/
+*.pyc

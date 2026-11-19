@@ -5,27 +5,12 @@
  * Uses mocks - does not require actual Herdr CLI.
  */
 
-import { describe, it, expect, beforeEach } from "bun:test";
-import {
-  checkHerdrAvailable,
-  listWorkspaces,
-  getWorkspace,
-  createPane,
-  getPaneStatus,
-  closePane,
-  startAgent,
-  promptAgent,
-  readAgent,
-  waitAgent,
-  listAgents,
-  getAgent,
-  saveHerdrTaskMapping,
-  loadHerdrTaskMapping,
-} from "./agent/herdr.ts";
-import { ContractError } from "./agent/contract.ts";
-import { rmSync, existsSync } from "node:fs";
-import { join } from "node:path";
-import { agentStateDir } from "./agent/contract.ts";
+import { describe, it, expect } from "bun:test";;
+import { checkHerdrAvailable, listWorkspaces, getWorkspace, createWorkspace, createPane, getPaneStatus, closePane, startAgent, promptAgent, readAgent, waitAgent, listAgents, getAgent, saveHerdrTaskMapping, loadHerdrTaskMapping } from "./agent/herdr.ts";;
+;
+import { rmSync, existsSync } from "node:fs";;
+import { join } from "node:path";;
+import { agentStateDir } from "./agent/contract.ts";;
 
 // ---------------------------------------------------------------------------
 // Tests

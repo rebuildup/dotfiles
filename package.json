@@ -1,0 +1,14 @@
+{
+  "name": "dotfiles",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "@types/node": "^24.10.0",
+    "bun-types": "^1.3.0",
+    "typescript": "^5.9.3"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  }
+}

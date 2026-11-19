@@ -13,34 +13,13 @@
  * Run: bun test script/agent.limits.test.ts
  */
 
-import { describe, test, expect, afterAll, mock } from "bun:test";
-import { mkdtempSync, readdirSync, rmSync, existsSync, writeFileSync, chmodSync, readFileSync, renameSync, unlinkSync, mkdirSync } from "node:fs";
+import { describe, test, expect, afterAll, mock } from "bun:test";;
+import { mkdtempSync, readdirSync, rmSync, existsSync, writeFileSync, chmodSync, readFileSync, mkdirSync } from "node:fs";;
 import * as nodeFsNamespace from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import {
-  BACKOFF_MAX_MS,
-  BACKOFF_BASE_MS,
-  MAX_AUTO_RETRIES,
-  MAX_RECHECKS,
-  MAX_RETRY_AFTER_MS,
-  MIN_RECHECK_GAP_MS,
-  backoffDelay,
-  blockKeyFor,
-  checkAdmission,
-  classifyFailure,
-  classifyResponse,
-  clearBlock,
-  decideRetry,
-  evaluateRouteSwitch,
-  limitsStateDir,
-  recordBlock,
-  workerRecovery,
-  type FailureSignal,
-  type LimitClassification,
-  type RetryContext,
-} from "./agent/limits";
-import { ContractError } from "./agent/contract";
+import { tmpdir } from "node:os";;
+import { join } from "node:path";;
+import { BACKOFF_MAX_MS, BACKOFF_BASE_MS, MAX_AUTO_RETRIES, MAX_RECHECKS, MAX_RETRY_AFTER_MS, MIN_RECHECK_GAP_MS, backoffDelay, blockKeyFor, checkAdmission, classifyFailure, classifyResponse, clearBlock, decideRetry, evaluateRouteSwitch, limitsStateDir, recordBlock, workerRecovery, type FailureSignal, type LimitCategory, type LimitClassification, type RetryContext } from "./agent/limits";;
+import { ContractError, type ContractErrorCode } from "./agent/contract";;
 
 const NOW = Date.parse("2026-11-06T12:00:00Z");
 const OBSERVED = "2026-11-06T12:00:00Z";
@@ -62,7 +41,7 @@ function classified(overrides: Partial<LimitClassification> = {}): LimitClassifi
   };
 }
 
-function context(overrides: RetryContext = {}): RetryContext {
+function context(overrides: Partial<RetryContext> = {}): RetryContext {
   return { attemptKind: "observational", ...overrides };
 }
 
@@ -81,7 +60,7 @@ function state(): string {
   return dir;
 }
 
-function expectContractError(fn: () => unknown, code?: string): void {
+function expectContractError(fn: () => unknown, code?: ContractErrorCode): void {
   try {
     fn();
   } catch (err) {
@@ -208,7 +187,7 @@ describe("classifyResponse", () => {
 
 describe("classifyFailure (signals)", () => {
   test("probe failure kinds map exhaustively and honestly", () => {
-    const cases: Array<[string, string]> = [
+    const cases: Array<[string, LimitCategory]> = [
       ["timeout", "network"],
       ["dns", "network"],
       ["network", "network"],
@@ -259,7 +238,7 @@ describe("classifyFailure (signals)", () => {
     expectContractError(() => classifyFailure({ exitCode: 1.5 }, OBSERVED));
     expectContractError(() => classifyFailure({ httpStatus: 0 }, OBSERVED));
     // Epoch NUMBER as resetAt is rejected (epoch-vs-ISO confusion).
-    expectContractError(() => classifyFailure({ resetAt: Date.now() }, OBSERVED));
+    expectContractError(() => classifyFailure({ resetAt: Date.now() as unknown as string }, OBSERVED));
     expectContractError(() => classifyFailure({ resetAt: "not-a-date" }, OBSERVED));
     expectContractError(() => classifyFailure({ resetAt: "2026-11-06T12:00:00+01:00" }, OBSERVED));
     expectContractError(() => classifyFailure({ usage: "nope" } as unknown as FailureSignal, OBSERVED));
@@ -643,9 +622,12 @@ describe("admission blocks", () => {
       mock.module("node:fs", () => ({
         ...realFs,
         // Behave like the real write (the tmp file IS created), then fail —
-        // exactly the window where debris could be left behind.
-        writeFileSync: (path: string, data: string) => {
-          realWriteFileSync(path, data);
+        // exactly the window where debris could be left behind. All args are
+        // forwarded: this mock outlives mock.restore() in this bun version,
+        // and dropping `options` would silently strip mode bits (e.g. 0o755)
+        // from unrelated test fixtures.
+        writeFileSync: (...args: Parameters<typeof realWriteFileSync>) => {
+          realWriteFileSync(...args);
           if (injected === 0) {
             injected += 1;
             throw new Error("injected ENOSPC");

@@ -4,6 +4,7 @@ import {readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, lstatSyn
 import {homedir, platform, userInfo, tmpdir} from 'node:os';
 import {join, resolve} from 'node:path';
 import {randomUUID} from 'node:crypto';
+import {errnoCode,isOneOf,isPlainObject} from './agent/contract.ts';
 
 export type Device = {id:string; label:string; os:'linux'|'macos'|'windows'; instanceId:string; host:string; port:number; user:string; hostKey:string; session:string};
 type Profile = {id:string; label:string; target:string; session:string; enabled:boolean};
@@ -14,24 +15,26 @@ const marker='# Managed by dotfiles devices; source: Infisical /devices\n';
 function readGenerated(path:string){return readFileSync(path,'utf8').replaceAll('\r\n','\n');}
 const idPattern=/^[a-z][a-z0-9-]{0,47}$/;
 export function validateNode(value:unknown):Device {
- const n=value as Device;
+ if(!isPlainObject(value)) throw Error('device must contain only the documented connection fields');
+ const n=value;
  const keys=['id','label','os','instanceId','host','port','user','hostKey','session'];
- if(!n || typeof n!=='object' || Object.keys(n).some(k=>!keys.includes(k)) || keys.some(k=>!(k in n))) throw Error('device must contain only the documented connection fields');
- if(typeof n.id!=='string'||!idPattern.test(n.id)||typeof n.label!=='string'||!n.label.trim()||/[\x00-\x1f\x7f]/.test(n.label)) throw Error('invalid device id/label');
- if(!['linux','macos','windows'].includes(n.os)||typeof n.instanceId!=='string'|| !/^[a-zA-Z0-9-]{8,64}$/.test(n.instanceId)) throw Error('invalid OS/instance identity');
- if(typeof n.host!=='string'|| !/^[a-zA-Z0-9][a-zA-Z0-9.:-]*$/.test(n.host) || !Number.isInteger(n.port)||n.port<1||n.port>65535) throw Error('invalid SSH address');
- if(typeof n.user!=='string'|| !/^[a-zA-Z0-9_][a-zA-Z0-9_.-]*$/.test(n.user)||typeof n.session!=='string'|| !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(n.session)) throw Error('invalid user/session');
- if(typeof n.hostKey!=='string'||!/^ssh-ed25519 [A-Za-z0-9+/]{68}$/.test(n.hostKey)) throw Error('expected verified ed25519 public host key (no comment)');
- const key=Buffer.from(n.hostKey.split(' ')[1],'base64');
+ if(Object.keys(n).some(k=>!keys.includes(k)) || keys.some(k=>!(k in n))) throw Error('device must contain only the documented connection fields');
+ const{id,label,os,instanceId,host,port,user,hostKey,session}=n;
+ if(typeof id!=='string'||!idPattern.test(id)||typeof label!=='string'||!label.trim()||/[\x00-\x1f\x7f]/.test(label)) throw Error('invalid device id/label');
+ if(!isOneOf(os,['linux','macos','windows'] as const)||typeof instanceId!=='string'|| !/^[a-zA-Z0-9-]{8,64}$/.test(instanceId)) throw Error('invalid OS/instance identity');
+ if(typeof host!=='string'|| !/^[a-zA-Z0-9][a-zA-Z0-9.:-]*$/.test(host) || typeof port!=='number'||!Number.isInteger(port)||port<1||port>65535) throw Error('invalid SSH address');
+ if(typeof user!=='string'|| !/^[a-zA-Z0-9_][a-zA-Z0-9_.-]*$/.test(user)||typeof session!=='string'|| !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(session)) throw Error('invalid user/session');
+ if(typeof hostKey!=='string'||!/^ssh-ed25519 [A-Za-z0-9+/]{68}$/.test(hostKey)) throw Error('expected verified ed25519 public host key (no comment)');
+ const key=Buffer.from(hostKey.split(' ')[1],'base64');
  if(key.length!==51||key.subarray(0,19).toString('hex')!=='0000000b7373682d6564323535313900000020') throw Error('invalid ed25519 host key');
- return n;
+ return{id,label,os,instanceId,host,port,user,hostKey,session};
 }
 export function validateRegistry(values:unknown[]):Device[] {
  const nodes=values.map(validateNode); const ids=new Set(), destinations=new Set(), labels=new Set(); const keys=new Map();
  for(const n of nodes){
   const dst=`${n.host.toLowerCase()}:${n.port}/${n.user.toLowerCase()}/${n.session}`;
   if(ids.has(n.id)||destinations.has(dst)||labels.has(n.label)) throw Error('duplicate node or destination/session');
-  if(keys.has(n.hostKey)&&keys.get(n.hostKey)!==n.instanceId.toLowerCase()) throw Error('host key reused across different instances');
+  const knownHost=keys.get(n.hostKey);if(knownHost!==undefined&&knownHost!==n.instanceId.toLowerCase()) throw Error('host key reused across different instances');
   ids.add(n.id);labels.add(n.label);destinations.add(dst);keys.set(n.hostKey,n.instanceId.toLowerCase());
  }
  return nodes.sort((a,b)=>a.id.localeCompare(b.id));
@@ -75,8 +78,9 @@ function providerArgs(){
  const metadata=readFileSync(join(root,'config/infisical.sh'),'utf8');
  const get=(key:string)=>{const v=metadata.match(new RegExp(`^${key}="([^"]+)"$`,'m'))?.[1];if(!v)throw Error(`missing ${key}`);return v;};
  const project=get('INFISICAL_PROJECT_ID'),env=get('INFISICAL_ENVIRONMENT'),domain=get('INFISICAL_API_URL');
- const binding=JSON.parse(readFileSync(join(root,'.infisical.json'),'utf8'));
- if(binding.workspaceId!==project||binding.defaultEnvironment!==env)throw Error('Infisical binding mismatch');
+ const binding:unknown=JSON.parse(readFileSync(join(root,'.infisical.json'),'utf8'));
+ const bw=isPlainObject(binding)?binding:{};
+ if(bw.workspaceId!==project||bw.defaultEnvironment!==env)throw Error('Infisical binding mismatch');
  return [`--domain=${domain}`,`--projectId=${project}`,`--env=${env}`,'--path=/devices','--silent'];
 }
 function run(args:string[],timeout=30000):string{
@@ -99,10 +103,13 @@ function readRegistry():Device[]{
  const rows=JSON.parse(run(['infisical','secrets',...providerArgs(),'--output=json','--expand=false','--include-imports=false','--secret-overriding=false']));
  if(rows===null)return [];
  if(!Array.isArray(rows))throw Error('Infisical did not return a secret array');
- return validateRegistry(rows.map((r:any)=>{
-  if(!/^DEVICE_[A-Z][A-Z0-9_]*$/.test(r.secretKey))throw Error('unexpected entry in /devices');
-  const n=validateNode(JSON.parse(r.secretValue));
-  if(secretName(n.id)!==r.secretKey)throw Error('secret name/device id mismatch');return n;
+ return validateRegistry(rows.map((r:unknown)=>{
+  if(!isPlainObject(r))throw Error('Infisical /devices entry is not an object');
+  const row=r;
+  if(typeof row.secretKey!=='string'||!/^DEVICE_[A-Z][A-Z0-9_]*$/.test(row.secretKey))throw Error('unexpected entry in /devices');
+  if(typeof row.secretValue!=='string')throw Error(`missing secret value for ${row.secretKey}`);
+  const n=validateNode(JSON.parse(row.secretValue));
+  if(secretName(n.id)!==row.secretKey)throw Error('secret name/device id mismatch');return n;
  }));
 }
 function secretName(id:string){if(!idPattern.test(id))throw Error('invalid device ID');return 'DEVICE_'+id.toUpperCase().replaceAll('-','_');}
@@ -127,7 +134,7 @@ function atomic(path:string,text:string){
   secureFile(tmp);renameSync(tmp,path);
  }finally{
   if(fd!==undefined)closeSync(fd);
-  if(identity){try{const current=lstatSync(tmp);if(current.dev===identity.dev&&current.ino===identity.ino)rmSync(tmp);}catch(e:any){if(e.code!=='ENOENT')throw e;}}
+  if(identity){try{const current=lstatSync(tmp);if(current.dev===identity.dev&&current.ino===identity.ino)rmSync(tmp);}catch(e){if(errnoCode(e)!=='ENOENT')throw e;}}
  }
 }
 function generated(path:string,text:string){
@@ -146,7 +153,7 @@ export function preflightSSH(home:string){
      linkedConfig=true;
     }else throw Error(`refusing SSH symlink/reparse point: ${path}`);
    }
-  }catch(e:any){if(e.code!=='ENOENT')throw e;}
+  }catch(e){if(errnoCode(e)!=='ENOENT')throw e;}
  }
  for(const name of ['devices.conf','devices_known_hosts']){const p=join(dir,name);if(existsSync(p)&&!readGenerated(p).startsWith(marker))throw Error(`foreign ${name}`);}
  if(existsSync(config)){
@@ -180,10 +187,18 @@ export function assertSyncedTarget(n:Device,home:string){
  const userConfig=join(home,'.ssh/config');
  if(!existsSync(userConfig)||!readFileSync(userConfig,'utf8').startsWith(`Include ${quotePath(config)}\n`))throw Error('managed SSH Include missing; run devices sync explicitly');
 }
-function profiles():Profile[]{return JSON.parse(run(['herdr','machine','list','--json']));}
+function profiles():Profile[]{
+ const raw:unknown=JSON.parse(run(['herdr','machine','list','--json']));
+ if(!Array.isArray(raw))throw Error('herdr machine list did not return an array');
+ return raw.map((v,i)=>{
+  if(!isPlainObject(v))throw Error(`herdr machine list entry ${i} is not an object`);
+  const str=(k:string)=>{const x=v[k];if(typeof x!=='string')throw Error(`herdr machine list entry ${i}.${k} must be a string`);return x;};
+  return {id:str('id'),label:str('label'),target:str('target'),session:str('session'),enabled:v['enabled']===true};
+ });
+}
 function saveOwned(file:string,owned:Owned){atomic(file,JSON.stringify(owned,null,2)+'\n');}
 function livePid(pid:number){
- try{process.kill(pid,0);return true;}catch(e:any){if(e.code==='ESRCH')return false;throw e;}
+ try{process.kill(pid,0);return true;}catch(e){if(errnoCode(e)==='ESRCH')return false;throw e;}
 }
 function reclaimStaleLock(lock:string){
  const identity=lstatSync(lock);
@@ -202,7 +217,8 @@ function reclaimStaleLock(lock:string){
  rmSync(pidFile);rmdirSync(lock);
  return pid;
 }
-function isLocal(n:Device,local=localInstance()){return n.instanceId.toLowerCase()===local && n.user.toLowerCase()===userInfo().username.toLowerCase() && n.os===({win32:'windows',darwin:'macos',linux:'linux'} as Record<string,string>)[platform()];}
+const OS_BY_PLATFORM:Record<string,Device['os']>={win32:'windows',darwin:'macos',linux:'linux'};
+function isLocal(n:Device,local=localInstance()){return n.instanceId.toLowerCase()===local && n.user.toLowerCase()===userInfo().username.toLowerCase() && n.os===OS_BY_PLATFORM[platform()];}
 function requireSession(n:Device,home:string){
  const posix="if command -v herdr >/dev/null 2>&1; then h=$(command -v herdr); elif test -x \"$HOME/.local/share/mise/shims/herdr\"; then h=\"$HOME/.local/share/mise/shims/herdr\"; else h=\"$HOME/.local/bin/herdr\"; fi; \"$h\"";
  const command=(n.os==='windows'?'herdr':posix)+` --session ${n.session} status server`;
@@ -210,7 +226,18 @@ function requireSession(n:Device,home:string){
  if(!/^status: running$/m.test(result.replaceAll('\r','')))throw Error(`${n.id}: start Herdr locally first; refusing remote server startup`);
 }
 function sync(nodes:Device[],home:string,state:string){
- const file=join(state,'profiles.json'),owned:Owned=existsSync(file)?JSON.parse(readFileSync(file,'utf8')):{};
+ const file=join(state,'profiles.json');
+ let owned:Owned={};
+ if(existsSync(file)){
+  const raw:unknown=JSON.parse(readFileSync(file,'utf8'));
+  if(raw===null||typeof raw!=='object'||Array.isArray(raw))throw Error('profiles.json is not an object');
+  for(const [id,entry] of Object.entries(raw)){
+   if(!isPlainObject(entry))throw Error(`profiles.json['${id}'] is not an object`);
+   const e=entry;
+   if(typeof e.profileId!=='string')throw Error(`profiles.json['${id}'].profileId must be a string`);
+   owned[id]={profileId:e.profileId,node:validateNode(e.node)};
+  }
+ }
  preflightSSH(home);
  const current=profiles();const local=localInstance();
  // An empty ID records our intent before Herdr creates its opaque profile ID.
@@ -258,7 +285,7 @@ export async function main(args=process.argv.slice(2)){
  }
  if(!['list','sync','check','ssh','herdr','register','forget'].includes(cmd))throw Error('unknown command');
  mkdirSync(state,{recursive:true,mode:0o700});const lock=join(state,'lock');let held=true;
- try{mkdirSync(lock);}catch(e:any){if(e.code!=='EEXIST')throw e;const pid=reclaimStaleLock(lock);console.error(`recovered stale devices lock from dead process ${pid}`);mkdirSync(lock);}
+ try{mkdirSync(lock);}catch(e){if(errnoCode(e)!=='EEXIST')throw e;const pid=reclaimStaleLock(lock);console.error(`recovered stale devices lock from dead process ${pid}`);mkdirSync(lock);}
  writeFileSync(join(lock,'pid'),String(process.pid));
  try{
   const nodes=readRegistry();

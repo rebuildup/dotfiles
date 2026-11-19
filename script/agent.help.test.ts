@@ -27,10 +27,12 @@ import {
   renderGuideText,
   renderRoutesText,
   UnknownGuideTopicError,
+  type ModelFactsData,
+  type RoutesData,
   type RoutesInput,
 } from "./agent/help";
 import { loadCatalog } from "./agent/catalog";
-import { redactJson } from "./agent/contract";
+import { redactJson, type Attested } from "./agent/contract";
 
 const REPO = dirname(dirname(realpathSync(import.meta.path)));
 const LAUNCHER = join(REPO, "script", "agent.ts");
@@ -178,10 +180,12 @@ describe("guide data", () => {
 
   test("overview lists every topic; detail carries the full content", () => {
     const overview = buildGuideData(null);
+    if (overview.topic !== null) throw new Error("expected guide overview");
     expect(overview.topics.map((t) => t.id).sort()).toEqual(
       GUIDE_TOPICS.map((t) => t.id).sort(),
     );
     const detail = buildGuideData("limits");
+    if (detail.topic === null) throw new Error("expected guide detail");
     expect(detail.topic).toBe("limits");
     expect(detail.details.join("\n")).toContain("Quota scopes");
     expect(detail.related).not.toContain("limits");
@@ -349,10 +353,11 @@ function poisonedRoutesData(poisonModelIds = true): RoutesData {
             evidence: hostileEvidence(poison()),
           } as never,
           context_window: null,
+          discouraged_reason: null,
           pricing: null,
         },
       ]),
-    );
+    ) as Record<string, ModelFactsData>;
   }
   return data;
 }
@@ -568,7 +573,7 @@ describe("launcher integration", () => {
       }
     }
     const anonymous = data.routes.filter((r) => r.cred_kind === "anonymous");
-    expect(anonymous.map((r) => r.id)).toEqual(["opencode.ovhcloud"]);
+    expect(anonymous.map((r) => r.id)).toEqual(["omp.ovhcloud", "opencode.ovhcloud"]);
     expect(anonymous[0].cred).toBeNull();
     const deepseek = data.routes.find((r) => r.id === "claude.deepseek");
     expect(deepseek?.cred).toEqual({ env: "DEEPSEEK_API_KEY", infisical_required: false });

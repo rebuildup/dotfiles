@@ -17,42 +17,10 @@
  *   - Per-account circuit breaker with explicit next action for waiting.
  */
 
-import {
-  ContractError,
-  parseAttemptKey,
-  formatAttemptKey,
-  type AttemptIdentity,
-  agentStateDir,
-  isStale,
-  DEFAULT_MAX_EVIDENCE_AGE_MS,
-} from "./contract.ts";
-import {
-  type AttemptRecord,
-  type Lease,
-  type AttemptStore,
-  readAttempt,
-  acquireLease,
-  releaseLease,
-  fenceAttempt,
-  assertLeaseCurrent,
-  isoTime,
-} from "./attempts.ts";
-import {
-  type CheckpointRecord,
-  type JournalStore,
-  loadLocalCheckpoint,
-  pendingSideEffects,
-  readJournal,
-  type SideEffectPending,
-} from "./checkpoint.ts";
-import {
-  type LimitClassification,
-  type LimitCategory,
-  CATEGORY_FACTS,
-  workerRecovery,
-  checkAdmission,
-  limitsStateDir,
-} from "./limits.ts";
+import { type Lease, type AttemptStore, readAttempt, acquireLease, isoTime } from "./attempts.ts";
+import { type JournalStore, pendingSideEffects, type SideEffectPending } from "./checkpoint.ts";
+import { type LimitClassification, CATEGORY_FACTS, workerRecovery, limitsStateDir } from "./limits.ts";
+import { isPlainObject } from "./contract.ts";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -132,6 +100,22 @@ interface CircuitState {
   openedAt: number | null;
 }
 
+/** Validate persisted circuit state; a malformed file is treated as corrupt. */
+function parseCircuitState(raw: unknown): CircuitState {
+  if (!isPlainObject(raw)) {
+    throw new Error("circuit state: object expected");
+  }
+  const r = raw;
+  if (typeof r["failures"] !== "number" || !Number.isFinite(r["failures"])) {
+    throw new Error("circuit state: failures must be a finite number");
+  }
+  const openedAt = r["openedAt"];
+  if (openedAt !== null && (typeof openedAt !== "number" || !Number.isFinite(openedAt))) {
+    throw new Error("circuit state: openedAt must be a finite number or null");
+  }
+  return { scope: typeof r["scope"] === "string" ? r["scope"] : "", failures: r["failures"], openedAt };
+}
+
 function circuitPath(scope: string): string {
   const dir = join(limitsStateDir(), "circuit");
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
@@ -143,7 +127,7 @@ export function circuitIsOpen(scope: string, now: number): boolean {
   const path = circuitPath(scope);
   if (!existsSync(path)) return false;
   try {
-    const state = JSON.parse(readFileSync(path, "utf-8")) as CircuitState;
+    const state = parseCircuitState(JSON.parse(readFileSync(path, "utf-8")));
     if (state.openedAt === null) return false;
     if (now - state.openedAt > CIRCUIT_BREAKER_RESET_MS) {
       // Auto-reset after cooldown
@@ -162,7 +146,7 @@ export function circuitRecordFailure(scope: string, now: number): void {
   let state: CircuitState = { scope, failures: 0, openedAt: null };
   if (existsSync(path)) {
     try {
-      state = JSON.parse(readFileSync(path, "utf-8"));
+      state = parseCircuitState(JSON.parse(readFileSync(path, "utf-8")));
     } catch { /* reset on corrupt */ }
   }
   state.failures += 1;
@@ -213,9 +197,10 @@ export function probeAttemptLiveness(
   if (raw === null) return "unknown";
 
   try {
-    const lease = raw as { released?: boolean; expiresAt?: string };
-    if (lease.released) return "dead";
-    if (lease.expiresAt && Date.parse(lease.expiresAt) <= now) return "dead";
+    if (!isPlainObject(raw)) return "unknown";
+    if (raw["released"]) return "dead";
+    const expiresAt = raw["expiresAt"];
+    if (typeof expiresAt === "string" && expiresAt !== "" && Date.parse(expiresAt) <= now) return "dead";
     // Lease live and generation matches record → alive
     if (record.generation === newest) return "alive";
     return "unknown";
@@ -263,7 +248,10 @@ export interface RecoveryInput {
   attemptKey: string;
   store: AttemptStore;
   journal: JournalStore;
-  classification: LimitClassification;
+  /** Accepts the plain limits.ts verdict or fallback-exec's ClassifiedError
+   * (which adds `quotaScopeKey` provenance); the extra field is ignored here —
+   * the scope used for circuit breaking is the explicit `quotaScope` below. */
+  classification: LimitClassification & { quotaScopeKey?: string | null };
   /** Quota scope key for circuit breaker (from limits.ts). */
   quotaScope: string | null;
   /** Retry count already used for this attempt. */
@@ -377,7 +365,7 @@ export function planRecovery(input: RecoveryInput): RecoveryPlan {
   }
 
   // 9. Classify the failure and decide
-  const facts = CATEGORY_FACTS[classification.category as LimitCategory] ?? CATEGORY_FACTS.unknown;
+  const facts = CATEGORY_FACTS[classification.category];
   const wr = workerRecovery(classification);
 
   // Terminal failure categories (auth, billing, context, model-invalid, unknown)

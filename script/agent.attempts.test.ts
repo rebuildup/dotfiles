@@ -21,63 +21,13 @@
  *     durable references is NOT verified here and must not be claimed.
  */
 
-import { describe, expect, test } from "bun:test";
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  readdirSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import {
-  CONTRACT_VERSION,
-  ContractError,
-  formatAttemptKey,
-  parseJson,
-} from "./agent/contract.ts";
-import {
-  FsAttemptStore,
-  acquireLease,
-  assertLeaseCurrent,
-  attemptStateName,
-  fenceAttempt,
-  initAttempt,
-  MAX_EPOCH_MS,
-  MAX_GENERATION,
-  MAX_LEASE_MS,
-  MIN_LEASE_MS,
-  parseAttemptRecord,
-  parseLease,
-  readAttempt,
-  recordChild,
-  recordResult,
-  releaseLease,
-  updateRecord,
-  withFileLock,
-  type AttemptRecord,
-  type AttemptStore,
-  type Lease,
-} from "./agent/attempts.ts";
-import {
-  assertNoSecrets,
-  FsJournalStore,
-  journalPostEffect,
-  journalPreEffect,
-  loadLocalCheckpoint,
-  parseCheckpoint,
-  parseDurableRef,
-  parseSideEffectEntry,
-  pendingSideEffects,
-  readJournal,
-  saveLocalCheckpoint,
-  toCheckpointJson,
-  type CheckpointRecord,
-  type JournalStore,
-} from "./agent/checkpoint.ts";
+import { describe, expect, test } from "bun:test";;
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";;
+import { tmpdir } from "node:os";;
+import { join } from "node:path";;
+import { CONTRACT_VERSION, ContractError, type ContractErrorCode, formatAttemptKey, parseJson } from "./agent/contract.ts";;
+import { FsAttemptStore, acquireLease, assertLeaseCurrent, attemptStateName, fenceAttempt, initAttempt, MAX_EPOCH_MS, MAX_GENERATION, MAX_LEASE_MS, MIN_LEASE_MS, parseAttemptRecord, parseLease, readAttempt, recordChild, recordResult, releaseLease, updateRecord, withFileLock, type AttemptRecord, type AttemptStore, type Lease } from "./agent/attempts.ts";;
+import { assertNoSecrets, FsJournalStore, journalPostEffect, journalPreEffect, loadLocalCheckpoint, parseCheckpoint, parseDurableRef, parseSideEffectEntry, pendingSideEffects, readJournal, saveLocalCheckpoint, toCheckpointJson, type CheckpointRecord, type JournalStore } from "./agent/checkpoint.ts";;
 
 const NOW = Date.parse("2026-11-06T12:00:00Z");
 const LEASE_MS = 60_000;
@@ -112,7 +62,7 @@ function checkpointOf(key: string, overrides: Partial<CheckpointRecord> = {}): C
   };
 }
 
-function expectContractError(fn: () => unknown, code?: string): void {
+function expectContractError(fn: () => unknown, code?: ContractErrorCode): void {
   try {
     fn();
   } catch (error) {
@@ -1272,7 +1222,7 @@ describe("REAL: withFileLock primitive", () => {
  * overlap instead of being serialized by process startup time.
  */
 const racerSource = `
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";;
 import { FsAttemptStore, recordChild } from ${JSON.stringify(join(import.meta.dir, "agent", "attempts.ts"))};
 import {
   FsJournalStore,

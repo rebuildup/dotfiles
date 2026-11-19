@@ -35,6 +35,8 @@ import {
   toJson,
   ContractError,
   REDACTED,
+  isOneOf,
+  isPlainObject,
   looksLikeSecretValue,
   type Attested,
   type Evidence,
@@ -186,7 +188,7 @@ function declaredFacts(d: Declared | undefined): Declared {
   const bool = (v: unknown): boolean | undefined => (typeof v === "boolean" ? v : undefined);
   if (d === undefined) return {};
   return {
-    os: OS_VALUES.includes(d.os as MachineOS) ? (d.os as MachineOS) : undefined,
+    os: isOneOf(d.os, OS_VALUES) ? d.os : undefined,
     arch: str(d.arch),
     hostId: str(d.hostId),
     cpuCores: num(d.cpuCores, MAX_CPU_CORES),
@@ -220,13 +222,50 @@ export function detectWsl(procVersion: string): boolean {
 // Herdr (official CLI, read-only)
 // ---------------------------------------------------------------------------
 
-/** Parse JSON array stdout regardless of exit code. */
-function parseHerdrArray<T>(what: string, res: { exitCode: number; stdout: string; stderr: string }): T[] | string {
+function reqStr(v: Record<string, unknown>, key: string, what: string, i: number): string {
+  const x = v[key];
+  if (typeof x !== "string") throw new Error(`${what}: element ${i}.${key} must be a string`);
+  return x;
+}
+
+function parseHerdrProfile(v: Record<string, unknown>, what: string, i: number): HerdrMachineProfile {
+  return {
+    id: reqStr(v, "id", what, i),
+    label: reqStr(v, "label", what, i),
+    target: reqStr(v, "target", what, i),
+    session: reqStr(v, "session", what, i),
+    enabled: v["enabled"] === true,
+    selected: v["selected"] === true,
+  };
+}
+
+function parseHerdrStatus(v: Record<string, unknown>, what: string, i: number): HerdrMachineStatus {
+  const error = v["error"];
+  if (error !== null && error !== undefined && typeof error !== "string") {
+    throw new Error(`${what}: element ${i}.error must be a string or null`);
+  }
+  return {
+    id: reqStr(v, "id", what, i),
+    label: reqStr(v, "label", what, i),
+    status: reqStr(v, "status", what, i),
+    error: error ?? null,
+  };
+}
+
+/** Parse a JSON array of objects, validating each element. */
+function parseHerdrArray<T>(
+  what: string,
+  res: { exitCode: number; stdout: string; stderr: string },
+  parse: (v: Record<string, unknown>, what: string, i: number) => T,
+): T[] | string {
   try {
-    const parsed = JSON.parse(res.stdout);
-    if (Array.isArray(parsed)) return parsed as T[];
-    return `${what}: expected a JSON array (exit ${res.exitCode})`;
-  } catch {
+    const parsed: unknown = JSON.parse(res.stdout);
+    if (!Array.isArray(parsed) || !parsed.every(isPlainObject)) {
+      return `${what}: expected a JSON array of objects (exit ${res.exitCode})`;
+    }
+    return parsed.map((v, i) => parse(v, what, i));
+  } catch (e) {
+    if (e instanceof Error && e.message.startsWith(what)) return e.message;
     return `${what}: no valid JSON on stdout (exit ${res.exitCode})`;
   }
 }
@@ -295,9 +334,36 @@ export function displayId(id: string): string {
 export function loadDeclared(path?: string): Record<string, Declared> {
   const file = path ?? process.env.AGENT_MACHINES_DECLARED ?? join(agentStateDir(), "machines-declared.json");
   if (!existsSync(file)) return {};
-  const raw = JSON.parse(readFileSync(file, "utf8"));
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) throw new Error(`${basename(file)}: object expected`);
-  return raw as Record<string, Declared>;
+  const raw: unknown = JSON.parse(readFileSync(file, "utf8"));
+  if (!isPlainObject(raw)) throw new Error(`${basename(file)}: object expected`);
+  const out: Record<string, Declared> = {};
+  const numKeys = ["cpuCores", "ramBytes", "gpuVramBytes"] as const;
+  for (const [id, entry] of Object.entries(raw)) {
+    if (!isPlainObject(entry)) throw new Error(`${basename(file)}: '${id}' must be an object`);
+    const d: Declared = {};
+    const osValue = entry["os"];
+    if (osValue !== undefined) {
+      if (!isOneOf(osValue, OS_VALUES)) throw new Error(`${basename(file)}: '${id}.os' must be a MachineOS value`);
+      d.os = osValue;
+    }
+    for (const k of ["arch", "hostId"] as const) {
+      const v = entry[k];
+      if (v !== undefined && typeof v !== "string") throw new Error(`${basename(file)}: '${id}.${k}' must be a string`);
+      if (v !== undefined) d[k] = v;
+    }
+    for (const k of numKeys) {
+      const v = entry[k];
+      if (v !== undefined && (typeof v !== "number" || !Number.isFinite(v))) throw new Error(`${basename(file)}: '${id}.${k}' must be a finite number`);
+      if (v !== undefined) d[k] = v;
+    }
+    for (const k of ["hasGpu", "gui"] as const) {
+      const v = entry[k];
+      if (v !== undefined && typeof v !== "boolean") throw new Error(`${basename(file)}: '${id}.${k}' must be a boolean`);
+      if (v !== undefined) d[k] = v;
+    }
+    out[id] = d;
+  }
+  return out;
 }
 
 function remoteMachine(
@@ -460,11 +526,11 @@ export function getInventory(opts: InventoryOptions = {}): Inventory {
   let statuses: HerdrMachineStatus[] = [];
   let statusKnown = false;
   try {
-    const l = parseHerdrArray<HerdrMachineProfile>("herdr machine list", run(["herdr", "machine", "list", "--json"]));
+    const l = parseHerdrArray("herdr machine list", run(["herdr", "machine", "list", "--json"]), parseHerdrProfile);
     if (typeof l === "string") errors.push(l);
     else profiles = l;
     // exits 1 when any machine is in error but still writes JSON: parse regardless
-    const s = parseHerdrArray<HerdrMachineStatus>("herdr machine status", run(["herdr", "machine", "status", "--json"]));
+    const s = parseHerdrArray("herdr machine status", run(["herdr", "machine", "status", "--json"]), parseHerdrStatus);
     if (typeof s === "string") errors.push(s);
     else {
       statuses = s;
@@ -565,8 +631,10 @@ export function evaluate(machine: Machine, c: PlacementConstraints, groups: Host
     else if (!ok(f.value)) hard.push(`${label} ${detail(f.value)}`);
     else why.push(`${label} ok`);
   };
-  if (c.os?.length) need("os", machine.os, (v) => c.os!.includes(v), (v) => `${v} not in ${c.os!.join(",")}`);
-  if (c.arch?.length) need("arch", machine.arch, (v) => c.arch!.includes(v), (v) => `${v} not in ${c.arch!.join(",")}`);
+  const requiredOs = c.os;
+  if (requiredOs?.length) need("os", machine.os, (v) => requiredOs.includes(v), (v) => `${v} not in ${requiredOs.join(",")}`);
+  const requiredArch = c.arch;
+  if (requiredArch?.length) need("arch", machine.arch, (v) => requiredArch.includes(v), (v) => `${v} not in ${requiredArch.join(",")}`);
 
   const res = (label: string, min: number | undefined, pick: (r: MachineResources) => number | null) => {
     if (min === undefined) return;
@@ -663,15 +731,11 @@ export function main(args: string[] = process.argv.slice(2)): void {
     if (!m) throw new Error(`machine ${rest[0] ?? ""} not found`);
     console.log(toJson({ ...m, id: displayId(m.id), label: displayId(m.label) }));
   } else if (cmd === "hosts") {
-    const hosts = groupHosts(inv.machines);
-    const sanitized = {
-      ...hosts,
-      groups: hosts.groups?.map((g: Record<string, unknown>) => ({
-        ...g,
-        machineIds: Array.isArray(g.machineIds) ? (g.machineIds as string[]).map(displayId) : g.machineIds,
-      })),
-    };
-    console.log(toJson(sanitized));
+    const hosts = groupHosts(inv.machines).map((g) => ({
+      ...g,
+      machineIds: g.machineIds.map(displayId),
+    }));
+    console.log(toJson(hosts));
   } else if (cmd === "probe") {
     console.log(toJson(getLocalMachine(declared.local)));
   } else {

@@ -114,19 +114,19 @@ const FAKE_WITH_SECRETS_NO_OPENCODE = FAKE_WITH_SECRETS.replace(
 // writer between the pre-fetch guard and the final spawn.
 const FAKE_WITH_SECRETS_MUTATES_OMP_DB = FAKE_WITH_SECRETS.replace(
   "export FAKE_INFISICAL_INJECTED=yes",
-  'mkdir -p "${HOME}/.omp/agent"\ncp "${AGENT_TEST_RACE_DB:?}" "${HOME}/.omp/agent/agent.db"\nexport FAKE_INFISICAL_INJECTED=yes',
+  'mkdir -p "${HOME}/.omp/profiles/dotfiles-omp-opencode-go/agent"\ncp "${AGENT_TEST_RACE_DB:?}" "${HOME}/.omp/profiles/dotfiles-omp-opencode-go/agent/agent.db"\nexport FAKE_INFISICAL_INJECTED=yes',
 );
 
 const FAKE_WITH_SECRETS_MUTATES_OMP_MODELS = FAKE_WITH_SECRETS.replace(
   "export FAKE_INFISICAL_INJECTED=yes",
-  'mkdir -p "${HOME}/.omp/agent"\nprintf \'providers:\\n  opencode-go:\\n    apiKey: concurrent\\n\' > "${HOME}/.omp/agent/models.yml"\nexport FAKE_INFISICAL_INJECTED=yes',
+  'mkdir -p "${HOME}/.omp/profiles/dotfiles-omp-opencode-go/agent"\nprintf \'providers:\\n  opencode-go:\\n    apiKey: concurrent\\n\' > "${HOME}/.omp/profiles/dotfiles-omp-opencode-go/agent/models.yml"\nexport FAKE_INFISICAL_INJECTED=yes',
 );
 
 // Writes a fallback chain during the with-secrets stage, after the plan-time
 // implicit-switch check: the pre-spawn recheck must stop OMP before spawn.
 const FAKE_WITH_SECRETS_MUTATES_OMP_CONFIG = FAKE_WITH_SECRETS.replace(
   "export FAKE_INFISICAL_INJECTED=yes",
-  'mkdir -p "${HOME}/.omp/agent"\nprintf \'retry:\\n  fallbackChains:\\n    default:\\n      - openrouter/concurrent-paid\\n\' > "${HOME}/.omp/agent/config.yml"\nexport FAKE_INFISICAL_INJECTED=yes',
+  'mkdir -p "${HOME}/.omp/profiles/dotfiles-omp-opencode-go/agent"\nprintf \'retry:\\n  fallbackChains:\\n    default:\\n      - openrouter/concurrent-paid\\n\' > "${HOME}/.omp/profiles/dotfiles-omp-opencode-go/agent/config.yml"\nexport FAKE_INFISICAL_INJECTED=yes',
 );
 
 // The schema OMP 18.16.0 creates for its auth store (bun:sqlite fixture).
@@ -541,15 +541,21 @@ test(
       "omp.kilo",
       "claude.requesty",
       "opencode.requesty",
+      "omp.requesty",
       "opencode.ovhcloud",
+      "omp.ovhcloud",
       "omp.groq",
+      "claude.modelscope",
+      "opencode.modelscope",
+      "omp.modelscope",
+      "omp.logfare",
     ]) {
       check(stdout.includes(route), `list misses ${route}: ${stdout}`);
     }
     check(!stdout.includes("pi."), `the Pi routes must be gone: ${stdout}`);
     check(!stdout.includes("omp.zen"), `omp.zen is out of scope: ${stdout}`);
     // A paid/provider-blocked route must not appear just because a key exists.
-    for (const absent of ["opencode.groq", "claude.ovhcloud", "omp.ovhcloud", "opencode.modelscope"]) {
+    for (const absent of ["opencode.groq", "claude.ovhcloud"]) {
       check(!stdout.includes(absent), `unsupported route must not exist: ${absent}`);
     }
     check(
@@ -950,6 +956,8 @@ test(
       "opencode-go",
       "--model",
       "mimo-v2.6-flash",
+      "--profile",
+      "dotfiles-omp-opencode-go",
       "--smol",
       "opencode-go/mimo-v2.6-flash",
       "--slow",
@@ -1077,7 +1085,10 @@ test(
   withFixture((fixture) => {
     // OMP's credential ladder puts a stored OAuth/login/API key ahead of the
     // injected env, so an active row for the route provider fails closed.
-    const dbPath = fixture.writeAgentDb([{ provider: "opencode-go" }]);
+    const profileDb = join(
+      fixture.tmp, ".omp", "profiles", "dotfiles-omp-opencode-go", "agent", "agent.db",
+    );
+    const dbPath = fixture.writeAgentDb([{ provider: "opencode-go" }], profileDb);
     const blocked = fixture.run(["omp", "opencode-go"], { config: REAL_CONFIG });
     check(blocked.exitCode === 1, `expected exit 1, got ${blocked.exitCode}`);
     check(blocked.stderr.toString().includes(dbPath), blocked.stderr.toString());
@@ -1087,7 +1098,7 @@ test(
 
     // A stored credential for an unrelated provider is fine (nothing deleted).
     unlinkSync(dbPath);
-    fixture.writeAgentDb([{ provider: "openrouter" }]);
+    fixture.writeAgentDb([{ provider: "openrouter" }], profileDb);
     const ok = fixture.run(["omp", "opencode-go"], { config: REAL_CONFIG });
     check(ok.exitCode === 0, ok.stderr.toString());
     const [, env] = fixture.child();
@@ -1096,7 +1107,7 @@ test(
     // Disabled rows are ignored by OMP, and the guard query matches that
     // (`disabled_cause IS NULL`): they must not block the route.
     unlinkSync(dbPath);
-    fixture.writeAgentDb([{ provider: "opencode-go", disabled_cause: "expired" }]);
+    fixture.writeAgentDb([{ provider: "opencode-go", disabled_cause: "expired" }], profileDb);
     const disabled = fixture.run(["omp", "opencode-go"], { config: REAL_CONFIG });
     check(disabled.exitCode === 0, disabled.stderr.toString());
   }),
@@ -1105,10 +1116,16 @@ test(
 test(
   "test_omp_opencode_go_models_guard",
   withFixture((fixture) => {
-    // models.yml can override a provider's baseUrl/apiKey ahead of env.
+    // models.yml can override a provider's baseUrl/apiKey ahead of env. The
+    // managed route reads the profile agent dir, so the override must live
+    // there; a foreign models.yml is refused before it can take effect.
+    const profileAgent = join(
+      fixture.tmp, ".omp", "profiles", "dotfiles-omp-opencode-go", "agent",
+    );
     const ymlPath = fixture.writeOmpConfig(
       "models.yml",
       "providers:\n  opencode-go:\n    baseUrl: https://example.invalid/v1\n    apiKey: other\n",
+      profileAgent,
     );
     const blocked = fixture.run(["omp", "opencode-go"], { config: REAL_CONFIG });
     check(blocked.exitCode === 1, `expected exit 1, got ${blocked.exitCode}`);
@@ -1117,7 +1134,8 @@ test(
     check(!existsSync(fixture.out), "omp must not start with a models.yml override");
     check(!existsSync(fixture.marker), "credentials must not be fetched first");
 
-    // Another provider's entry is unrelated and stays allowed.
+    // Another provider's entry in the DEFAULT agent dir is inert under
+    // --profile and stays allowed.
     unlinkSync(ymlPath);
     fixture.writeOmpConfig(
       "models.yml",
@@ -1131,6 +1149,7 @@ test(
     const yamlPath = fixture.writeOmpConfig(
       "models.yaml",
       "providers:\n  opencode-go:\n    apiKey: other\n",
+      profileAgent,
     );
     const yamlBlocked = fixture.run(["omp", "opencode-go"], { config: REAL_CONFIG });
     check(yamlBlocked.exitCode === 1, `expected exit 1, got ${yamlBlocked.exitCode}`);
@@ -1145,7 +1164,7 @@ test(
           models: [{ id: "mimo-v2.6-flash", baseUrl: "https://example.invalid/v1" }],
         },
       },
-    });
+    }, profileAgent);
     const legacyBlocked = fixture.run(["omp", "opencode-go"], { config: REAL_CONFIG });
     check(legacyBlocked.exitCode === 1, `expected exit 1, got ${legacyBlocked.exitCode}`);
     check(legacyBlocked.stderr.toString().includes(jsonPath), legacyBlocked.stderr.toString());
@@ -1182,7 +1201,7 @@ test(
       );
       check(result.stderr.toString().includes(key), result.stderr.toString());
       check(
-        result.stderr.toString().includes("default OMP profile/agent directory"),
+        result.stderr.toString().includes("managed-profile"),
         result.stderr.toString(),
       );
       check(!existsSync(fixture.out), `${key} must not start the harness`);
@@ -1213,8 +1232,13 @@ test(
     check(root.stderr.toString().includes(rootEnv), root.stderr.toString());
     unlinkSync(rootEnv);
 
-    // Active agent `.env` (`$HOME/.omp/agent/.env`).
-    const agentEnv = fixture.writeOmpConfig(".env", "PI_CODING_AGENT_DIR=/tmp/elsewhere\n");
+    // Active agent `.env` — the managed route reads the profile agent dir.
+    const profileAgentDir = join(
+      fixture.tmp, ".omp", "profiles", "dotfiles-omp-opencode-go", "agent",
+    );
+    const agentEnv = fixture.writeOmpConfig(
+      ".env", "PI_CODING_AGENT_DIR=/tmp/elsewhere\n", profileAgentDir,
+    );
     const agent = fixture.run(["omp", "opencode-go"], { config: REAL_CONFIG });
     check(agent.exitCode === 1, `expected exit 1, got ${agent.exitCode}`);
     check(agent.stderr.toString().includes("PI_CODING_AGENT_DIR"), agent.stderr.toString());
@@ -1222,7 +1246,7 @@ test(
     unlinkSync(agentEnv);
 
     // A UTF-8 BOM must not hide the assignment (editors add one silently).
-    const bomEnv = fixture.writeOmpConfig(".env", "﻿OMP_PROFILE=work\n");
+    const bomEnv = fixture.writeOmpConfig(".env", "﻿OMP_PROFILE=work\n", profileAgentDir);
     const bom = fixture.run(["omp", "opencode-go"], { config: REAL_CONFIG });
     check(bom.exitCode === 1, `expected exit 1, got ${bom.exitCode}`);
     check(bom.stderr.toString().includes("OMP_PROFILE"), bom.stderr.toString());
@@ -1271,9 +1295,13 @@ test(
     check(ambient.stderr.toString().includes("OMP_AUTH_BROKER_URL"), ambient.stderr.toString());
     check(!existsSync(fixture.marker), "credentials must not be fetched first");
 
+    const profileAgentDir = join(
+      fixture.tmp, ".omp", "profiles", "dotfiles-omp-opencode-go", "agent",
+    );
     const configPath = fixture.writeOmpConfig(
       "config.yml",
       "auth:\n  broker:\n    url: https://broker.invalid\n",
+      profileAgentDir,
     );
     const nested = fixture.run(["omp", "opencode-go"], { config: REAL_CONFIG });
     check(nested.exitCode === 1, `expected exit 1, got ${nested.exitCode}`);
@@ -1300,9 +1328,13 @@ test(
   withFixture((fixture) => {
     // A fallback chain can move the session to another provider/model on
     // 429/quota outages, defeating the pinned Go selector.
+    const profileAgentDir = join(
+      fixture.tmp, ".omp", "profiles", "dotfiles-omp-opencode-go", "agent",
+    );
     const configPath = fixture.writeOmpConfig(
       "config.yml",
       "retry:\n  modelFallback: true\n  fallbackChains:\n    default:\n      - openrouter/z-ai/glm-5.3\n",
+      profileAgentDir,
     );
     const globalChain = fixture.run(["omp", "opencode-go"], { config: REAL_CONFIG });
     check(globalChain.exitCode === 1, `expected exit 1, got ${globalChain.exitCode}`);
@@ -1337,6 +1369,7 @@ test(
       JSON.stringify({
         retry: { modelFallback: true, fallbackChains: { default: ["openrouter/z-ai/glm-5.3"] } },
       }),
+      profileAgentDir,
     );
     const legacyChain = fixture.run(["omp", "opencode-go"], { config: REAL_CONFIG });
     check(legacyChain.exitCode === 1, `expected exit 1, got ${legacyChain.exitCode}`);
@@ -1413,7 +1446,9 @@ test(
 test(
   "test_omp_opencode_go_corrupt_db_guard",
   withFixture((fixture) => {
-    const dbPath = join(fixture.tmp, ".omp", "agent", "agent.db");
+    const dbPath = join(
+      fixture.tmp, ".omp", "profiles", "dotfiles-omp-opencode-go", "agent", "agent.db",
+    );
     mkdirSync(dirname(dbPath), { recursive: true });
     writeFileSync(dbPath, Buffer.from("this is not a sqlite database"));
     const result = fixture.run(["omp", "opencode-go"], { config: REAL_CONFIG });
@@ -1448,7 +1483,9 @@ test(
     );
 
     // Same race for a models.yml provider override.
-    unlinkSync(join(fixture.tmp, ".omp", "agent", "agent.db"));
+    unlinkSync(
+      join(fixture.tmp, ".omp", "profiles", "dotfiles-omp-opencode-go", "agent", "agent.db"),
+    );
     fixture.writeWrapper(FAKE_WITH_SECRETS_MUTATES_OMP_MODELS);
     const modelsRace = fixture.run(["omp", "opencode-go"], { config: REAL_CONFIG });
     check(modelsRace.exitCode === 1, `expected exit 1, got ${modelsRace.exitCode}`);
@@ -1461,7 +1498,9 @@ test(
     // Same race for the implicit-switch config: a fallback chain written
     // after the plan-time check must be caught by the pre-spawn recheck
     // (require_infisical routes keep plan-time + before-spawn coverage).
-    unlinkSync(join(fixture.tmp, ".omp", "agent", "models.yml"));
+    unlinkSync(
+      join(fixture.tmp, ".omp", "profiles", "dotfiles-omp-opencode-go", "agent", "models.yml"),
+    );
     fixture.writeWrapper(FAKE_WITH_SECRETS_MUTATES_OMP_CONFIG);
     const configRace = fixture.run(["omp", "opencode-go"], { config: REAL_CONFIG });
     check(configRace.exitCode === 1, `expected exit 1, got ${configRace.exitCode}`);
@@ -2243,15 +2282,43 @@ test(
       claudeRejected.stderr.toString(),
     );
 
-    // There is still no omp.logfare route: OMP has no native `logfare`
-    // provider id and a local models.yml endpoint override is outside this
-    // design, so selection fails closed.
-    const wrongAdapter = fixture.run(["omp", "logfare"], { config: REAL_CONFIG });
-    check(wrongAdapter.exitCode === 2, `expected exit 2, got ${wrongAdapter.exitCode}`);
+    // omp.logfare runs through the launcher-owned models.yml profile: OMP
+    // has no native `logfare` provider id, so the launcher generates
+    // ~/.omp/profiles/dotfiles-omp-logfare/agent/models.yml and passes
+    // --profile. The credential still travels as the env NAME only.
+    const ompRun = fixture.run(["omp", "logfare"], { config: REAL_CONFIG });
+    check(ompRun.exitCode === 0, ompRun.stderr.toString());
+    const [ompArgv, ompEnv] = fixture.child();
     check(
-      wrongAdapter.stderr.toString().includes("no route"),
-      wrongAdapter.stderr.toString(),
+      ompArgv.includes("--profile") && ompArgv.includes("dotfiles-omp-logfare"),
+      JSON.stringify(ompArgv),
     );
+    check(ompArgv.includes("--provider") && ompArgv.includes("logfare"), JSON.stringify(ompArgv));
+    check(
+      ompArgv.includes("--model") && ompArgv.includes("deepseek-v4.1-flash-1017"),
+      JSON.stringify(ompArgv),
+    );
+    check(ompEnv["LOGFARE_API_KEY"] === "secret-logfare", JSON.stringify(ompEnv["LOGFARE_API_KEY"]));
+    const modelsPath = join(
+      fixture.tmp,
+      ".omp",
+      "profiles",
+      "dotfiles-omp-logfare",
+      "agent",
+      "models.yml",
+    );
+    check(existsSync(modelsPath), `managed models.yml missing: ${modelsPath}`);
+    const modelsYaml = readFileSync(modelsPath, "utf8");
+    check(modelsYaml.includes('baseUrl: "https://logfare.ai/v1"'), modelsYaml);
+    // The credential travels as an OMP `!command`: OMP runs
+    // infisical-key.sh itself and uses stdout as the key, so the secret
+    // goes Infisical -> OMP directly and never enters Herdr argv/env or
+    // the pane environment on the worker path.
+    check(modelsYaml.includes('apiKey: "!'), modelsYaml);
+    check(modelsYaml.includes("infisical-key.sh LOGFARE_API_KEY"), modelsYaml);
+    check(modelsYaml.includes('api: "openai-completions"'), modelsYaml);
+    check(!modelsYaml.includes("secret-logfare"), "secret value leaked into models.yml");
+    check(modelsYaml.includes('id: "glm-5.3"'), modelsYaml);
   }),
 );
 
@@ -2927,8 +2994,9 @@ test("test_mistral_education_routes", withFixture((fixture) => {
   const omp = fixture.run(["omp", "mistral"], { config: REAL_CONFIG });
   check(omp.exitCode === 0, omp.stderr.toString());
   [argv,env] = fixture.child();
-  expect(argv.slice(0,10)).toEqual([
+  expect(argv.slice(0,12)).toEqual([
     "--provider","mistral","--model","zai-glm-5-3-flash",
+    "--profile","dotfiles-omp-mistral",
     "--smol","mistral/zai-glm-5-3-flash",
     "--slow","mistral/zai-glm-5-3-flash",
     "--plan","mistral/zai-glm-5-3-flash",
@@ -3119,17 +3187,42 @@ test("test_anonymous_provider_is_credential_free", withFixture((fixture) => {
   check(!("KILO_API_KEY" in env), "an unrelated ambient credential leaked to the child");
   check(block?.models?.["gpt-oss-120b"]?.tool_call === true, JSON.stringify(block));
 
-  // No claude or omp route may exist: the adapter contract cannot honor a
-  // credential-free endpoint, so those combinations fail before a launch.
-  for (const harness of ["claude", "omp"]) {
-    const rejected = fixture.run([harness, "ovhcloud"], { config: REAL_CONFIG });
-    check(rejected.exitCode === 2, `${harness}: ${rejected.stderr.toString()}`);
-    check(
-      rejected.stderr.toString().includes("no route"),
-      `${harness}: ${rejected.stderr.toString()}`,
-    );
-    check(!existsSync(fixture.out), `${harness} must not start a harness`);
+  // No claude route may exist: the Anthropic adapter contract cannot honor
+  // a credential-free endpoint, so that combination fails before a launch.
+  const claudeRejected = fixture.run(["claude", "ovhcloud"], { config: REAL_CONFIG });
+  check(claudeRejected.exitCode === 2, `claude: ${claudeRejected.stderr.toString()}`);
+  check(
+    claudeRejected.stderr.toString().includes("no route"),
+    claudeRejected.stderr.toString(),
+  );
+  check(!existsSync(fixture.out), "claude must not start a harness");
+
+  // omp.ovhcloud DOES exist via omp_custom: models.yml `auth: none` is the
+  // credential-free contract the native-provider path lacked. Still no
+  // credential may be fetched or injected.
+  const ompResult = fixture.run(["omp", "ovhcloud"], { config: REAL_CONFIG });
+  check(ompResult.exitCode === 0, ompResult.stderr.toString());
+  check(!existsSync(fixture.marker), "an anonymous omp route must not run with-secrets");
+  const [ompArgv, ompEnv] = fixture.child();
+  check(
+    ompArgv.includes("--profile") && ompArgv.includes("dotfiles-omp-ovhcloud"),
+    JSON.stringify(ompArgv),
+  );
+  check(ompArgv.includes("gpt-oss-120b"), JSON.stringify(ompArgv));
+  for (const leak of ["KILO_API_KEY", "OPENROUTER_API_KEY", "LOGFARE_API_KEY"]) {
+    check(!(leak in ompEnv), `credential leaked to anonymous child: ${leak}`);
   }
+  const ovhModelsPath = join(
+    fixture.tmp,
+    ".omp",
+    "profiles",
+    "dotfiles-omp-ovhcloud",
+    "agent",
+    "models.yml",
+  );
+  const ovhYaml = readFileSync(ovhModelsPath, "utf8");
+  check(ovhYaml.includes('auth: "none"'), ovhYaml);
+  check(!ovhYaml.includes("apiKey"), `anonymous provider must not declare apiKey: ${ovhYaml}`);
 }));
 
 test("test_anonymous_config_validation", withFixture((fixture) => {
@@ -3225,6 +3318,98 @@ config_content = "OPENCODE_CONFIG_CONTENT"
   });
 }));
 });
+
+test("test_omp_custom_config_validation", withFixture((fixture) => {
+  const base = `
+[harnesses.omp]
+label = "OMP"
+command = "omp"
+adapter = "omp"
+
+[providers.c1]
+label = "C1"
+base_url = "https://c1.example/v1"
+secret = "C1_API_KEY"
+env = "C1_API_KEY"
+default_model = "m1"
+models = ["m1", "m2"]
+omp_custom = true
+omp_api = "openai-completions"
+[providers.c1.omp_models.m1]
+context = 8192
+output = 1024
+[routes."omp.c1"]
+`;
+  const okPath = join(fixture.tmp, "omp-custom-ok.toml");
+  writeFileSync(okPath, base);
+  const ok = fixture.run(["check"], { config: okPath });
+  check(ok.exitCode === 0, ok.stderr.toString());
+
+  const cases: Array<[string, string, string]> = [
+    [
+      "omp_api without omp_custom must fail",
+      base.replace("omp_custom = true\n", ""),
+      "require omp_custom = true",
+    ],
+    [
+      "omp_models without omp_custom must fail",
+      base.replace("omp_custom = true\n", ""),
+      "require omp_custom = true",
+    ],
+    [
+      "omp_custom without base_url must fail",
+      base.replace('base_url = "https://c1.example/v1"\n', ""),
+      "requires base_url",
+    ],
+    [
+      "omp_custom without a credential must fail",
+      base.replace('secret = "C1_API_KEY"\nenv = "C1_API_KEY"\n', ""),
+      "requires a credential",
+    ],
+    [
+      "an unknown omp_api must fail",
+      base.replace('omp_api = "openai-completions"', 'omp_api = "bogus-api"'),
+      "unknown omp_api",
+    ],
+    [
+      "an omp_models entry outside models must fail",
+      base.replace('[providers.c1.omp_models.m1]', '[providers.c1.omp_models."m9"]'),
+      "is not in models",
+    ],
+    [
+      "an omp_models entry missing limits must fail",
+      base.replace("context = 8192\noutput = 1024", "context = 8192"),
+      "omp_models",
+    ],
+    [
+      "a mismatched omp_id must fail",
+      base.replace("[providers.c1]", '[providers.c1]\nomp_id = "other"'),
+      "omp_id to equal the provider key",
+    ],
+  ];
+  cases.forEach(([label, toml, needle], index) => {
+    const path = join(fixture.tmp, `omp-bad-${index}.toml`);
+    writeFileSync(path, toml);
+    const result = fixture.run(["check"], { config: path });
+    check(result.exitCode === 2, `${label}: expected exit 2, got ${result.exitCode}`);
+    check(
+      result.stderr.toString().includes(needle),
+      `${label}: ${result.stderr.toString()}`,
+    );
+  });
+
+  // An anonymous omp_custom provider is valid: models.yml `auth: none` is
+  // the credential-free contract.
+  const anonPath = join(fixture.tmp, "omp-anon.toml");
+  writeFileSync(
+    anonPath,
+    base
+      .replace('secret = "C1_API_KEY"\nenv = "C1_API_KEY"\n', "anonymous = true\n")
+      .replace("[providers.c1]", '[providers.c1]\n'),
+  );
+  const anon = fixture.run(["check"], { config: anonPath });
+  check(anon.exitCode === 0, anon.stderr.toString());
+}));
 
 test("test_fallback_reads_catalog_state", withFixture((fixture) => {
   // Regression: loadAttestations used readdirSync without importing it, so
@@ -3400,4 +3585,62 @@ candidates = [
     check(checkRun.exitCode === 2, `${label}: expected exit 2, got ${checkRun.exitCode}`);
     check(checkRun.stderr.toString().includes(needle), `${label}: ${checkRun.stderr.toString()}`);
   });
+}));
+
+test("test_agent_task_cli", withFixture((fixture) => {
+  // Parse/usage failures exit 2 before config or Herdr is touched.
+  const usageCases: Array<[string[], string]> = [
+    [["task"], "run|resume|status"],
+    [["task", "bogus"], "run|resume|status"],
+    [["task", "status"], "usage: agent task status"],
+    [["task", "run"], "usage: agent task run"],
+    [["task", "run", "omp.kilo", "--bogus"], "unexpected argument"],
+    [["task", "run", "omp.kilo", "--timeout", "abc"], "--timeout"],
+    [["task", "status", "../escape"], "invalid task id"],
+    [["task", "status", "a/b"], "invalid task id"],
+    [["task", "resume"], "usage: agent task resume"],
+    [["task", "resume", "a/b"], "invalid task id"],
+    [["task", "resume", "task-x", "--bogus"], "unexpected argument"],
+  ];
+  for (const [args, needle] of usageCases) {
+    const result = fixture.run(args, { config: REAL_CONFIG });
+    check(result.exitCode === 2, `${args.join(" ")} -> ${result.exitCode}: ${result.stderr.toString()}`);
+    check(result.stderr.toString().includes(needle), `${args.join(" ")}: ${result.stderr.toString()}`);
+  }
+
+  // An unconfigured route fails before any Herdr workspace is created.
+  const badRoute = fixture.run(
+    ["task", "run", "bogus.route", "--model", "m", "--prompt", "hi"],
+    { config: REAL_CONFIG },
+  );
+  check(badRoute.exitCode !== 0, "unknown route must fail");
+  check(badRoute.stderr.toString().includes("route not configured"), badRoute.stderr.toString());
+
+  // A model outside the route allowlist and an unknown fallback profile are
+  // rejected by dispatchTask's contract checks (exit 1) — never reaching a
+  // worker. On hosts without Herdr the availability probe may fire first;
+  // either way the run must not succeed.
+  const badModel = fixture.run(
+    ["task", "run", "omp.kilo", "--model", "definitely-not-a-model", "--prompt", "hi"],
+    { config: REAL_CONFIG },
+  );
+  check(badModel.exitCode === 1, `bad model -> ${badModel.exitCode}`);
+
+  const kiloModel = "nvidia/nemotron-3-ultra-550b-a55b:free";
+  const badProfile = fixture.run(
+    ["task", "run", "omp.kilo", "--model", kiloModel, "--fallback", "no-such-profile", "--prompt", "hi"],
+    { config: REAL_CONFIG },
+  );
+  check(badProfile.exitCode === 1, `bad profile -> ${badProfile.exitCode}`);
+
+  // `task status` on a well-formed but unknown id reports no state.
+  const status = fixture.run(["task", "status", "task-does-not-exist"], { config: REAL_CONFIG });
+  check(status.exitCode === 1, `status -> ${status.exitCode}`);
+  check(status.stdout.toString().includes("no task state"), status.stdout.toString());
+
+  // `task resume` on an unknown id fails closed: either the Herdr
+  // availability probe fires first (fixture PATH has no herdr) or the
+  // missing state is reported — never a success.
+  const resume = fixture.run(["task", "resume", "task-does-not-exist"], { config: REAL_CONFIG });
+  check(resume.exitCode === 1, `resume -> ${resume.exitCode}`);
 }));

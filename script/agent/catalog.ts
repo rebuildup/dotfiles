@@ -28,21 +28,26 @@
  * Network-free by contract: only the config file is read.
  */
 
-import { readFileSync, realpathSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   ContractError,
+  isOneOf,
   isPlainObject,
   parseAttested,
   parseModelId,
   parseRouteId,
+  QUOTA_SCOPE_KINDS,
+  parseTomlTable,
   quotaScopeKey,
   requireBool,
   requireStr,
+  splitRouteKey,
   stringList,
   type Attested,
   type QuotaScope,
 } from "./contract";
+import { dotfilesRepoRoot } from "./util";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -123,12 +128,9 @@ export interface Catalog {
 // ---------------------------------------------------------------------------
 
 export function catalogConfigPath(): string {
-  return process.env.AGENT_CONFIG || join(repoRoot(), "config", "agents.toml");
+  return process.env.AGENT_CONFIG || join(dotfilesRepoRoot(), "config", "agents.toml");
 }
 
-function repoRoot(): string {
-  return dirname(dirname(dirname(realpathSync(import.meta.path))));
-}
 
 // ---------------------------------------------------------------------------
 // Value checkers (run on the attested `value` after parseAttested)
@@ -172,7 +174,7 @@ function checkRateLimits(value: unknown, where: string): RateLimits {
     throw new ContractError("schema", `${where}: value must be a table`);
   }
   const allowed = ["per_minute", "per_hour", "per_day", "per_month"] as const;
-  const unknown = Object.keys(value).filter((k) => !allowed.includes(k as never));
+  const unknown = Object.keys(value).filter((k) => !isOneOf(k, allowed));
   if (unknown.length > 0) {
     throw new ContractError("schema", `${where}: unknown window '${unknown[0]}'`);
   }
@@ -259,12 +261,14 @@ function attestedField<T>(
   return out;
 }
 
+const PRICING_KINDS: readonly PricingKind[] = ["free", "subscription", "metered", "unknown"];
+
 function parsePricingKind(raw: unknown, where: string): PricingKind {
   if (raw === undefined || raw === null) return "unknown";
-  if (typeof raw !== "string" || !["free", "subscription", "metered", "unknown"].includes(raw)) {
+  if (!isOneOf(raw, PRICING_KINDS)) {
     throw new ContractError("schema", `${where}: invalid pricing kind '${String(raw)}'`);
   }
-  return raw as PricingKind;
+  return raw;
 }
 
 function parseQuotaScope(raw: unknown, where: string): QuotaScope | null {
@@ -276,8 +280,12 @@ function parseQuotaScope(raw: unknown, where: string): QuotaScope | null {
   if (unknown.length > 0) {
     throw new ContractError("schema", `${where}: unknown field '${unknown[0]}'`);
   }
+  const kind = requireStr(raw, "scope", where);
+  if (!isOneOf(kind, QUOTA_SCOPE_KINDS)) {
+    throw new ContractError("schema", `${where}.scope: invalid quota scope kind '${kind}'`);
+  }
   const scope: QuotaScope = {
-    kind: requireStr(raw, "scope", where) as QuotaScope["kind"],
+    kind,
     id: requireStr(raw, "id", where),
   };
   quotaScopeKey(scope); // validates kind and id; throws otherwise
@@ -312,7 +320,8 @@ function parsePricing(table: Record<string, unknown>, where: string): ModelPrici
       `${where}.pricing: 'currency' is required when a per-MTok price is declared`,
     );
   }
-  if (kind === "free" && ((input && input.value > 0) || (output && output.value > 0))) {
+  const attestedPrice = (att: Attested<number> | null): number => att?.value ?? 0;
+  if (kind === "free" && (attestedPrice(input) > 0 || attestedPrice(output) > 0)) {
     throw new ContractError(
       "schema",
       `${where}.pricing: kind 'free' contradicts a nonzero price`,
@@ -439,12 +448,7 @@ export function loadCatalog(configFile?: string): Catalog {
   } catch {
     throw new ContractError("schema", `config not found: ${path}`);
   }
-  let raw: Record<string, unknown>;
-  try {
-    raw = Bun.TOML.parse<Record<string, unknown>>(text);
-  } catch (exc) {
-    throw new ContractError("schema", `invalid TOML in ${path}: ${exc}`);
-  }
+  const raw = parseTomlTable(text, path);
 
   const providersSection = raw["providers"] ?? {};
   const routesSection = raw["routes"] ?? {};
@@ -461,9 +465,7 @@ export function loadCatalog(configFile?: string): Catalog {
     const table = routesSection[routeKey];
     if (!isPlainObject(table)) return [];
     if (Array.isArray(table["models"])) {
-      return (table["models"] as unknown[]).filter(
-        (m): m is string => typeof m === "string",
-      );
+      return table["models"].filter((m): m is string => typeof m === "string");
     }
     // The provider is part of the route key (`<harness>.<provider>`).
     const dot = routeKey.indexOf(".");
@@ -524,9 +526,22 @@ export function loadCatalog(configFile?: string): Catalog {
  */
 export function effectiveQuotaKey(catalog: Catalog, routeId: string): string | null {
   parseRouteId(routeId);
-  const [, providerKey] = routeId.split(".") as [string, string];
+  const [, providerKey] = splitRouteKey(routeId);
   const scope = catalog.routes[routeId]?.quota ?? catalog.providers[providerKey]?.quota ?? null;
   return scope ? quotaScopeKey(scope) : null;
+}
+
+/**
+ * The real shared allowance of a route, from the validated catalog tables.
+ * Returns null when the route has no resolvable quota scope (unknown route
+ * or malformed id) instead of throwing.
+ */
+export function getPrimaryQuotaScope(catalog: Catalog, routeId: string): string | null {
+  try {
+    return effectiveQuotaKey(catalog, routeId);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -540,6 +555,6 @@ export function modelEntry(
 ): ModelCatalogEntry | null {
   parseRouteId(routeId);
   parseModelId(model);
-  const [, providerKey] = routeId.split(".") as [string, string];
+  const [, providerKey] = splitRouteKey(routeId);
   return catalog.providers[providerKey]?.models[model] ?? null;
 }

@@ -50,17 +50,22 @@
  * Run: bun test script/agent.probe.test.ts
  */
 
-import { mkdirSync, readFileSync, writeFileSync, realpathSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
   CONTRACT_VERSION,
   ContractError,
   REDACTED,
   agentStateDir,
+  errorMessage,
+  expectFields,
+  isOneOf,
   isPlainObject,
   isStale,
   parseEnvelope,
+  parseEvidence,
   parseModelId,
+  parseTomlTable,
   parseRouteId,
   redactJson,
   requireStr,
@@ -68,6 +73,7 @@ import {
   type Evidence,
 } from "./contract";
 import { effectiveQuotaKey, loadCatalog, type Catalog } from "./catalog";
+import { dotfilesRepoRoot } from "./util";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -118,6 +124,25 @@ export const PROBE_LAYERS: readonly ProbeLayer[] = [
 ];
 
 /** Valid statuses for a layer result (state validation vocabulary). */
+export const PROBE_FAILURE_KINDS: readonly ProbeFailureKind[] = [
+  "config",
+  "model-mismatch",
+  "credential-missing",
+  "not-launchable",
+  "dns",
+  "network",
+  "timeout",
+  "auth",
+  "payment",
+  "forbidden",
+  "rate-limit",
+  "rate-limit-cooldown",
+  "restricted",
+  "no-tool-call",
+  "unsupported-wire",
+  "http",
+];
+
 export const PROBE_LAYER_STATUSES: readonly ProbeLayerStatus[] = [
   "pass",
   "fail",
@@ -228,8 +253,8 @@ export class ProbeTransportError extends Error {
  * "network" — never guessed.
  */
 export function transportKindFor(exc: unknown): "timeout" | "network" | "dns" {
-  const cause = (exc as Error & { cause?: { code?: string } })?.cause;
-  const code = cause?.code ?? "";
+  const cause = isPlainObject(exc) ? exc["cause"] : undefined;
+  const code = isPlainObject(cause) && typeof cause["code"] === "string" ? cause["code"] : "";
   if (code === "ENOTFOUND" || code === "EAI_AGAIN") return "dns";
   return "network";
 }
@@ -251,11 +276,12 @@ export function httpTransport(timeoutMs: number): ProbeTransport {
           redirect: "error",
         });
       } catch (exc) {
-        const name = (exc as Error)?.name ?? "";
+        const nameValue = isPlainObject(exc) ? exc["name"] : undefined;
+        const name = typeof nameValue === "string" ? nameValue : "";
         if (name === "TimeoutError" || name === "AbortError") {
           throw new ProbeTransportError("timeout", `request timed out after ${timeoutMs}ms: ${url}`);
         }
-        throw new ProbeTransportError(transportKindFor(exc), `request failed: ${(exc as Error)?.message ?? exc}`);
+        throw new ProbeTransportError(transportKindFor(exc), `request failed: ${errorMessage(exc)}`);
       }
       const headers: Record<string, string> = {};
       response.headers.forEach((value, key) => {
@@ -318,12 +344,7 @@ export function loadProbeConfig(configFile?: string): ProbeConfig {
   } catch {
     throw new ContractError("schema", `config not found: ${path}`);
   }
-  let raw: Record<string, unknown>;
-  try {
-    raw = Bun.TOML.parse<Record<string, unknown>>(text);
-  } catch (exc) {
-    throw new ContractError("schema", `invalid TOML in ${path}: ${exc}`);
-  }
+  const raw = parseTomlTable(text, path);
 
   const providers: Record<string, ProbeProviderConfig> = {};
   const rawProviders = raw["providers"] ?? {};
@@ -375,12 +396,9 @@ export function loadProbeConfig(configFile?: string): ProbeConfig {
 }
 
 function probeConfigPath(): string {
-  return process.env.AGENT_CONFIG || join(repoRoot(), "config", "agents.toml");
+  return process.env.AGENT_CONFIG || join(dotfilesRepoRoot(), "config", "agents.toml");
 }
 
-function repoRoot(): string {
-  return dirname(dirname(dirname(realpathSync(import.meta.path))));
-}
 
 /** Non-empty string or null; a secret NAME is the same shape as any key. */
 function optionalName(raw: unknown, where: string): string | null {
@@ -509,7 +527,7 @@ function analyzeResponse(wire: Wire, body: string | null): ResponseAnalysis {
   if (!Array.isArray(choices) || choices.length === 0) return none;
   const message = choices[0];
   if (!isPlainObject(message) || !isPlainObject(message["message"])) return none;
-  const msg = message["message"] as Record<string, unknown>;
+  const msg = message["message"];
   return {
     shape_ok: true,
     tool_call: Array.isArray(msg["tool_calls"]) && msg["tool_calls"].length > 0,
@@ -541,7 +559,7 @@ function classifyFailure(status: number, body: string | null): { failure: ProbeF
     try {
       const parsed = JSON.parse(body ?? "") as unknown;
       if (isPlainObject(parsed) && isPlainObject(parsed["error"])) {
-        message = String((parsed["error"] as Record<string, unknown>)["message"] ?? "");
+        message = String(parsed["error"]["message"] ?? "");
       }
     } catch {
       // non-JSON error body: fall through to generic 4xx
@@ -599,13 +617,13 @@ function loadProbeState(stateDir: string): ProbeState {
   } catch (exc) {
     throw new ContractError(
       "state",
-      `probe state at ${statePath(stateDir)} is corrupt (delete it to reset): ${(exc as Error).message}`,
+      `probe state at ${statePath(stateDir)} is corrupt (delete it to reset): ${errorMessage(exc)}`,
     );
   }
   const envelope = parseEnvelope(parsed, STATE_PAYLOAD_FIELDS, "probe state");
   const state: ProbeState = { probes: {}, cooldowns: {} };
   if (isPlainObject(envelope.payload["probes"])) {
-    for (const [key, entry] of Object.entries(envelope.payload["probes"] as Record<string, unknown>)) {
+    for (const [key, entry] of Object.entries(envelope.payload["probes"])) {
       if (!isPlainObject(entry)) {
         throw new ContractError(
           "state",
@@ -624,12 +642,23 @@ function loadProbeState(stateDir: string): ProbeState {
     }
   }
   if (isPlainObject(envelope.payload["cooldowns"])) {
-    for (const [key, until] of Object.entries(envelope.payload["cooldowns"] as Record<string, unknown>)) {
+    for (const [key, until] of Object.entries(envelope.payload["cooldowns"])) {
       if (typeof until === "string") state.cooldowns[key] = until;
     }
   }
   return state;
 }
+
+const LAYER_ENTRY_FIELDS = [
+  "layer",
+  "status",
+  "failure",
+  "http_status",
+  "retry_after_s",
+  "detail",
+  "evidence",
+  "cached",
+] as const;
 
 /** Validate cached layer entries against the known layer/status vocabulary. */
 function validateCachedLayers(raw: unknown, where: string): ProbeLayerResult[] {
@@ -640,15 +669,56 @@ function validateCachedLayers(raw: unknown, where: string): ProbeLayerResult[] {
     if (!isPlainObject(entry)) {
       throw new ContractError("state", `${where}: layer entry must be an object`);
     }
+    expectFields(entry, LAYER_ENTRY_FIELDS, where);
     const layer = entry["layer"];
-    const status = entry["status"];
-    if (typeof layer !== "string" || !PROBE_LAYERS.includes(layer as ProbeLayer)) {
+    if (!isOneOf(layer, PROBE_LAYERS)) {
       throw new ContractError("state", `${where}: unknown layer '${String(layer)}'`);
     }
-    if (typeof status !== "string" || !PROBE_LAYER_STATUSES.includes(status as ProbeLayerStatus)) {
+    const status = entry["status"];
+    if (!isOneOf(status, PROBE_LAYER_STATUSES)) {
       throw new ContractError("state", `${where}: unknown status '${String(status)}' for layer '${layer}'`);
     }
-    return entry as ProbeLayerResult;
+    const evidenceRaw = entry["evidence"];
+    let evidence: Evidence | null = null;
+    if (evidenceRaw !== null && evidenceRaw !== undefined) {
+      try {
+        evidence = parseEvidence(evidenceRaw, `${where}.evidence`);
+      } catch (exc) {
+        throw new ContractError("state", `${where}.evidence: ${errorMessage(exc)}`);
+      }
+    }
+    const out: ProbeLayerResult = { layer, status, evidence };
+    const failure = entry["failure"];
+    if (failure !== undefined && failure !== null) {
+      if (!isOneOf(failure, PROBE_FAILURE_KINDS)) {
+        throw new ContractError("state", `${where}: unknown failure '${String(failure)}'`);
+      }
+      out.failure = failure;
+    }
+    for (const key of ["http_status", "retry_after_s"] as const) {
+      const value = entry[key];
+      if (value !== undefined && value !== null) {
+        if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+          throw new ContractError("state", `${where}: '${key}' must be a non-negative number`);
+        }
+        out[key] = value;
+      }
+    }
+    const detail = entry["detail"];
+    if (detail !== undefined && detail !== null) {
+      if (typeof detail !== "string") {
+        throw new ContractError("state", `${where}: 'detail' must be a string`);
+      }
+      out.detail = detail;
+    }
+    const cached = entry["cached"];
+    if (cached !== undefined && cached !== null) {
+      if (typeof cached !== "boolean") {
+        throw new ContractError("state", `${where}: 'cached' must be a boolean`);
+      }
+      out.cached = cached;
+    }
+    return out;
   });
 }
 
@@ -1148,7 +1218,7 @@ function transportFailure(layer: ProbeLayer, exc: unknown, at: string): ProbeLay
     layer,
     status: "fail",
     failure: "network",
-    detail: `transport error: ${(exc as Error)?.message ?? String(exc)}`,
+    detail: `transport error: ${errorMessage(exc)}`,
     evidence: { at, source: "probe", note: "network" },
   };
 }

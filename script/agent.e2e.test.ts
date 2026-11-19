@@ -16,14 +16,16 @@
  * Run: bun test script/agent.e2e.test.ts
  */
 
-import { describe, test, expect } from "bun:test";
-import { execSync } from "node:child_process";
-import { existsSync, readFileSync, mkdtempSync } from "node:fs";
-import { join } from "node:path";
-import { platform, arch, release, tmpdir } from "node:os";
-import { FsAttemptStore, initAttempt, acquireLease, readAttempt } from "./agent/attempts.ts";
-import { FsJournalStore } from "./agent/checkpoint.ts";
-import { planRecovery } from "./agent/recovery.ts";
+import { describe, test, expect } from "bun:test";;
+import { execSync } from "node:child_process";;
+import { readFileSync, mkdtempSync } from "node:fs";;
+import { join } from "node:path";;
+import { platform, arch, release, tmpdir } from "node:os";;
+import { FsAttemptStore, initAttempt, acquireLease, readAttempt } from "./agent/attempts.ts";;
+import { FsJournalStore } from "./agent/checkpoint.ts";;
+import { planRecovery } from "./agent/recovery.ts";;
+import { dispatchTask } from "./agent/task.ts";;
+import { loadConfig } from "./agent/config.ts";;
 
 // ---------------------------------------------------------------------------
 // Environment identity
@@ -213,6 +215,32 @@ describe("herdr integration (REAL)", () => {
       expect(true).toBe(true);
     }
   }, 10000);
+
+  test("task dispatch starts a worker on the route's own provider", async () => {
+    // The router starts a real Herdr worker pinned to the route's provider
+    // and model. It needs the route credential in the dispatcher's
+    // environment, so this runs only where that credential is present.
+    const credential = process.env.KILO_API_KEY;
+    if (!credential) {
+      console.log("  SKIP: KILO_API_KEY not in the environment — no credential for the worker");
+      expect(true).toBe(true); // explicit skip, never silent pass
+      return;
+    }
+    const config = loadConfig();
+    const { attempt } = await dispatchTask(config, {
+      id: "e2e-dispatch-1",
+      class: "simple" as const,
+      route: "omp.kilo",
+      model: "nvidia/nemotron-3-ultra-550b-a55b:free",
+      prompt: "test prompt",
+      acceptanceCriteria: [],
+    });
+
+    expect(attempt.herdrWorkerName).toBeDefined();
+    expect(attempt.herdrWorkspaceId).toBeDefined();
+    expect(attempt.herdrPaneId).toBeDefined();
+    expect(attempt.route.provider).toBe("kilo");
+  }, 120000);
 });
 
 // ---------------------------------------------------------------------------
@@ -256,7 +284,6 @@ describe("attempt fencing and recovery (REAL)", () => {
         retryAfterMs: null,
         exhausted: false,
         reason: "test",
-        quotaScopeKey: null,
       },
       quotaScope: null,
       retriesUsed: 0,
