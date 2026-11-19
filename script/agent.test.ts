@@ -27,6 +27,11 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { checkCommand } from "./omp-destructive-guard";
+import {
+  GEMINI_MODEL_ID,
+  GEMINI_PROVIDER_ID,
+  isGeminiQuota429,
+} from "./agent/gemini-quota.ts";
 
 const REPO = dirname(dirname(realpathSync(import.meta.path)));
 const LAUNCHER = join(REPO, "script", "agent.ts");
@@ -84,6 +89,7 @@ export FAKE_INFISICAL_INJECTED=yes
 export DEEPSEEK_API_KEY=secret-deepseek
 export OPENROUTER_API_KEY=secret-openrouter
 export OPENCODE_API_KEY=secret-opencode
+export GEMINI_API_KEY=secret-gemini
 export LOGFARE_API_KEY=secret-logfare
 export MISTRAL_API_KEY=secret-mistral-plan
 export MINIMAX_M_PLAN_KEY=secret-minimax-plan
@@ -404,6 +410,30 @@ function withFixture(body: (fixture: Fixture) => void): () => void {
 // The mock suite drives bash stubs and POSIX symlinks; on Windows the same
 // behaviors are covered by script/agent.windows.test.ts, so skip here.
 const describePosix = process.platform === "win32" ? describe.skip : describe;
+
+// Shapes of the launcher-built OPENCODE_CONFIG_CONTENT on the logfare route
+// (JSON parsed from the child environment).
+interface OcInlineConfig {
+  model?: string;
+  permission?: unknown;
+  plugins?: unknown[];
+  provider?: Record<string, OcProviderBlock>;
+}
+interface OcProviderBlock {
+  npm?: string;
+  name?: string;
+  env?: string[];
+  options?: { baseURL?: string };
+  models?: Record<
+    string,
+    {
+      tool_call?: boolean;
+      limit?: { context?: number; output?: number };
+      settings?: { reasoningEffort?: string };
+    }
+  >;
+}
+
 
 describePosix("agent launcher mock suite (POSIX stubs)", () => {
 test(
@@ -2135,21 +2165,6 @@ test(
   }),
 );
 
-// Shapes of the launcher-built OPENCODE_CONFIG_CONTENT on the logfare route
-// (JSON parsed from the child environment).
-interface OcInlineConfig {
-  model?: string;
-  permission?: unknown;
-  provider?: Record<string, OcProviderBlock>;
-}
-interface OcProviderBlock {
-  npm?: string;
-  name?: string;
-  env?: string[];
-  options?: { baseURL?: string };
-  models?: Record<string, { tool_call?: boolean; limit?: { context?: number; output?: number } }>;
-}
-
 test(
   "test_logfare_route",
   withFixture((fixture) => {
@@ -3123,6 +3138,7 @@ test("test_free_routes_require_infisical", withFixture((fixture) => {
   // account's free allowance, so an ambient value is stripped before the
   // wrapper and a missing Infisical value fails closed.
   for (const [harness, provider, envName] of [
+    ["opencode", "gemini", "GEMINI_API_KEY"],
     ["opencode", "kilo", "KILO_API_KEY"],
     ["claude", "requesty", "REQUESTY_API_KEY"],
     ["omp", "groq", "GROQ_API_KEY"],
@@ -3156,6 +3172,18 @@ test("test_free_routes_require_infisical", withFixture((fixture) => {
   check(missing.exitCode === 1, missing.stderr.toString());
   check(missing.stderr.toString().includes("KILO_API_KEY"), missing.stderr.toString());
   check(!existsSync(fixture.out), "must not start a harness without the Infisical key");
+
+  fixture.writeWrapper(
+    FAKE_WITH_SECRETS.replace("export GEMINI_API_KEY=secret-gemini" + String.fromCharCode(10), ""),
+  );
+  const geminiMissing = fixture.run(["opencode", "gemini"], {
+    config: REAL_CONFIG,
+    env: { GEMINI_API_KEY: "stale-ambient-value" },
+  });
+  check(geminiMissing.exitCode === 1, geminiMissing.stderr.toString());
+  check(geminiMissing.stderr.toString().includes("GEMINI_API_KEY"), geminiMissing.stderr.toString());
+  check(!geminiMissing.stderr.toString().includes("stale-ambient-value"), "ambient key leaked in error");
+  check(!existsSync(fixture.out), "missing Infisical Gemini key must not start OpenCode");
 }));
 
 test("test_anonymous_provider_is_credential_free", withFixture((fixture) => {
@@ -3644,3 +3672,104 @@ test("test_agent_task_cli", withFixture((fixture) => {
   const resume = fixture.run(["task", "resume", "task-does-not-exist"], { config: REAL_CONFIG });
   check(resume.exitCode === 1, `resume -> ${resume.exitCode}`);
 }));
+
+describePosix("Gemini free-tier route contract", () => {
+test("test_gemini_hydrogen_free_tier_route", withFixture((fixture) => {
+  const initialConfig = JSON.stringify({ plugins: ["existing-test-plugin"] });
+  const result = fixture.run(["opencode", "gemini"], {
+    config: REAL_CONFIG,
+    env: {
+      GEMINI_API_KEY: "stale-ambient-value",
+      OPENCODE_CONFIG_CONTENT: initialConfig,
+    },
+  });
+  check(result.exitCode === 0, result.stderr.toString());
+  check(existsSync(fixture.marker), "Gemini must always retrieve its key through Infisical");
+  const wrapperEnv = readFileSync(fixture.wrapper_env, "utf8");
+  check(!wrapperEnv.includes("stale-ambient-value"), "ambient Gemini key reached the wrapper");
+
+  const [argv, env] = fixture.child();
+  expect(argv, JSON.stringify(argv)).toEqual(["--standalone"]);
+  check(env["GEMINI_API_KEY"] === "secret-gemini", "Infisical Gemini key did not reach OpenCode");
+  const content = env["OPENCODE_CONFIG_CONTENT"];
+  check(typeof content === "string", "OpenCode inline config is missing");
+  check(!content.includes("secret-gemini"), "Gemini key leaked into OpenCode config");
+  const parsed = JSON.parse(content) as OcInlineConfig;
+  check(parsed.model === "gemini/gemini-4-hydrogen", JSON.stringify(parsed));
+  const provider = parsed.provider?.[GEMINI_PROVIDER_ID];
+  check(provider?.npm === "@ai-sdk/openai-compatible", JSON.stringify(provider));
+  check(
+    provider?.options?.baseURL === "https://generativelanguage.googleapis.com/v1beta/openai/",
+    JSON.stringify(provider),
+  );
+  check(JSON.stringify(provider?.env) === JSON.stringify(["GEMINI_API_KEY"]), JSON.stringify(provider));
+  const models = provider?.models ?? {};
+  check(Object.keys(models).length === 1, JSON.stringify(models));
+  const hydrogen = models[GEMINI_MODEL_ID];
+  check(hydrogen?.tool_call === true, JSON.stringify(hydrogen));
+  check(hydrogen?.limit?.context === 1048576, JSON.stringify(hydrogen));
+  check(hydrogen?.limit?.output === 65536, JSON.stringify(hydrogen));
+  check(hydrogen?.settings?.reasoningEffort === "xhigh", JSON.stringify(hydrogen));
+  check(
+    parsed.plugins?.includes("existing-test-plugin") &&
+      parsed.plugins.includes(join(REPO, "script", "agent", "opencode-gemini-free-tier")),
+    JSON.stringify(parsed.plugins),
+  );
+
+  // experimental.model.resolve replaces the whole Model.Ref; mutating its
+  // fields is silently ignored, so the pin must be an assignment.
+  const pluginSource = readFileSync(
+    join(REPO, "script", "agent", "opencode-gemini-free-tier", "server.ts"),
+    "utf8",
+  );
+  check(pluginSource.includes("event.model ="), "model pin must assign event.model");
+  check(
+    !/(event\.model\.(providerID|id|variant))\s*=/.test(pluginSource),
+    "model pin must not mutate ref fields",
+  );
+
+  const rejected = fixture.run(["opencode", "gemini", "--model", "MiniMax-M3"], {
+    config: REAL_CONFIG,
+  });
+  check(rejected.exitCode === 2, `non-Hydrogen model must be rejected: ${rejected.stderr.toString()}`);
+  check(rejected.stderr.toString().includes("unknown model"), rejected.stderr.toString());
+  check(!existsSync(fixture.marker), "a rejected Gemini model must not retrieve credentials");
+
+  const config = Bun.TOML.parse(readFileSync(REAL_CONFIG, "utf8")) as {
+    fallback_profile?: Record<string, { candidates?: string[] }>;
+  };
+  for (const [profile, definition] of Object.entries(config.fallback_profile ?? {})) {
+    check(
+      !definition.candidates?.includes("opencode.gemini"),
+      `Gemini must not be a fallback candidate in ${profile}`,
+    );
+  }
+}));
+
+test("test_gemini_quota_guard_is_terminal", () => {
+  check(
+    isGeminiQuota429({
+      model: { providerID: GEMINI_PROVIDER_ID, id: GEMINI_MODEL_ID },
+      error: { status: 429 },
+      decision: { retry: true, delay: 2000 },
+    }),
+    "Gemini HTTP 429 must be terminal",
+  );
+  check(
+    !isGeminiQuota429({
+      model: { providerID: GEMINI_PROVIDER_ID, id: GEMINI_MODEL_ID },
+      error: { status: 401 },
+      decision: { retry: false },
+    }),
+    "authentication errors are distinct from quota responses",
+  );
+  check(
+    !isGeminiQuota429({
+      model: { providerID: "other", id: GEMINI_MODEL_ID },
+      error: { status: 429 },
+      decision: { retry: true, delay: 2000 },
+    }),
+    "the quota guard must not match another provider",
+  );
+});
+});

@@ -41,6 +41,8 @@ export interface Provider {
   // as the env NAME, never as a value in config content or argv.
   opencode_npm: string | null;
   opencode_models: Record<string, OcModelSpec>;
+  // Load a process-scoped OpenCode guard that makes HTTP 429 terminal.
+  opencode_stop_on_429: boolean;
   // Endpoint spelling for the OpenCode custom-provider block when it differs
   // from `base_url`. Gateways often serve an OpenAI-compatible surface under
   // `/v1` but the Anthropic adapter must use the bare origin (it appends
@@ -64,6 +66,7 @@ export interface Provider {
 export interface OcModelSpec {
   tool_call: boolean;
   limit: { context: number; output: number };
+  reasoning_effort?: "low" | "medium" | "high" | "xhigh";
 }
 
 /** OMP models.yml model limits: context window and max output tokens. */
@@ -140,7 +143,8 @@ function stringList(value: unknown, where: string, key: string): string[] {
 
 /**
  * Parse a provider's optional `opencode_models` table: one strict entry per
- * model (`tool_call` plus `limit.context`/`limit.output`). Unknown keys fail
+ * model (`tool_call`, `limit.context`/`limit.output`, and optional reasoning
+ * effort). Unknown keys fail
  * closed so a typo can never silently drop a model's tool/limit contract and
  * no free-form passthrough (which could carry a credential) exists. Returns
  * null when the table is absent.
@@ -160,7 +164,9 @@ function parseOcModels(
     if (!isPlainObject(entryValue)) {
       throw new AgentError(`${entryWhere}: table expected`);
     }
-    const unknown = Object.keys(entryValue).filter((k) => k !== "tool_call" && k !== "limit");
+    const unknown = Object.keys(entryValue).filter(
+      (k) => k !== "tool_call" && k !== "limit" && k !== "reasoning_effort",
+    );
     if (unknown.length > 0) {
       throw new AgentError(`${entryWhere}: unknown key '${unknown[0]}'`);
     }
@@ -184,7 +190,21 @@ function parseOcModels(
     if (typeof output !== "number" || !Number.isInteger(output) || output <= 0) {
       throw new AgentError(`${entryWhere}: limit.output must be a positive integer`);
     }
-    specs[modelId] = { tool_call: toolCall, limit: { context, output } };
+    const reasoningEffort = entryValue["reasoning_effort"];
+    if (
+      reasoningEffort !== undefined &&
+      reasoningEffort !== "low" &&
+      reasoningEffort !== "medium" &&
+      reasoningEffort !== "high" &&
+      reasoningEffort !== "xhigh"
+    ) {
+      throw new AgentError(`${entryWhere}: 'reasoning_effort' must be low, medium, high, or xhigh`);
+    }
+    specs[modelId] = {
+      tool_call: toolCall,
+      limit: { context, output },
+      ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
+    };
   }
   return specs;
 }
@@ -330,6 +350,11 @@ export function loadConfig(path?: string): Config {
     }
     const opencode_npm = optionalStr(table, "opencode_npm", where);
     const opencode_models = parseOcModels(table, where);
+    const opencode_stop_on_429 = table["opencode_stop_on_429"] ?? false;
+    if (typeof opencode_stop_on_429 !== "boolean") {
+      throw new AgentError(`${where}: 'opencode_stop_on_429' must be a boolean`);
+    }
+    const opencode_id = optionalStr(table, "opencode_id", where) || key;
     const ompCustom = table["omp_custom"] ?? false;
     if (typeof ompCustom !== "boolean") {
       throw new AgentError(`${where}: 'omp_custom' must be a boolean`);
@@ -410,6 +435,27 @@ export function loadConfig(path?: string): Config {
         );
       }
     }
+    if (opencode_stop_on_429) {
+      const hydrogen = "gemini-4-hydrogen";
+      if (
+        key !== "gemini" ||
+        opencode_id !== "gemini" ||
+        models.length !== 1 ||
+        models[0] !== hydrogen ||
+        default_model !== hydrogen ||
+        opencode_npm !== "@ai-sdk/openai-compatible" ||
+        opencode_models?.[hydrogen]?.reasoning_effort !== "xhigh" ||
+        secret !== "GEMINI_API_KEY" ||
+        env !== "GEMINI_API_KEY" ||
+        !require_infisical ||
+        ompCustom
+      ) {
+        throw new AgentError(
+          `${where}: opencode_stop_on_429 is reserved for the fixed Infisical-backed ` +
+            "gemini-4-hydrogen xhigh OpenCode route",
+        );
+      }
+    }
     providers[key] = {
       key,
       label: requireStr(table, "label", where),
@@ -419,12 +465,13 @@ export function loadConfig(path?: string): Config {
       default_model,
       require_model,
       models,
-      opencode_id: optionalStr(table, "opencode_id", where) || key,
+      opencode_id,
       omp_id: ompIdRaw || key,
       require_infisical,
       anonymous,
       opencode_npm,
       opencode_models: opencode_models ?? {},
+      opencode_stop_on_429,
       opencode_base_url: optionalStr(table, "opencode_base_url", where),
       omp_custom: ompCustom,
       omp_api: ompApi,

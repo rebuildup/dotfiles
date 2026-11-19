@@ -50,6 +50,18 @@ adapter = "passthrough"
 default_model = "m1"
 `;
 
+const GEMINI_STUB_WRAPPER = `\u0024Payload = \u0024args
+\u0024ErrorActionPreference = 'Stop'
+\u0024prior = [Environment]::GetEnvironmentVariable('GEMINI_API_KEY')
+if (\u0024prior) { [IO.File]::WriteAllText(\u0024env:AGENT_TEST_OUT + '.ambient', 'present') }
+else { [IO.File]::WriteAllText(\u0024env:AGENT_TEST_OUT + '.ambient', 'absent') }
+\u0024env:GEMINI_API_KEY = 'test-infisical-gemini-key'
+\u0024exe = \u0024Payload[0]
+\u0024rest = \u0024Payload | Select-Object -Skip 1
+& \u0024exe @rest
+exit \u0024LASTEXITCODE
+`;
+
 class WinFixture {
   tmp: string;
   bindir: string;
@@ -62,6 +74,10 @@ class WinFixture {
     mkdirSync(this.bindir, { recursive: true });
     this.out = join(this.tmp, "child.txt");
     writeFileSync(join(this.bindir, "winpassthru.cmd"), ARGV_CAPTURE);
+    writeFileSync(
+      join(this.bindir, "opencode.cmd"),
+      `@echo off\n> "%AGENT_TEST_OUT%" echo %OPENCODE_CONFIG_CONTENT%\n>> "%AGENT_TEST_OUT%" echo %GEMINI_API_KEY%\n`,
+    );
     this.config = join(this.tmp, "config.toml");
     writeFileSync(this.config, WIN_CONFIG);
   }
@@ -197,6 +213,50 @@ describeWin("agent launcher Windows layers", () => {
       const model = fixture.run(["win", "--model", "x"]);
       check(model.exitCode === 2, `--model without provider must exit 2, got ${model.exitCode}`);
       check(model.stderr.toString().includes("requires a provider"), model.stderr.toString());
+    } finally {
+      fixture.clean();
+    }
+  });
+
+  test("test_windows_gemini_route_keeps_infisical_and_xhigh_contract", () => {
+    const fixture = new WinFixture();
+    const wrapper = join(fixture.tmp, "fake-with-secrets.ps1");
+    writeFileSync(wrapper, GEMINI_STUB_WRAPPER);
+    try {
+      const result = fixture.run(["opencode", "gemini"], {
+        AGENT_CONFIG: join(REPO, "config", "agents.toml"),
+        AGENT_WITH_SECRETS: wrapper,
+        GEMINI_API_KEY: "stale-ambient-value",
+        OPENCODE_CONFIG_CONTENT: JSON.stringify({ plugins: ["existing-test-plugin"] }),
+      });
+      check(result.exitCode === 0, `Gemini route failed: ${result.stderr.toString()}`);
+      check(readFileSync(fixture.out + ".ambient", "utf8") === "absent", "ambient key reached wrapper");
+      const [content, key] = readFileSync(fixture.out, "utf8").replace(/\r\n/g, "\n").trim().split("\n");
+      check(key === "test-infisical-gemini-key", "stub Infisical key did not reach OpenCode");
+      check(!content.includes("test-infisical-gemini-key"), "secret leaked into inline config");
+      const parsed = JSON.parse(content) as {
+        model?: string;
+        plugins?: unknown[];
+        provider?: Record<string, { env?: string[]; models?: Record<string, { settings?: { reasoningEffort?: string } }> }>;
+      };
+      check(parsed.model === "gemini/gemini-4-hydrogen", JSON.stringify(parsed));
+      check(parsed.plugins?.includes("existing-test-plugin"), JSON.stringify(parsed.plugins));
+      check(
+        parsed.plugins?.includes(join(REPO, "script", "agent", "opencode-gemini-free-tier")),
+        JSON.stringify(parsed.plugins),
+      );
+      check(
+        parsed.provider?.gemini?.env?.[0] === "GEMINI_API_KEY" &&
+          parsed.provider.gemini.models?.["gemini-4-hydrogen"]?.settings?.reasoningEffort === "xhigh",
+        JSON.stringify(parsed.provider),
+      );
+
+      const rejected = fixture.run(["opencode", "gemini", "--model", "MiniMax-M3"], {
+        AGENT_CONFIG: join(REPO, "config", "agents.toml"),
+        AGENT_WITH_SECRETS: wrapper,
+      });
+      check(rejected.exitCode === 2, `non-Hydrogen model must fail: ${rejected.stderr.toString()}`);
+      check(!existsSync(fixture.out), "rejected model must not start OpenCode");
     } finally {
       fixture.clean();
     }
