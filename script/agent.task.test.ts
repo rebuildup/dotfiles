@@ -863,6 +863,44 @@ describe("journal reconcile contract", () => {
     expect(after?.currentAttempt?.generation).toBe(7);
   });
 
+  it("a stale-lease zombie cannot commit an outcome after reconcile advanced the generation", async () => {
+    // Exact hole under test: run holds lease gen1 and its TaskAttempt is
+    // gen1; it stalls past expiry. reconcile acquires+releases gen2. If the
+    // zombie then calls recordAttemptOutcome with its (now stale) lease,
+    // the write must be REFUSED even though TaskAttempt.generation still
+    // matches — TaskAttempt-gen comparison alone cannot see lease fencing.
+    const taskId = `test-zombie-${randomUUID().slice(0, 8)}`;
+    const descriptor = { id: taskId, route: "omp.groq", model: "test-model", prompt: "zombie-prompt" };
+    const attempt = {
+      id: "a1", taskId, route: { harness: "omp", provider: "groq" }, model: "test-model",
+      attemptNumber: 1, startedAt: new Date().toISOString(), status: "running" as const,
+      generation: 1,
+    };
+    saveTaskState(taskId, { descriptor, history: [attempt], currentAttempt: attempt });
+    const key = formatAttemptKey({ route: descriptor.route, model: descriptor.model, machine: "", attempt: taskId });
+    const attempts = new FsAttemptStore();
+    const journal = new FsJournalStore();
+    // Zombie's lease: gen1, acquired "2h ago" with 1h TTL => already expired.
+    const zombie = acquireLease(attempts, key, "zombie", { now: Date.now() - 7200000, leaseMs: 3600000 });
+    journalPreEffect(attempts, journal, zombie, { effectId: "prompt-z", kind: "prompt-send", target: "w-z" }, Date.now() - 7100000);
+    // Reconcile supersedes: acquires gen2, resolves nothing (no evidence), releases.
+    await reconcileTaskEffects({ providers: {} } as Config, taskId);
+    // Zombie wakes and tries to commit its gen1 outcome with its dead lease.
+    expect(() =>
+      recordAttemptOutcome(taskId, attempt, { status: "completed" }, { lease: zombie }),
+    ).toThrow(ContractError);
+    // State untouched: still running gen1, no fabricated completion.
+    const after = loadTaskState(taskId);
+    expect(after?.currentAttempt?.status).toBe("running");
+    expect(after?.currentAttempt?.generation).toBe(1);
+    // A lease from a DIFFERENT attemptKey must also be refused.
+    const otherKey = formatAttemptKey({ route: "omp.kilo", model: "other", machine: "", attempt: taskId });
+    const foreign = acquireLease(attempts, otherKey, "foreign", { now: Date.now(), leaseMs: 3600000 });
+    expect(() =>
+      recordAttemptOutcome(taskId, attempt, { status: "completed" }, { lease: foreign }),
+    ).toThrow(/attemptKey/);
+  });
+
   it("duplicate effect ids cannot double-post", async () => {
     const taskId = `test-dupe-${randomUUID().slice(0, 8)}`;
     const descriptor = { id: taskId, route: "omp.groq", model: "test-model", prompt: "p" };

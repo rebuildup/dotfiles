@@ -53,6 +53,7 @@ import {
   initAttempt,
   acquireLease,
   releaseLease,
+  assertLeaseCurrent,
   type Lease,
 } from "./attempts.ts";
 import {
@@ -923,10 +924,17 @@ function recordCandidateAttempt(
     result: unknown;
   },
   credentialScope: string,
+  lease?: Lease,
 ): void {
   withTaskLock(parent.taskId, () => {
   const state = loadTaskState(parent.taskId);
   if (!state) return;
+  if (lease !== undefined) {
+    assertLeaseCurrent(taskAttemptStore, lease, Date.now());
+    if (lease.attemptKey !== taskAttemptKey(state.descriptor)) {
+      throw new ContractError("evidence", `lease attemptKey does not match task '${parent.taskId}'`);
+    }
+  }
   const served = servedWorker(record.result);
   const attempt: TaskAttempt = {
     id: randomUUID(),
@@ -1112,7 +1120,7 @@ export async function startTaskAttempt(
         // The model the task was dispatched with, not the route default:
         // the primary worker is already pinned to it.
         primaryModel: attempt.model,
-        onAttempt: (record) => recordCandidateAttempt(attempt, record, credentialScopeFor(config, record.route.provider)),
+        onAttempt: (record) => recordCandidateAttempt(attempt, record, credentialScopeFor(config, record.route.provider), opts?.lease),
       });
       const served = servedWorker(result.result);
       return {
@@ -1240,6 +1248,7 @@ export function recordAttemptOutcome(
   taskId: string,
   attempt: TaskAttempt,
   outcome: { status: "completed" | "failed" | "blocked"; error?: ClassifiedError; result?: unknown },
+  opts?: { lease?: Lease },
 ): TaskAttempt | null {
   // Load-modify-save runs under the per-task file lock so a concurrent
   // status read + outcome write (or two racing resumes) cannot lose an
@@ -1247,6 +1256,20 @@ export function recordAttemptOutcome(
   return withTaskLock(taskId, () => {
     const state = loadTaskState(taskId);
     if (!state) return null;
+    // Lease fence: when the caller holds the execution lease, the write is
+    // only valid while that lease is CURRENT. A zombie whose lease expired
+    // and was superseded (e.g. by reconcile or a later resume) cannot
+    // commit an outcome — the TaskAttempt-generation check alone cannot
+    // see lease-namespace fencing.
+    if (opts?.lease !== undefined) {
+      assertLeaseCurrent(taskAttemptStore, opts.lease, Date.now());
+      if (opts.lease.attemptKey !== taskAttemptKey(state.descriptor)) {
+        throw new ContractError(
+          "evidence",
+          `lease attemptKey '${opts.lease.attemptKey}' does not match task '${taskId}'`,
+        );
+      }
+    }
 
     const finished: TaskAttempt = {
       ...attempt,
@@ -1445,7 +1468,7 @@ export async function runTaskToCompletion(
   if (!startResult.success) {
     // Every authorized candidate failed. The classified reason travels with
     // the result, so the caller sees the real category (auth, quota, ...).
-    recordAttemptOutcome(descriptor.id, attempt, { status: "failed", error: startResult.error });
+    recordAttemptOutcome(descriptor.id, attempt, { status: "failed", error: startResult.error }, { lease });
     return {
       taskId: descriptor.id,
       attempt,
@@ -1520,7 +1543,7 @@ export async function runTaskToCompletion(
     status: taskSucceeded ? "completed" : "failed",
     error: outcomeError,
     result: storedResult,
-  });
+  }, { lease });
   // A fallback candidate ran on its own pane: close it only AFTER collect
   // has read the serving worker. The primary's root pane is never closed
   // here (paneId is set only for candidate workers).
@@ -1689,7 +1712,7 @@ export async function resumeTaskAttempt(
       ? (extractProviderFailureEvidence({ provider, cwd: process.cwd(), sinceMs: evidenceSinceMs, prompt }) ?? signal)
       : signal;
     const error = classifyFailure(enriched, new Date().toISOString());
-    recordAttemptOutcome(taskId, resumed, { status: "failed", error });
+    recordAttemptOutcome(taskId, resumed, { status: "failed", error }, { lease });
     return { taskId, attempt: resumed, success: false, error };
   }
   // Same late-error contract as dispatch: Herdr "delivered" is not proof the
@@ -1701,7 +1724,7 @@ export async function resumeTaskAttempt(
     : null;
   if (late) {
     const error = classifyFailure(late, new Date().toISOString());
-    recordAttemptOutcome(taskId, resumed, { status: "failed", error });
+    recordAttemptOutcome(taskId, resumed, { status: "failed", error }, { lease });
     return { taskId, attempt: resumed, success: false, error };
   }
   const output = await readWorkerOutput(resumed.herdrWorkerName!);
