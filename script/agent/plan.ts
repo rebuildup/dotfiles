@@ -6,6 +6,7 @@
  * come from exec.ts and passthru policy from args.ts (no runtime cycles).
  */
 
+import { join } from "node:path";
 import { AgentError } from "./errors.ts";
 import { checkPassthru } from "./args.ts";
 import {
@@ -17,8 +18,9 @@ import {
   type Provider,
   type Route,
 } from "./config.ts";
-import { CRED_MARKER, MODEL_MARKER, PROVIDER_MARKER } from "./exec.ts";
+import { CRED_MARKER, MODEL_MARKER, PLUGIN_MARKER, PROVIDER_MARKER } from "./exec.ts";
 import { planOmp } from "./omp.ts";
+import { dotfilesRepoRoot } from "./util.ts";
 
 export interface Plan {
   command: string[];
@@ -221,7 +223,13 @@ function planOpencode(plan: Plan, harness: Harness, provider: Provider, model: s
       if (!spec) {
         throw new AgentError(`provider '${provider.key}' has no opencode_models entry for '${id}'`);
       }
-      models[id] = spec;
+      models[id] = {
+        tool_call: spec.tool_call,
+        limit: spec.limit,
+        ...(spec.reasoning_effort
+          ? { settings: { reasoningEffort: spec.reasoning_effort } }
+          : {}),
+      };
     }
     const block: Record<string, unknown> = {
       npm: provider.opencode_npm,
@@ -234,6 +242,17 @@ function planOpencode(plan: Plan, harness: Harness, provider: Provider, model: s
       configEnv,
       PROVIDER_MARKER + JSON.stringify({ [provider.opencode_id]: block }),
     ]);
+    if (provider.opencode_stop_on_429) {
+      // This path is attached last so the terminal quota hook runs after
+      // any caller-supplied plugins in the merged inline configuration.
+      plan.assign.push([
+        configEnv,
+        PLUGIN_MARKER +
+          JSON.stringify(
+            join(dotfilesRepoRoot(), "script", "agent", "opencode-gemini-free-tier"),
+          ),
+      ]);
+    }
   }
 
   // A running background `opencode` service loads config and credentials

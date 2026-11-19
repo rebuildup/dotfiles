@@ -44,6 +44,7 @@ drop_env = [
   "MIMO_API_KEY",
   "MINIMAX_API_KEY",
   "MISTRAL_API_KEY",
+  "GEMINI_API_KEY",
   "MINIMAX_M_PLAN_KEY",
   "MINIMAX_TOKEN_PLAN_KEY",
   "OPENCODE_API_KEY",
@@ -257,6 +258,26 @@ models = ["deepseek-v4.1-flash-1017", "glm-5.3"]
 opencode_npm = "@ai-sdk/openai-compatible"
 opencode_base_url = "https://logfare.ai/v1"
 omp_custom = true
+
+# Google AI Studio Gemini Developer API. The account owner confirmed that
+# this key belongs to a dedicated Free Tier project with no linked billing
+# account or Prepay. Infisical presence alone is not billing evidence; this
+# route is fixed to the standard Gemini API model and has no paid fallback.
+[providers.gemini]
+label = "Google AI Studio Gemini Developer API (Free Tier)"
+base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
+secret = "GEMINI_API_KEY"
+env = "GEMINI_API_KEY"
+require_infisical = true
+default_model = "gemini-4-hydrogen"
+models = ["gemini-4-hydrogen"]
+opencode_npm = "@ai-sdk/openai-compatible"
+opencode_stop_on_429 = true
+
+[providers.gemini.opencode_models."gemini-4-hydrogen"]
+tool_call = true
+limit = { context = 1048576, output = 65536 }
+reasoning_effort = "xhigh"
 
 # Mistral Education / Pro plan; Code > Vibe CLI PLAN key stored in Infisical
 # as MISTRAL_API_KEY. Never use a pay-as-you-go API key here by accident.
@@ -748,6 +769,9 @@ note = "Keep MiniMax-M3 as the known working route default; the formal MiniMax-M
 
 [routes."opencode.logfare"]
 note = "Explicit Logfare route (OpenAI-compatible https://logfare.ai/v1, custom provider registered via opencode_npm). Never a fallback target and never selected implicitly: 5,000 req/day, 6 concurrent per account. Needs Infisical LOGFARE_API_KEY plus the /consent training opt-in (both models are premium). Real response + shell-tool call + both models verified 2026-11-05."
+
+[routes."opencode.gemini"]
+note = "Explicit opt-in route to only gemini-4-hydrogen at xhigh. GEMINI_API_KEY is read only from Infisical; the process-scoped OpenCode guard pins every request to this model and stops on 429. Dedicated AI Studio Free Tier project, no billing account or Prepay, owner-confirmed 2026-11-19. No grounding tools, implicit fallback, or paid route."
 
 [routes."opencode.mistral"]
 note = "Infisical Vibe plan key, volume-first GLM 5.3 Flash, no automatic paid or model fallback. Verify real model availability before use."
