@@ -1731,6 +1731,9 @@ export async function reconcileTaskEffects(
               : a.herdrWorkerName === effect.target,
           );
         const handle = owner ? workerHandleOf(owner) : null;
+        // An inconclusive probe (runtime unreachable) resolves to "still
+        // pending" exactly like a missing worker — fail closed either way,
+        // never assume the start did not happen.
         const worker = handle ? await adapter.getWorker(handle).catch(() => null) : null;
         if (worker !== null) outcome = "succeeded";
       }
@@ -1775,8 +1778,20 @@ export async function resumeTaskAttempt(
   // Safety gate: the worker must EXIST in the runtime, not merely fail to
   // report "completed" — a wait timeout is indistinguishable from a live
   // worker, so probe the worker record itself. A dead/gone worker fails
-  // closed: resuming into nothing would silently drop the task.
-  const worker = await adapter.getWorker(resumeHandle).catch(() => null);
+  // closed: resuming into nothing would silently drop the task. An
+  // INCONCLUSIVE probe (runtime unreachable) is reported as such — it is
+  // not evidence the worker is gone.
+  let worker: { name: string; status: string } | null;
+  try {
+    worker = await adapter.getWorker(resumeHandle);
+  } catch (error) {
+    throw new ContractError(
+      "state",
+      `task '${taskId}' worker probe on ${runtime} was inconclusive: ` +
+        `${error instanceof Error ? error.message : String(error)}; ` +
+        "restore runtime connectivity before resume",
+    );
+  }
   if (worker === null) {
     throw new ContractError(
       "state",

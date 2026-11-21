@@ -25,8 +25,16 @@ describe("runtime contract", () => {
 
   it("treats a missing runtime field as herdr (pre---runtime records)", () => {
     expect(attemptRuntime({})).toBe("herdr");
+    expect(attemptRuntime({ runtime: "herdr" })).toBe("herdr");
     expect(attemptRuntime({ runtime: "rex" })).toBe("rex");
-    expect(attemptRuntime({ runtime: "bogus" })).toBe("herdr");
+  });
+
+  it("fails closed on an unknown runtime value", () => {
+    // A bogus runtime must never be silently read as Herdr: that could aim
+    // Rex operations at a Herdr worker or vice versa.
+    expect(() => attemptRuntime({ runtime: "tmux" })).toThrow(/unknown task runtime/);
+    expect(() => workerHandleOf({ runtime: "tmux", herdrWorkerName: "w" })).toThrow();
+    expect(() => attemptWorkerId({ runtime: "tmux" })).toThrow();
   });
 
   it("maps attempt fields to the runtime-scoped worker identity", () => {

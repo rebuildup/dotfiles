@@ -40,6 +40,7 @@ import {
   blockProcess,
   deriveWorkerState,
   getBlock,
+  inspectBlockPresence,
   closeBlock,
   killSession,
   saveRexTaskMapping,
@@ -245,16 +246,26 @@ const rexAdapter: TaskRuntimeAdapter = {
 
   async createSurface(cwd, label) {
     const session = await createSession(cwd, label);
-    // The session's first window holds a root shell block; it doubles as the
-    // default split anchor, mirroring the Herdr root pane.
-    const detail = await getSession(session.id);
-    const rootBlock = detail?.windows[0]?.blocks[0];
-    return {
-      surfaceId: session.id,
-      paneId: rootBlock?.id ?? "",
-      windowId: detail?.windows[0]?.id,
-      tabId: detail?.windows[0]?.id,
-    };
+    try {
+      // The session's first window holds a root shell block; it doubles as
+      // the default split anchor, mirroring the Herdr root pane. A failed
+      // inspection is a transport problem, not an empty session — fail
+      // closed and clean up the surface we just created.
+      const detail = await getSession(session.id);
+      if (detail === null) {
+        throw new ContractError("state", `Rex session ${session.id} inspection failed`);
+      }
+      const rootBlock = detail.windows[0]?.blocks[0];
+      return {
+        surfaceId: session.id,
+        paneId: rootBlock?.id ?? "",
+        windowId: detail.windows[0]?.id,
+        tabId: detail.windows[0]?.id,
+      };
+    } catch (error) {
+      await killSession(session.id).catch(() => {});
+      throw error;
+    }
   },
 
   async createPane(surfaceId, opts) {
@@ -316,30 +327,40 @@ const rexAdapter: TaskRuntimeAdapter = {
     const sessionId = requireSessionId(handle, "wait");
     const blockId = handle.paneId ?? handle.id;
     const deadline = Date.now() + timeoutMs;
+    let lastState = "unknown";
     for (;;) {
-      const block = await getBlock(sessionId, blockId).catch(() => null);
-      if (block === null) {
+      // Existence is probed separately from status: only a definitive
+      // "absent" may end the wait. A transport/command failure is "unknown"
+      // and keeps polling — it is never read as worker exit.
+      const presence = await inspectBlockPresence(sessionId, blockId);
+      if (presence === "absent") {
         // The worker's terminal is gone: the process exited and the block
-        // closed (no --keep-open on worker blocks). That is a settled end
-        // state, equivalent to Herdr's done/idle.
+        // closed. That is a settled end state, equivalent to Herdr's
+        // done/idle.
         return { completed: true, reason: "worker exited" };
       }
-      const records = await blockProgramStatus(sessionId, blockId).catch(
-        () => [] as RexProgramStatusRecord[],
-      );
-      const state = deriveWorkerState(records);
-      if (state === "idle" || state === "done") {
-        return { completed: true, reason: state };
-      }
-      if (state === "blocked") {
-        return { completed: false, reason: "blocked" };
-      }
-      const proc = await blockProcess(sessionId, blockId).catch(() => null);
-      if (proc !== null && proc.lastExit !== null) {
-        return { completed: true, reason: `exit ${proc.lastExit}` };
+      if (presence === "present") {
+        const records = await blockProgramStatus(sessionId, blockId).catch(
+          () => [] as RexProgramStatusRecord[],
+        );
+        const state = deriveWorkerState(records);
+        lastState = state;
+        if (state === "idle" || state === "done") {
+          return { completed: true, reason: state };
+        }
+        if (state === "blocked") {
+          return { completed: false, reason: "blocked" };
+        }
+        const proc = await blockProcess(sessionId, blockId).catch(() => null);
+        if (proc !== null && proc.lastExit !== null) {
+          return { completed: true, reason: `exit ${proc.lastExit}` };
+        }
       }
       if (Date.now() >= deadline) {
-        return { completed: false, reason: state === "unknown" ? "timeout" : state };
+        return {
+          completed: false,
+          reason: presence === "unknown" ? "runtime-unreachable" : lastState === "unknown" ? "timeout" : lastState,
+        };
       }
       await new Promise((r) => setTimeout(r, REX_WAIT_POLL_MS));
     }
@@ -348,7 +369,14 @@ const rexAdapter: TaskRuntimeAdapter = {
   async getWorker(handle) {
     const sessionId = handle.surfaceId;
     if (!sessionId) return null;
-    const block = await getBlock(sessionId, handle.paneId ?? handle.id).catch(() => null);
+    const blockId = handle.paneId ?? handle.id;
+    const presence = await inspectBlockPresence(sessionId, blockId);
+    if (presence === "absent") return null;
+    if (presence === "unknown") {
+      // Fail closed: an unreachable runtime is not proof the worker is gone.
+      throw new ContractError("state", `Rex worker probe inconclusive for block ${blockId}`);
+    }
+    const block = await getBlock(sessionId, blockId).catch(() => null);
     return block === null ? null : { name: block.id, status: "present" };
   },
 
@@ -405,9 +433,13 @@ export function runtimeAdapter(kind: RuntimeKind): TaskRuntimeAdapter {
 // ---------------------------------------------------------------------------
 
 /** The runtime an attempt runs on. Records written before --runtime existed
- * have no `runtime` field and are Herdr attempts. */
+ * have no `runtime` field and are Herdr attempts. An UNKNOWN value fails
+ * closed — silently treating it as Herdr could aim Rex operations at a
+ * Herdr worker (or vice versa). */
 export function attemptRuntime(attempt: { runtime?: string }): RuntimeKind {
-  return attempt.runtime === "rex" ? "rex" : "herdr";
+  if (attempt.runtime === undefined || attempt.runtime === "herdr") return "herdr";
+  if (attempt.runtime === "rex") return "rex";
+  throw new ContractError("schema", `unknown task runtime '${attempt.runtime}'`);
 }
 
 /** Canonical worker id for an attempt: Herdr agent name | Rex block id. */
