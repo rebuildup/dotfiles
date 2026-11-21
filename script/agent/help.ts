@@ -698,13 +698,13 @@ subcommands:
   agent fallback <profile-id> [--json]  resolve and display an opt-in
                              continuity profile for authorized same-harness
                              fallback (issue #136); does not execute fallback
-  agent task run <route>               dispatch a prompt to a Herdr worker on
+  agent task run <route>               dispatch a prompt to a worker on
                              <harness>.<provider>; --model picks the model
                              (route default); --fallback names an opt-in
                              continuity profile; --prompt supplies task
                              text (stdin when omitted); --accept verifies
-                             criteria post-collect; --fallback needs
-                             --accept, git cwd, or --allow-unobserved-effects
+                             criteria post-collect; --runtime herdr|rex picks
+                             the runtime (default herdr); --fallback needs --accept, git cwd, or --allow-unobserved-effects
   agent task resume <task-id>          continue an attempt in place
   agent task status|reconcile <task-id> durable state / resolve journal UNKNOWNs
   agent help --json          machine-readable help (quotes this text)

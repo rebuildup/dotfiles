@@ -276,6 +276,34 @@ function insideHerdr(): boolean {
   );
 }
 
+const OMP_REX_STATUS = "rex-omp-agent-state.ts";
+
+/** Project-managed OMP extension that reports worker state as OSC 7501
+ * program-status records to the enclosing Rex block (ADR-0021). Shipped next
+ * to this launcher and loaded with --trusted-extension like the destructive
+ * guard; a missing file must fail before a process starts. */
+function ompRexStatusPath(): string {
+  const candidate = join(import.meta.dir, "..", OMP_REX_STATUS);
+  try {
+    return realpathSync(candidate);
+  } catch {
+    throw new AgentError(
+      `missing OMP Rex status extension: ${candidate}; refusing to start ` +
+        "a Rex worker without its program-status reporter",
+      EXIT_RUNTIME
+    );
+  }
+}
+
+/** True when the launcher itself runs inside a Rex block (interactive
+ * `agent omp ...` inside Rex). Worker dispatch passes rexStatus explicitly
+ * because the launcher process is not inside the block it creates. */
+function insideRex(): boolean {
+  return Boolean(
+    process.env.REX_BLOCK || process.env.REX_SESSION || process.env.REX_SERVER
+  );
+}
+
 export interface OmpWorkerPreparation {
   /** `--profile` value for managed-profile providers, else null. */
   profile: string | null;
@@ -357,7 +385,12 @@ export function prepareOmpWorker(provider: Provider): OmpWorkerPreparation {
  * hardening every worker gets: the destructive guard and overlay are loaded
  * for Herdr-started workers exactly as for launcher-started ones.
  */
-export function ompWorkerArgs(provider: Provider, model: string, prepared: OmpWorkerPreparation): string[] {
+export function ompWorkerArgs(
+  provider: Provider,
+  model: string,
+  prepared: OmpWorkerPreparation,
+  options: { rexStatus?: boolean } = {},
+): string[] {
   const args: string[] = [
     "--provider", provider.omp_id,
     "--model", model,
@@ -390,6 +423,13 @@ export function ompWorkerArgs(provider: Provider, model: string, prepared: OmpWo
   );
   if (insideHerdr()) {
     args.push("--trusted-extension", ompHerdrExtensionPath());
+  }
+  // The Rex status reporter is added for Rex-dispatched workers (explicit
+  // rexStatus) and for interactive launches already inside a Rex block. It
+  // self-disables unless REX_* env is present, so it cannot double-report
+  // into Herdr even if both flags were ever combined.
+  if (options.rexStatus || insideRex()) {
+    args.push("--trusted-extension", ompRexStatusPath());
   }
   return args;
 }
