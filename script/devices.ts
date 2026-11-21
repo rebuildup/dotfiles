@@ -40,8 +40,12 @@ export function validateRegistry(values:unknown[]):Device[] {
  return nodes.sort((a,b)=>a.id.localeCompare(b.id));
 }
 function quotePath(p:string){if(/[\r\n"%]/.test(p))throw Error('unsupported path');return '"'+p.replaceAll('\\','/')+'"';}
-export function renderSSH(nodes:Device[],home:string):string {
- return marker+nodes.map(n=>`Host device-${n.id}
+// The rex-* aliases mirror device-* but permit forwarding: the rex CLI reaches a
+// remote server over ssh -L streamlocal forwarding, which ClearAllForwardings
+// would otherwise strip. Host key verification still resolves through the same
+// HostKeyAlias entry, so no second trust decision is introduced.
+function sshBlock(n:Device,home:string,alias:string,forwarding:boolean){
+ return `Host ${alias}
   HostName ${n.host}
   Port ${n.port}
   User ${n.user}
@@ -55,8 +59,7 @@ export function renderSSH(nodes:Device[],home:string):string {
   UpdateHostKeys no
   ForwardAgent no
   ForwardX11 no
-  ClearAllForwardings yes
-  ProxyCommand none
+${forwarding?'':'  ClearAllForwardings yes\n'}  ProxyCommand none
   ProxyJump none
   PermitLocalCommand no
   ControlMaster no
@@ -65,7 +68,10 @@ export function renderSSH(nodes:Device[],home:string):string {
   ConnectionAttempts 1
   ServerAliveInterval 15
   ServerAliveCountMax 3
-`).join('\n')+'\nHost *\n';
+`;
+}
+export function renderSSH(nodes:Device[],home:string):string {
+ return marker+nodes.flatMap(n=>[sshBlock(n,home,`device-${n.id}`,false),sshBlock(n,home,`rex-${n.id}`,true)]).join('\n')+'\nHost *\n';
 }
 export class IdentityMismatch extends Error {}
 export function assertIdentity(n:Device,output:string){
