@@ -145,6 +145,9 @@ export interface RexProgramStatusRecord {
   app?: string;
   msg?: string;
   progress?: number;
+  /** Server-side report timestamp; distinguishes a re-report of an identical
+   * state (a new turn's `done`) from the stale record it replaces. */
+  updatedAt?: string;
 }
 
 export interface RexProcessInfo {
@@ -449,6 +452,7 @@ export async function blockProgramStatus(sessionId: string, blockId: string): Pr
       app: rexStr(raw["app"]),
       msg: rexStr(raw["msg"]),
       progress: typeof raw["progress"] === "number" ? raw["progress"] : undefined,
+      updatedAt: rexStr(raw["updated_at"]),
     });
   }
   return records;

@@ -560,6 +560,7 @@ export function buildAgentStartOptions(
   provider: Provider,
   model: string,
   prepared?: OmpWorkerPreparation,
+  options: { rexStatus?: boolean } = {},
 ): string[] {
   // The worker argv is built by the same function the interactive plan path
   // uses, so a Herdr worker gets the destructive guard, tool-surface overlay,
@@ -582,7 +583,7 @@ export function buildAgentStartOptions(
     );
   }
   const fallback: OmpWorkerPreparation = prepared ?? { profile: null, managed: null };
-  return ["--", ...ompWorkerArgs(provider, model, fallback)];
+  return ["--", ...ompWorkerArgs(provider, model, fallback, options)];
 }
 
 // ---------------------------------------------------------------------------
@@ -664,7 +665,9 @@ export async function dispatchTask(
 
   // Build worker name
   const workerName = `worker-${descriptor.id.slice(0, 8)}-${route.harness}-${randomUUID().slice(0, 8)}`;
-  const agentOptions = buildAgentStartOptions(provider, descriptor.model, prepared);
+  const agentOptions = buildAgentStartOptions(provider, descriptor.model, prepared, {
+    rexStatus: runtime === "rex",
+  });
   // Rex runs the harness argv directly inside a block; Herdr launches the
   // agent by kind inside a pane. The argv strips buildAgentStartOptions'
   // leading "--" separator and prepends the harness command.
@@ -1122,7 +1125,9 @@ export async function startTaskAttempt(
           ?? prepareOmpWorker(candidateProvider);
         preparedProviders.set(routeRef.provider, candidatePrepared);
         await verifyOmpManagedCredential(candidateProvider);
-        const options = buildAgentStartOptions(candidateProvider, model, candidatePrepared);
+        const options = buildAgentStartOptions(candidateProvider, model, candidatePrepared, {
+          rexStatus: attemptRuntime(attempt) === "rex",
+        });
         const candidateArgv = [
           candidateHarness.command,
           ...(options[0] === "--" ? options.slice(1) : options),
