@@ -109,6 +109,11 @@ export default function (pi) {
   }
 
   function publish(state: string, kind?: string, msg?: string, force = false) {
+    // Never report the initial resting `idle`: a consumer snapshotting
+    // program_status before the first prompt would see this startup idle as
+    // a "fresh" settle and conclude the turn ended before it began. idle is
+    // only meaningful as a transition away from a reported state.
+    if (state === "idle" && lastEmitted === undefined) return;
     const key = `${state}|${kind ?? ""}|${msg ?? ""}`;
     if (!force && key === lastEmitted) return;
     lastEmitted = key;
