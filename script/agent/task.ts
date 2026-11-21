@@ -690,7 +690,9 @@ async function preflightRemoteWorker(
     const modelsPath = join(agentDir, "models.yml");
     const content = renderOmpModelsYaml(provider, remoteHome);
     const marker = OMP_MODELS_MANAGED_MARKER;
-    const owned = `[ ! -e ${remoteShQuote(modelsPath)} ] || [ "$(head -1 ${remoteShQuote(modelsPath)})" = ${remoteShQuote(marker)} ]`;
+    // startsWith semantics, like ensureOmpManagedProfile: the marker is a
+    // prefix of the first line, not the whole line.
+    const owned = `[ ! -e ${remoteShQuote(modelsPath)} ] || head -1 ${remoteShQuote(modelsPath)} | grep -qF ${remoteShQuote(marker)}`;
     await remoteRequire(server, sessionId, {
       desc: `remote models.yml exists without the managed marker: ${modelsPath}`,
       argv: ["sh", "-c", owned],
