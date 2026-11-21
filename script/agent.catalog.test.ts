@@ -19,8 +19,14 @@ import { ContractError, isUsable } from "./agent/contract";
 const REPO = dirname(dirname(realpathSync(import.meta.path)));
 const REAL_CONFIG = join(REPO, "config", "agents.toml");
 
-/** Reference clock for freshness checks: fresh for every recorded evidence date. */
-const NOW = Date.parse("2026-11-06T12:00:00Z");
+/** Reference clock for freshness checks, anchored just after the freshest
+ * committed e2e evidence (set in beforeAll once the catalog is loaded).
+ * A fixed calendar date made this suite break on every evidence renewal —
+ * the same date-dependent trap as dotfiles#203; deriving `now` from the
+ * catalog keeps the freshness check itself exercised without coupling the
+ * suite to the renewal calendar. Operator-facing staleness detection lives
+ * in `agent check` warnings, not here. */
+let NOW = Date.parse("2026-11-06T12:00:00Z");
 
 let catalog: Catalog;
 
@@ -75,6 +81,15 @@ note = "fixture"
 describe("loadCatalog: real config", () => {
   beforeAll(() => {
     catalog = loadCatalog(REAL_CONFIG);
+    let freshest = 0;
+    for (const route of Object.values(catalog.routes)) {
+      for (const attested of [route.e2e, route.restriction]) {
+        const at = attested?.evidence?.at;
+        const ms = typeof at === "string" ? Date.parse(at) : NaN;
+        if (Number.isFinite(ms) && ms > freshest) freshest = ms;
+      }
+    }
+    if (freshest > 0) NOW = freshest + 24 * 60 * 60 * 1000;
   });
 
   test("real config catalog validates (malformed catalog fails here)", () => {
