@@ -704,7 +704,10 @@ subcommands:
                              continuity profile; --prompt supplies task
                              text (stdin when omitted); --accept verifies
                              criteria post-collect; --runtime herdr|rex picks
-                             the runtime (default herdr); --fallback needs --accept, git cwd, or --allow-unobserved-effects
+                             the runtime (default herdr); --rex-host <label>
+                             runs on a remote rex host (requires --runtime rex
+                             and an absolute remote --cwd); --fallback needs
+                             --accept, git cwd, or --allow-unobserved-effects
   agent task resume <task-id>          continue an attempt in place
   agent task status|reconcile <task-id> durable state / resolve journal UNKNOWNs
   agent help --json          machine-readable help (quotes this text)

@@ -60,12 +60,18 @@ interface RexSpawnResult {
   code: number;
 }
 
-async function rexSpawn(args: string[], opts: { cwd?: string; timeoutMs?: number } = {}): Promise<RexSpawnResult | null> {
+async function rexSpawn(args: string[], opts: { cwd?: string; timeoutMs?: number; server?: string } = {}): Promise<RexSpawnResult | null> {
   try {
-    const proc = await Bun.spawn([rexBin(), ...args], {
+    // `-S` selects the Rex server (a `rex hosts` label or address). Every
+    // operation of one task attempt targets the SAME recorded host; there is
+    // no implicit fallback to the local server or another host.
+    const argv = opts.server ? ["-S", opts.server, ...args] : args;
+    const proc = await Bun.spawn([rexBin(), ...argv], {
       stdout: "pipe",
       stderr: "pipe",
-      cwd: opts.cwd,
+      // A remote cwd is a path ON THE HOST, meaningless to the local rex
+      // CLI process — passing it would fail the spawn itself.
+      cwd: opts.server ? undefined : opts.cwd,
     });
     const stdout = await new TextDecoder().decode(await new Response(proc.stdout).arrayBuffer());
     const stderr = await new TextDecoder().decode(await new Response(proc.stderr).arrayBuffer());
@@ -166,12 +172,12 @@ export interface RexProcessInfo {
 export async function createSession(
   cwd: string,
   label: string,
-  options: { windowLabel?: string; command?: string[] } = {}
+  options: { windowLabel?: string; command?: string[]; server?: string } = {}
 ): Promise<RexSessionDetail> {
   const args = ["new", label, "-c", cwd, "--json"];
   if (options.windowLabel) args.push("--window", options.windowLabel);
   if (options.command && options.command.length > 0) args.push("--", ...options.command);
-  const result = requireRex(await rexSpawn(args, { cwd }), "session create");
+  const result = requireRex(await rexSpawn(args, { cwd, server: options.server }), "session create");
   const parsed = parseRexJson(result.stdout.trim(), "session create");
   if (!isPlainObject(parsed) || typeof parsed["session_id"] !== "string") {
     throw new ContractError("schema", "Rex session create: missing session_id");
@@ -184,8 +190,8 @@ export async function createSession(
   };
 }
 
-export async function listSessions(): Promise<RexSession[]> {
-  const result = await rexSpawn(["ls", "--json"]);
+export async function listSessions(server?: string): Promise<RexSession[]> {
+  const result = await rexSpawn(["ls", "--json"], { server });
   if (result === null || result.code !== 0) return [];
   const parsed = parseRexJsonOrNull(result.stdout.trim());
   if (!isPlainObject(parsed) || !Array.isArray(parsed["sessions"])) return [];
@@ -213,8 +219,8 @@ function rexBlockFromRaw(raw: unknown): RexBlock | null {
 }
 
 /** `rex session inspect --json` → windows with their blocks. */
-export async function getSession(sessionId: string): Promise<RexSessionDetail | null> {
-  const result = await rexSpawn(["session", "inspect", sessionId, "--json"]);
+export async function getSession(sessionId: string, server?: string): Promise<RexSessionDetail | null> {
+  const result = await rexSpawn(["session", "inspect", sessionId, "--json"], { server });
   if (result === null || result.code !== 0) return null;
   const parsed = parseRexJsonOrNull(result.stdout.trim());
   if (!isPlainObject(parsed)) return null;
@@ -274,6 +280,8 @@ export interface RunBlockOptions {
   keepOpen?: boolean;
   /** Also read the shell's interactive startup files (needed for mise/agent PATH). */
   interactive?: boolean;
+  /** Rex host label/address; absent = the local server. */
+  server?: string;
 }
 
 function envPrefix(env: Record<string, string> | undefined): string[] {
@@ -316,13 +324,13 @@ export async function runBlock(options: RunBlockOptions): Promise<{ blockId: str
   args.push("--json");
   // No argv -> plain `--` omitted so the block runs a login shell.
   if (argv.length > 0) args.push("--", ...argv);
-  const result = requireRex(await rexSpawn(args), "block create");
+  const result = requireRex(await rexSpawn(args, { server: options.server }), "block create");
   return parseBlockCreation(parseRexJson(result.stdout.trim(), "block create"), "block create");
 }
 
 /** All blocks in a session (`rex block ls --json`). */
-export async function listBlocks(sessionId: string): Promise<RexBlock[]> {
-  const result = await rexSpawn(["block", "ls", "-s", sessionId, "--json"]);
+export async function listBlocks(sessionId: string, server?: string): Promise<RexBlock[]> {
+  const result = await rexSpawn(["block", "ls", "-s", sessionId, "--json"], { server });
   if (result === null || result.code !== 0) return [];
   const parsed = parseRexJsonOrNull(result.stdout.trim());
   if (!isPlainObject(parsed) || !Array.isArray(parsed["blocks"])) return [];
@@ -330,8 +338,8 @@ export async function listBlocks(sessionId: string): Promise<RexBlock[]> {
 }
 
 /** One block's metadata, or null when it no longer exists. */
-export async function getBlock(sessionId: string, blockId: string): Promise<RexBlock | null> {
-  const result = await rexSpawn(["block", "inspect", "-s", sessionId, blockId, "--json"]);
+export async function getBlock(sessionId: string, blockId: string, server?: string): Promise<RexBlock | null> {
+  const result = await rexSpawn(["block", "inspect", "-s", sessionId, blockId, "--json"], { server });
   if (result === null || result.code !== 0) return null;
   const parsed = parseRexJsonOrNull(result.stdout.trim());
   if (!isPlainObject(parsed)) return null;
@@ -353,8 +361,8 @@ export type BlockPresence = "present" | "absent" | "unknown";
  *   command failed for any other reason. Callers must NOT treat this as
  *   absence — a transport blip is not evidence the worker exited.
  */
-export async function inspectBlockPresence(sessionId: string, blockId: string): Promise<BlockPresence> {
-  const result = await rexSpawn(["block", "inspect", "-s", sessionId, blockId, "--json"]);
+export async function inspectBlockPresence(sessionId: string, blockId: string, server?: string): Promise<BlockPresence> {
+  const result = await rexSpawn(["block", "inspect", "-s", sessionId, blockId, "--json"], { server });
   if (result === null) return "unknown";
   if (result.code === 0) {
     const parsed = parseRexJsonOrNull(result.stdout.trim());
@@ -367,24 +375,24 @@ export async function inspectBlockPresence(sessionId: string, blockId: string): 
   return "unknown";
 }
 
-export async function closeBlock(sessionId: string, blockId: string): Promise<void> {
-  const result = await rexSpawn(["block", "close", "-s", sessionId, blockId]);
+export async function closeBlock(sessionId: string, blockId: string, server?: string): Promise<void> {
+  const result = await rexSpawn(["block", "close", "-s", sessionId, blockId], { server });
   if (result === null) return; // rex not available; nothing to clean
   if (result.code !== 0) {
     throw new ContractError("state", `Rex block close failed: ${result.stderr.trim() || result.stdout.trim()}`);
   }
 }
 
-export async function closeWindow(sessionId: string, windowId: string): Promise<void> {
-  const result = await rexSpawn(["window", "close", "-s", sessionId, windowId]);
+export async function closeWindow(sessionId: string, windowId: string, server?: string): Promise<void> {
+  const result = await rexSpawn(["window", "close", "-s", sessionId, windowId], { server });
   if (result === null) return;
   if (result.code !== 0) {
     throw new ContractError("state", `Rex window close failed: ${result.stderr.trim() || result.stdout.trim()}`);
   }
 }
 
-export async function killSession(sessionId: string): Promise<void> {
-  const result = await rexSpawn(["kill", sessionId]);
+export async function killSession(sessionId: string, server?: string): Promise<void> {
+  const result = await rexSpawn(["kill", sessionId], { server });
   if (result === null) return;
   if (result.code !== 0) {
     throw new ContractError("state", `Rex session kill failed: ${result.stderr.trim() || result.stdout.trim()}`);
@@ -396,28 +404,28 @@ export async function killSession(sessionId: string): Promise<void> {
 // ---------------------------------------------------------------------------
 
 /** Type text into a block's foreground program (`rex send`). */
-export async function sendText(sessionId: string, blockId: string, text: string): Promise<void> {
+export async function sendText(sessionId: string, blockId: string, text: string, server?: string): Promise<void> {
   requireRex(
-    await rexSpawn(["send", "-s", sessionId, "-b", blockId, text]),
+    await rexSpawn(["send", "-s", sessionId, "-b", blockId, text], { server }),
     "send",
   );
 }
 
 /** Press a key in a block (`rex send-key`). */
-export async function sendKey(sessionId: string, blockId: string, key: string): Promise<void> {
-  requireRex(await rexSpawn(["send-key", "-s", sessionId, "-b", blockId, key]), "send-key");
+export async function sendKey(sessionId: string, blockId: string, key: string, server?: string): Promise<void> {
+  requireRex(await rexSpawn(["send-key", "-s", sessionId, "-b", blockId, key], { server }), "send-key");
 }
 
 /** Screen + scrollback of a block (`rex capture`). */
 export async function captureBlock(
   sessionId: string,
   blockId: string,
-  options: { trim?: boolean; unwrap?: boolean; tailLines?: number } = {}
+  options: { trim?: boolean; unwrap?: boolean; tailLines?: number; server?: string } = {}
 ): Promise<string> {
   const args = ["capture", "-s", sessionId, "-b", blockId];
   if (options.trim) args.push("--trim");
   if (options.unwrap) args.push("--unwrap");
-  const result = requireRex(await rexSpawn(args), "capture");
+  const result = requireRex(await rexSpawn(args, { server: options.server }), "capture");
   let text = result.stdout;
   if (options.tailLines !== undefined && options.tailLines > 0) {
     const lines = text.replace(/\n$/, "").split("\n");
@@ -430,15 +438,15 @@ export async function captureBlock(
 // Observation
 // ---------------------------------------------------------------------------
 
-async function blockCall(sessionId: string, blockId: string, method: string): Promise<unknown | null> {
-  const result = await rexSpawn(["block", "call", "-s", sessionId, "-b", blockId, method]);
+async function blockCall(sessionId: string, blockId: string, method: string, server?: string): Promise<unknown | null> {
+  const result = await rexSpawn(["block", "call", "-s", sessionId, "-b", blockId, method], { server });
   if (result === null || result.code !== 0) return null;
   return parseRexJsonOrNull(result.stdout.trim());
 }
 
 /** OSC 7501 program_status records reported by programs in the block. */
-export async function blockProgramStatus(sessionId: string, blockId: string): Promise<RexProgramStatusRecord[]> {
-  const parsed = await blockCall(sessionId, blockId, "program_status");
+export async function blockProgramStatus(sessionId: string, blockId: string, server?: string): Promise<RexProgramStatusRecord[]> {
+  const parsed = await blockCall(sessionId, blockId, "program_status", server);
   if (!isPlainObject(parsed) || !Array.isArray(parsed["records"])) return [];
   const records: RexProgramStatusRecord[] = [];
   for (const raw of parsed["records"]) {
@@ -459,8 +467,8 @@ export async function blockProgramStatus(sessionId: string, blockId: string): Pr
 }
 
 /** Foreground process + last exit status of the block's terminal. */
-export async function blockProcess(sessionId: string, blockId: string): Promise<RexProcessInfo | null> {
-  const parsed = await blockCall(sessionId, blockId, "process");
+export async function blockProcess(sessionId: string, blockId: string, server?: string): Promise<RexProcessInfo | null> {
+  const parsed = await blockCall(sessionId, blockId, "process", server);
   if (!isPlainObject(parsed)) return null;
   const foregroundRaw = parsed["foreground"];
   const foreground = isPlainObject(foregroundRaw)
@@ -497,9 +505,9 @@ export function deriveWorkerState(records: RexProgramStatusRecord[]): "idle" | "
  * Wait for a block's terminal child to exit (`rex wait --for`). Returns
  * completed=false on timeout or when the block vanished first.
  */
-export async function waitBlock(sessionId: string, blockId: string, timeoutMs: number): Promise<{ completed: boolean; reason?: string }> {
+export async function waitBlock(sessionId: string, blockId: string, timeoutMs: number, server?: string): Promise<{ completed: boolean; reason?: string }> {
   const seconds = Math.max(1, Math.ceil(timeoutMs / 1000));
-  const result = await rexSpawn(["wait", blockId, "-s", sessionId, "--for", `${seconds}s`, "--json"]);
+  const result = await rexSpawn(["wait", blockId, "-s", sessionId, "--for", `${seconds}s`, "--json"], { server });
   if (result === null) return { completed: false, reason: "rex not available" };
   if (result.code !== 0) {
     const detail = result.stderr.trim() || result.stdout.trim();
@@ -507,6 +515,99 @@ export async function waitBlock(sessionId: string, blockId: string, timeoutMs: n
   }
   const parsed = parseRexJsonOrNull(result.stdout.trim());
   return { completed: true, ...(isPlainObject(parsed) ? { reason: JSON.stringify(parsed) } : {}) };
+}
+
+// ---------------------------------------------------------------------------
+// Remote host operations (dotfiles#209)
+// ---------------------------------------------------------------------------
+
+/**
+ * Probe a remote Rex host (`rex -S <label> server status`). Distinct from
+ * worker absence: this only proves the host endpoint answers. A missing CLI
+ * or transport failure is reported as unreachable, never as "no workers".
+ */
+export async function checkRexServer(server: string): Promise<{ reachable: boolean; error?: string }> {
+  const result = await rexSpawn(["server", "status"], { server, timeoutMs: 20000 });
+  if (result === null) return { reachable: false, error: "Rex CLI not available" };
+  if (result.code !== 0) {
+    const detail = result.stderr.trim() || result.stdout.trim();
+    return { reachable: false, error: detail || `rex exited ${result.code}` };
+  }
+  return { reachable: true };
+}
+
+/**
+ * Run argv on the remote host inside a throwaway block and return the
+ * child's exit status (`rex run --wait` propagates it as the CLI exit code).
+ * Used for remote preflight (cwd exists, managed files present, credential
+ * resolution) — never for the worker itself.
+ */
+export async function remoteExec(
+  server: string,
+  sessionId: string,
+  argv: string[],
+  timeoutMs = 60000,
+): Promise<{ code: number; output: string }> {
+  const result = await rexSpawn(
+    ["run", "-s", sessionId, "--wait", "--json", "--", ...argv],
+    { server, timeoutMs },
+  );
+  if (result === null) {
+    throw new ContractError("state", `Rex remote exec on '${server}': CLI not available`);
+  }
+  return { code: result.code, output: result.stdout + result.stderr };
+}
+
+/** Write `content` to `path` on the remote host via a base64 payload.
+ *  The payload is data, not shell-interpolated, so file content cannot
+ *  inject commands. Parent directories are created; the file is mode 600. */
+export async function remoteWriteFile(
+  server: string,
+  sessionId: string,
+  path: string,
+  content: string,
+): Promise<void> {
+  if (/[\r\n'"]/.test(path)) {
+    throw new ContractError("state", `remoteWriteFile: unsafe remote path '${path}'`);
+  }
+  const dir = path.replace(/\/[^/]*$/, "") || "/";
+  const b64 = Buffer.from(content, "utf8").toString("base64");
+  const script =
+    `mkdir -p '${dir}' && printf %s '${b64}' | base64 -d > '${path}' && chmod 600 '${path}'`;
+  const { code, output } = await remoteExec(server, sessionId, ["sh", "-c", script], 60000);
+  if (code !== 0) {
+    throw new ContractError("state", `remoteWriteFile ${path} on '${server}' failed (exit ${code}): ${output.trim().slice(0, 300)}`);
+  }
+}
+
+/**
+ * Resolve the remote account's $HOME by running a marker command in a
+ * keep-open block and reading the screen. Needed because worker argv carries
+ * absolute paths into the remote dotfiles checkout (~/.dotfiles), and argv
+ * elements are exec'd without shell expansion.
+ */
+export async function probeRemoteHome(server: string, sessionId: string): Promise<string> {
+  const marker = "REX_PROBE_HOME=";
+  const created = await runBlock({
+    sessionId,
+    label: "home-probe",
+    argv: ["sh", "-c", `echo ${marker}$HOME; exec sleep 120`],
+    keepOpen: true,
+    focus: false,
+    server,
+  });
+  try {
+    // Give the block a moment to print before capturing.
+    await new Promise((r) => setTimeout(r, 700));
+    const text = await captureBlock(sessionId, created.blockId, { server });
+    const match = text.match(/REX_PROBE_HOME=(\/[^\s]+)/);
+    if (!match) {
+      throw new ContractError("state", `remote home probe on '${server}' produced no HOME marker`);
+    }
+    return match[1];
+  } finally {
+    await closeBlock(sessionId, created.blockId, server).catch(() => {});
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -535,19 +636,20 @@ export async function promptBlock(
   sessionId: string,
   blockId: string,
   prompt: string,
-  options: { wait?: boolean; timeoutMs?: number } = {}
+  options: { wait?: boolean; timeoutMs?: number; server?: string } = {}
 ): Promise<PromptResult> {
+  const server = options.server;
   // Correlate status records to THIS prompt: a `done` record survives a new
   // prompt until the program reports again, so the pre-send snapshot is the
   // baseline. Only a CHANGED record set may settle the wait — an unchanged
   // snapshot is stale evidence, never proof of completion.
-  const baselineRecords = await blockProgramStatus(sessionId, blockId).catch(
+  const baselineRecords = await blockProgramStatus(sessionId, blockId, server).catch(
     () => [] as RexProgramStatusRecord[],
   );
   const baselineSignature = JSON.stringify(baselineRecords);
 
-  await sendText(sessionId, blockId, prompt);
-  await sendKey(sessionId, blockId, "enter");
+  await sendText(sessionId, blockId, prompt, server);
+  await sendKey(sessionId, blockId, "enter", server);
   if (!options.wait) return {};
 
   const timeoutMs = options.timeoutMs ?? 300000;
@@ -558,7 +660,7 @@ export async function promptBlock(
   // are indistinguishable from a real post-turn idle and must not settle.
   let sawProgress = false;
   for (;;) {
-    const records = await blockProgramStatus(sessionId, blockId).catch(() => [] as RexProgramStatusRecord[]);
+    const records = await blockProgramStatus(sessionId, blockId, server).catch(() => [] as RexProgramStatusRecord[]);
     const signature = JSON.stringify(records);
     const fresh = signature !== baselineSignature;
     const state = deriveWorkerState(records);
@@ -575,12 +677,12 @@ export async function promptBlock(
     // failure stays "unknown" — never success; only a definitive "absent"
     // probe may settle the wait as exited.
     if (records.length === 0 || !fresh) {
-      const proc = await blockProcess(sessionId, blockId).catch(() => null);
+      const proc = await blockProcess(sessionId, blockId, server).catch(() => null);
       if (proc !== null && proc.lastExit !== null) {
         return {};
       }
       if (proc === null) {
-        const presence = await inspectBlockPresence(sessionId, blockId);
+        const presence = await inspectBlockPresence(sessionId, blockId, server);
         if (presence === "absent") return {};
       }
     }
@@ -613,6 +715,8 @@ export interface RexTaskMapping {
   windowId: string;
   blockId: string;
   workerLabel: string;
+  /** Rex host label/address; absent = local server (legacy records). */
+  server?: string;
   createdAt: string;
   route: string;
   model: string;
@@ -630,13 +734,20 @@ export function loadRexTaskMapping(taskId: string): RexTaskMapping | null {
     const raw: unknown = JSON.parse(readFileSync(path, "utf-8"));
     if (!isPlainObject(raw)) return null;
     const mapping: Record<keyof RexTaskMapping, string> = {
-      taskId: "", sessionId: "", windowId: "", blockId: "", workerLabel: "",
+      taskId: "", sessionId: "", windowId: "", blockId: "", workerLabel: "", server: "",
       createdAt: "", route: "", model: "",
     };
     for (const key of ["taskId", "sessionId", "windowId", "blockId", "workerLabel", "createdAt", "route", "model"] as const) {
       const value = raw[key];
       if (typeof value !== "string") return null;
       mapping[key] = value;
+    }
+    // `server` is optional: records written before remote hosts existed have
+    // no field and mean the local server.
+    if (typeof raw["server"] === "string" && raw["server"] !== "") {
+      mapping.server = raw["server"];
+    } else {
+      delete (mapping as { server?: string }).server;
     }
     return mapping;
   } catch {
