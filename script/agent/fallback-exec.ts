@@ -124,6 +124,13 @@ export interface FallbackExecutionOptions {
   /** Called after EVERY attempt outcome, in order, before the executor
    * decides whether to retry, advance, or throw. */
   onAttempt?: (record: FallbackAttemptRecord) => void | Promise<void>;
+  /**
+   * Reference time (ms epoch) for profile/candidate expiration and
+   * attestation freshness checks. Defaults to Date.now(). Tests pin this so
+   * committed evidence dates cannot silently expire the suite; production
+   * callers never set it.
+   */
+  nowMs?: number;
 }
 
 export async function executeWithFallback(
@@ -158,7 +165,7 @@ export async function executeWithFallback(
   const primaryQuotaScope = getPrimaryQuotaScope(catalogFacts, profile.primaryRoute);
 
   // Resolve profile
-  const resolution = resolveFallbackProfile(profile, catalogLike, attestationMap, primaryQuotaScope);
+  const resolution = resolveFallbackProfile(profile, catalogLike, attestationMap, primaryQuotaScope, options.nowMs ?? Date.now());
   // Zero usable candidates is NOT an error: the profile authorizes fallback,
   // it does not require it. A healthy primary must still run normally; the
   // rejected candidates are simply unavailable if the primary fails.

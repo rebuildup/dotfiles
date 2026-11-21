@@ -256,6 +256,11 @@ describe("executeWithFallback", () => {
 
 describe("FallbackExhaustedError", () => {
   const realConfigPath = join(repoRoot(), "config", "agents.toml");
+  // The committed catalog e2e evidence is dated 2026-11-13; pin the
+  // resolution clock inside its 7-day freshness window so the suite does not
+  // silently start rejecting every candidate once wall-clock time passes it.
+  // The freshness check itself still runs — it just evaluates a fixed `now`.
+  const EVIDENCE_FRESH_NOW_MS = Date.parse("2026-11-14T00:00:00Z");
 
   /** Run the executor against a real profile with a stub task function. */
   async function exhaustWith(
@@ -353,7 +358,7 @@ describe("FallbackExhaustedError", () => {
           success: false,
           error: { httpStatus: 403, failureKind: "forbidden", retryAfterMs: null, resetAt: null, usage: [], errorKind: "agent-blocked" },
         };
-      });
+      }, { nowMs: EVIDENCE_FRESH_NOW_MS });
       throw new Error("expected executeWithFallback to exhaust every candidate");
     } catch (thrown) {
       if (!(thrown instanceof FallbackExhaustedError)) throw thrown;
@@ -445,7 +450,7 @@ describe("FallbackExhaustedError", () => {
           success: false,
           error: { httpStatus: 403, failureKind: "forbidden", retryAfterMs: null, resetAt: null, usage: [], errorKind: "agent-blocked" },
         };
-      }, { onAttempt: (r) => { records.push(r); } });
+      }, { nowMs: EVIDENCE_FRESH_NOW_MS, onAttempt: (r) => { records.push(r); } });
       throw new Error("expected exhaustion");
     } catch (thrown) {
       if (!(thrown instanceof FallbackExhaustedError)) throw thrown;

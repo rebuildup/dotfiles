@@ -3485,6 +3485,9 @@ test("test_fallback_cap_enforced_from_real_toml", withFixture((fixture) => {
   // hand-built object: `parseFallbackProfile` normalises an absent cap to
   // `null`, so `=== undefined` never fired on a real TOML profile. This runs
   // the FULL path (Bun.TOML.parse -> parse -> resolve) through the CLI.
+  // Evidence freshness is wall-clock relative (7d window): pin `at` to now
+  // so the fixture stays deterministic instead of going stale.
+  const recentEvidenceAt = new Date().toISOString();
   const base = `
 [providers.paid]
 label = "Paid"
@@ -3515,7 +3518,7 @@ status = "verified-live"
 provenance = "measured"
 
 [catalog.routes."omp.paid".e2e.evidence]
-at = "2026-11-13T00:00:00Z"
+at = "${recentEvidenceAt}"
 source = "live-e2e"
 sha = "65a2bbc21d3e8dc889669c7bb818e567358a891f"
 `;

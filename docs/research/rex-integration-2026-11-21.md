@@ -35,15 +35,42 @@
 - `rex skill setup|status|remove|show`: agent 検出(claude/codex/opencode/pi)へ skill(`~/.claude/skills/rex`, `~/.agents/skills/rex`)と hook(claude:settings.json, codex:hooks.json)を導入。opencode/pi は hook 非対応。`--project` で repo 単位、`--dry-run`/`--agent`/`--force`/`--session-naming`/`--json`
 - 現状 `rex skill status`: 全 agent で skill/hook `missing`(global install は未実施 — project policy により必須としない)
 
-## Remote / multi-device
+## Remote / multi-device（#199 詳細評価）
 
-- `rex hosts`: home server が host list の正本。`rex -S <label|ssh://…>` で remote server の全 CLI がそのまま使える
-- `rex -S ssh://user@host`: server の `ssh` を利用、既存 key/agent/config を継承。remote で `rex` が PATH 上 or `~/.local/bin` に必要
-- Linux server: `rex server install`(boot 自動起動)。mode: personal / shared(rex group) / login server(複数 OS account)。socket は default で unix のみ listen
-- remote listener: SSH(推奨、caller を OS login で識別)/ built-in Tailscale(`--tailscale`)/ Tailscale Serve(`tailnet-serve://` socket)/ tailnet address(`tailnet://:port`)/ plain HTTP(`--allow-anonymous`、危険)/ 他 VPN
-- 注意: personal server の unix socket は logout で消え session が死ぬ → `loginctl enable-linger` が必要
-- Windows server: testing 段階、WinGet/MSI/zip、personal server のみ(named pipe、login server/shared 非対応)。`rex server install` を手動実行。preview channel のみ実質
-- 既存 Herdr machines(WSL/Windows worker)への適用: WSL/Linux なら personal server + SSH or tailnet で候補になるが、worker の OS account/linger/`rex` on PATH の確認が前提。Windows worker は personal server 前提で制約が大きい。当面 Herdr 経路維持(ADR-0021 §8)
+### 接続方式の比較（公式 docs/linux/remote-access 準拠）
+
+| Listener | 前提 | 認証/識別 | server mode | 評価 |
+| --- | --- | --- | --- | --- |
+| SSH (`rex -S ssh://user@host`) | sshd + `rex` on PATH or `~/.local/bin` | OS login（既存 key/agent/config 継承） | personal / shared | **推奨**。追加 daemon 不要、caller を OS account で識別 |
+| Built-in Tailscale (`--tailscale`) | Tailscale account、MagicDNS+HTTPS certs | tailnet device identity | personal / shared | tailnet 非参加 machine を device として参加させる方式。tagged device は `--tailscale-allow-tailnet-members` 必須 |
+| Tailscale Serve (`tailnet-serve://` socket) | machine 上で Tailscale 稼働 | Tailscale identity | shared / login server のみ | `unix://` で Serve socket を listen すると caller が tailscaled account（通常 root）扱いになる**罠**あり。`tailnet-serve://` 必須。tagged device（CI等）は接続不可 |
+| Tailnet address (`tailnet://:port`) | machine 上で Tailscale 稼働 | Tailscale identity | shared / login server | plain HTTP over tailnet（WireGuard で暗号化）。port 必須。tagged device も可 |
+| Plain HTTP (`--allow-anonymous`) | 任意 | **なし**（全接続が full access） | 全 mode | 管理下 network + 別 VPN 前提。それ以外は危険 |
+| 他 VPN + `--allow-anonymous` | WireGuard/ZeroTier/NetBird 等 | network 層のみ | 全 mode | 同上。login server は `anonymous` principal の account のみ許可 |
+
+- `rex hosts add <label> ssh://…` で home server が host list の正本。`rex -S <label>` で remote の全 CLI がそのまま使える。Mac app も "Add Remote Host…" で `ssh://` を受け付ける
+- `REX_AUTOSTART=0` が remote にあると SSH 経由の server 自動起動をしない
+- Linux personal server の unix socket は logout で消え session が死ぬ → `loginctl enable-linger` が必須（persistent 運用の前提条件）
+- server modes: personal（1 account）/ shared（`rex` group）/ login server（複数 OS account、accounts.jsonc + PAM）。systemd か Alpine OpenRC が必要（`rex` CLI 単体は不要）
+
+### Windows server の結論
+
+- testing 段階・Discord tester 限定。**personal server のみ**（shared/login server 非対応）、named pipe で login user のみ接続可
+- WinGet（`Superlogical.RexServer.Preview`）/ MSI / zip。`rex server install` を手動実行（service 自動登録されない）
+- preview channel のみ実質（stable は未リリース）
+- 結論: **Windows-native worker を Rex host にするのは現時点で非推奨**。personal server 制約・testing 段階・Mac GUI なしの三重の制約があり、Windows/WSL の Worker は Herdr 経路維持が妥当（ADR-0021 §8 と一致）
+
+### WSL worker を Rex host にできるか
+
+- WSL2 は Linux として `rex` package（.deb）を install 可能 → **技術的には personal server + SSH/tailnet で Mac から到達可能な独立経路になりうる**
+- 前提条件: `rex` on PATH（SSH login shell で解決できること）、`loginctl enable-linger`（WSL で systemd 有効な場合）、SSH key 認証
+- ただし WSL の systemd/linger 対応は distro 依存で不確実。検証する場合は別 ticket で実機確認が必要。**今回の完了条件にはしない**（#199 non-goal どおり）
+
+### 運用上の推奨（現時点）
+
+- Mac = Rex native（daily driver）、Windows/WSL = Herdr（現行維持）
+- 将来 Linux worker を Rex host 化する場合は SSH listener + personal server + linger が最小構成。Tailscale 系は tailnet 参加が前提のため後回しでよい
+- `rex skill setup` の global install は行わない（project policy。SKILL.md に明記済み）
 
 ## Herdr との棲み分け(実測)
 
@@ -53,5 +80,5 @@
 
 ## Sources
 
-- https://www.superlogical.com/rex/docs/(installation, reference/cli, automate/server-api, automate/agent-skill, build/program-status, linux/remote-access, linux/installation, windows/installation, automate/cli, automate/lua-scripts, automate/lua-events, reference/events, reference/lua)
+- https://www.superlogical.com/rex/docs/(installation, reference/cli, automate/server-api, automate/agent-skill, build/program-status, linux/remote-access, linux/installation, linux/server-modes, windows/installation, windows/running, automate/cli, automate/lua-scripts, automate/lua-events, reference/events, reference/lua)
 - 実機 probe: `rex version`, `rex api list|describe`, `rex whoami`, `rex ls --json`, `rex skill status|show`, `rex block call program_status|process|title`, env(`REX_*`)
