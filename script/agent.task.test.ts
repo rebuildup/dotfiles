@@ -718,7 +718,7 @@ describe("task-path credential policy", () => {
     } as unknown as Parameters<typeof dispatchTask>[0];
   }
 
-  it("fails closed on ambient credentials that would transit Herdr --env argv", async () => {
+  it("fails closed on ambient credentials that would transit worker argv", async () => {
     process.env.OPENROUTER_API_KEY = "ambient-secret";
     await expect(
       dispatchTask(ambientConfig(), {
@@ -727,7 +727,7 @@ describe("task-path credential policy", () => {
         model: "m",
         prompt: "test",
       }),
-    ).rejects.toThrow(/ambient credential.*--env argv|--env argv/);
+    ).rejects.toThrow(/ambient credential/);
   });
 });
 

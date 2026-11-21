@@ -264,6 +264,8 @@ export interface RunBlockOptions {
   split?: { anchorBlockId: string; direction: "right" | "left" | "above" | "below"; ratio?: number };
   focus?: boolean;
   keepOpen?: boolean;
+  /** Also read the shell's interactive startup files (needed for mise/agent PATH). */
+  interactive?: boolean;
 }
 
 function envPrefix(env: Record<string, string> | undefined): string[] {
@@ -302,7 +304,10 @@ export async function runBlock(options: RunBlockOptions): Promise<{ blockId: str
   if (options.cwd) args.push("-c", options.cwd);
   if (options.keepOpen) args.push("--keep-open");
   if (options.focus === false) args.push("--focus=false");
-  args.push("--json", "--", ...argv);
+  if (options.interactive) args.push("--interactive");
+  args.push("--json");
+  // No argv -> plain `--` omitted so the block runs a login shell.
+  if (argv.length > 0) args.push("--", ...argv);
   const result = requireRex(await rexSpawn(args), "block create");
   return parseBlockCreation(parseRexJson(result.stdout.trim(), "block create"), "block create");
 }

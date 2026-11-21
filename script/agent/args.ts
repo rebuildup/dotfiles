@@ -122,7 +122,7 @@ function parseTaskArgs(argv: string[]): Action {
   }
   const opts: TaskRunOptions = {
     model: null, fallback: null, prompt: null, accept: [], timeoutMs: null,
-    allowUnobservedEffects: false,
+    allowUnobservedEffects: false, runtime: null,
   };
   const rest = argv.slice(2);
   for (let i = 0; i < rest.length; i++) {
@@ -136,6 +136,13 @@ function parseTaskArgs(argv: string[]): Action {
     else if (token === "--fallback") opts.fallback = take();
     else if (token === "--prompt") opts.prompt = take();
     else if (token === "--accept") opts.accept.push(take());
+    else if (token === "--runtime") {
+      const value = take();
+      if (value !== "herdr" && value !== "rex") {
+        throw new AgentError(`--runtime must be 'herdr' or 'rex', got '${value}'`);
+      }
+      opts.runtime = value;
+    }
     else if (token === "--allow-unobserved-effects") opts.allowUnobservedEffects = true;
     else if (token === "--timeout") {
       const raw = take();
@@ -162,6 +169,8 @@ export interface TaskRunOptions {
   accept: string[];
   timeoutMs: number | null;
   allowUnobservedEffects: boolean;
+  /** Explicit execution runtime (ADR-0021); null = herdr (default). */
+  runtime: "herdr" | "rex" | null;
 }
 
 export interface TaskResumeOptions {

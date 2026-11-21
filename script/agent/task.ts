@@ -33,17 +33,14 @@ import {
 import { type Config, type Provider } from "./config.ts";
 import { agentStateDir } from "./contract.ts";
 import {
-  createWorkspace,
-  createPane,
-  startAgent,
-  promptAgent,
-  readAgent,
-  waitAgent,
-  getAgent,
-  closePane,
-  saveHerdrTaskMapping,
-  type HerdrTaskMapping,
-} from "./herdr.ts";
+  attemptRuntime,
+  attemptRuntimeFields,
+  attemptWorkerId,
+  runtimeAdapter,
+  workerHandleOf,
+  type RuntimeKind,
+  type WorkerHandle,
+} from "./runtime.ts";
 import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
@@ -81,6 +78,8 @@ export interface TaskDescriptor {
   maxAttempts?: number;
   acceptanceCriteria?: string[];
   timeoutMs?: number;
+  /** Execution runtime (ADR-0021). Absent = "herdr" (pre---runtime records). */
+  runtime?: RuntimeKind;
   /** Explicit operator acknowledgement that fallback may run with side
    *  effects outside observable scope (no --accept, non-git cwd). */
   allowUnobservedEffects?: boolean;
@@ -95,9 +94,15 @@ export interface TaskAttempt {
   attemptNumber: number;
   startedAt: string;
   status: "running" | "completed" | "failed" | "blocked" | "fallback";
+  /** Execution runtime (ADR-0021). Absent = "herdr" for pre---runtime records. */
+  runtime?: RuntimeKind;
   herdrPaneId?: string;
   herdrWorkspaceId?: string;
   herdrWorkerName?: string;
+  rexSessionId?: string;
+  rexWindowId?: string;
+  rexBlockId?: string;
+  rexWorkerLabel?: string;
   generation: number;
   fallbackCandidate?: FallbackCandidate;
   /** Credential scope used (env name or infisical:<secret>), never a value. */
@@ -427,9 +432,17 @@ function parseStoredAttempt(raw: unknown, where: string): TaskAttempt {
   const error = raw["error"];
   const candidate = raw["fallbackCandidate"];
   const profileId = optStr(raw, "profileId");
+  const runtimeRaw = optStr(raw, "runtime");
+  if (runtimeRaw !== undefined && runtimeRaw !== "herdr" && runtimeRaw !== "rex") {
+    throw new ContractError("schema", `${where}: invalid runtime '${runtimeRaw}'`);
+  }
   const herdrPaneId = optStr(raw, "herdrPaneId");
   const herdrWorkspaceId = optStr(raw, "herdrWorkspaceId");
   const herdrWorkerName = optStr(raw, "herdrWorkerName");
+  const rexSessionId = optStr(raw, "rexSessionId");
+  const rexWindowId = optStr(raw, "rexWindowId");
+  const rexBlockId = optStr(raw, "rexBlockId");
+  const rexWorkerLabel = optStr(raw, "rexWorkerLabel");
   const credentialScope = optStr(raw, "credentialScope");
   return {
     id: requireStr(raw, "id", where),
@@ -440,10 +453,15 @@ function parseStoredAttempt(raw: unknown, where: string): TaskAttempt {
     startedAt: requireStr(raw, "startedAt", where),
     status,
     generation: finiteNum("generation"),
+    ...(runtimeRaw !== undefined ? { runtime: runtimeRaw as RuntimeKind } : {}),
     ...(profileId !== undefined ? { profileId } : {}),
     ...(herdrPaneId !== undefined ? { herdrPaneId } : {}),
     ...(herdrWorkspaceId !== undefined ? { herdrWorkspaceId } : {}),
     ...(herdrWorkerName !== undefined ? { herdrWorkerName } : {}),
+    ...(rexSessionId !== undefined ? { rexSessionId } : {}),
+    ...(rexWindowId !== undefined ? { rexWindowId } : {}),
+    ...(rexBlockId !== undefined ? { rexBlockId } : {}),
+    ...(rexWorkerLabel !== undefined ? { rexWorkerLabel } : {}),
     ...(credentialScope !== undefined ? { credentialScope } : {}),
     ...(candidate != null ? { fallbackCandidate: parseStoredCandidate(candidate, `${where}.fallbackCandidate`) } : {}),
     ...(error != null ? { error: parseStoredError(error, `${where}.error`) } : {}),
@@ -634,47 +652,53 @@ export async function dispatchTask(
   const prepared = prepareOmpWorker(provider);
   await verifyOmpManagedCredential(provider);
 
-  // Create Herdr workspace for the task
-  const workspace = await createWorkspace(process.cwd(), `task-${descriptor.id.slice(0, 8)}`, {
-    noFocus: true,
-    env: { ...workerEnv, OMP_SKIP_SETUP: "1" },
-  });
-  const workspaceId = workspace.id;
+  // Execution runtime is explicit (ADR-0021): absent means herdr, preserving
+  // every pre---runtime dispatch. There is no implicit cross-runtime fallback.
+  const runtime = descriptor.runtime ?? "herdr";
+  const adapter = runtimeAdapter(runtime);
+  const launchEnv = { ...workerEnv, OMP_SKIP_SETUP: "1" };
 
-  // Get the root pane (first pane of first tab) to start the agent
-  const rootPaneId = workspace.tabs[0].panes[0].id;
-  
-  // Wait for the pane to be ready (shell prompt available)
-  await new Promise(r => setTimeout(r, 2000));
-  
+  // Create the runtime surface for the task (Herdr workspace / Rex session).
+  const surface = await adapter.createSurface(process.cwd(), `task-${descriptor.id.slice(0, 8)}`, launchEnv);
+  const surfaceId = surface.surfaceId;
+
   // Build worker name
   const workerName = `worker-${descriptor.id.slice(0, 8)}-${route.harness}-${randomUUID().slice(0, 8)}`;
   const agentOptions = buildAgentStartOptions(provider, descriptor.model, prepared);
-  
-  // Start the agent in the root pane with model/provider flags via Herdr
-  const startResult = await startAgent({ 
-    workerName, 
-    kind: agentKind,  // OMP handles all model/provider flags via --provider/--model
-    paneId: rootPaneId,
-    options: agentOptions
+  // Rex runs the harness argv directly inside a block; Herdr launches the
+  // agent by kind inside a pane. The argv strips buildAgentStartOptions'
+  // leading "--" separator and prepends the harness command.
+  const workerArgv = [
+    harness.command,
+    ...(agentOptions[0] === "--" ? agentOptions.slice(1) : agentOptions),
+  ];
+
+  // Start the worker on the runtime.
+  const handle = await adapter.startWorker(surface, surface.paneId, {
+    workerName,
+    kind: agentKind,
+    options: agentOptions,
+    argv: workerArgv,
+    env: launchEnv,
   });
-  const workerNameFinal = startResult.agentName;
+  const workerNameFinal = handle.id;
 
   // Split pane for output (right side)
-  const pane = await createPane({ workspaceId, cwd: process.cwd(), split: "right", noFocus: true });
+  const pane = await adapter.createPane(surfaceId, { cwd: process.cwd(), split: "right", noFocus: true });
   const paneId = pane.paneId;
 
-  // Map the agent to the task
-  const mapping: HerdrTaskMapping = {
+  // Map the worker to the task (audit-only record; the attempt is canonical)
+  adapter.saveMapping({
     taskId: descriptor.id,
-    workspaceId,
+    surfaceId,
     paneId,
-    workerName: workerNameFinal,
+    windowId: handle.windowId,
+    workerId: workerNameFinal,
+    workerLabel: workerName,
     createdAt: new Date().toISOString(),
     route: descriptor.route,
     model: descriptor.model,
-  };
-  saveHerdrTaskMapping(mapping);
+  });
 
   const routeRef = parseRouteId(descriptor.route);
 
@@ -687,9 +711,14 @@ export async function dispatchTask(
     attemptNumber: 1,
     startedAt: new Date().toISOString(),
     status: "running",
-    herdrPaneId: rootPaneId,
-    herdrWorkspaceId: workspaceId,
-    herdrWorkerName: workerNameFinal,
+    runtime,
+    ...attemptRuntimeFields(runtime, {
+      surfaceId,
+      paneId: handle.paneId,
+      windowId: handle.windowId,
+      workerId: workerNameFinal,
+      workerLabel: runtime === "rex" ? workerName : undefined,
+    }),
     generation: 1,
   };
 
@@ -790,7 +819,7 @@ function taskWorkerEnv(provider: Provider): Record<string, string> {
   throw new ContractError(
     "policy",
     `provider '${provider.key}' uses an ambient credential that would transit ` +
-      "Herdr --env argv; agent task run supports managed-profile (Infisical-" +
+      "worker argv; agent task run supports managed-profile (Infisical-" +
       "resolved) and anonymous providers only. Use the interactive launcher " +
       "for this route.",
   );
@@ -833,35 +862,40 @@ async function verifyOmpManagedCredential(provider: Provider): Promise<void> {
 async function startCandidateWorker(
   attempt: TaskAttempt,
   workerName: string,
-  options: string[],
-  env: Record<string, string>,
-): Promise<{ workerName: string; paneId: string }> {
-  const workspaceId = attempt.herdrWorkspaceId;
-  if (!workspaceId) {
-    throw new ContractError("state", "No Herdr workspace in attempt");
+  spec: { options: string[]; argv: string[]; env: Record<string, string> },
+): Promise<WorkerHandle & { workerName: string }> {
+  const runtime = attemptRuntime(attempt);
+  const adapter = runtimeAdapter(runtime);
+  const surfaceId = runtime === "rex" ? attempt.rexSessionId : attempt.herdrWorkspaceId;
+  if (!surfaceId) {
+    throw new ContractError("state", `No ${runtime} surface in attempt`);
   }
-  const pane = await createPane({
-    workspaceId,
+  const pane = await adapter.createPane(surfaceId, {
     cwd: process.cwd(),
     split: "right",
     noFocus: true,
-    env,
   });
   // The pane must be at an interactive shell prompt before an agent can start.
   await new Promise(r => setTimeout(r, 2000));
-  const startResult = await startAgent({
-    workerName,
-    kind: "omp",
-    paneId: pane.paneId,
-    options,
-  });
-  return { workerName: startResult.agentName, paneId: pane.paneId };
+  const handle = await adapter.startWorker(
+    { surfaceId, paneId: pane.paneId, tabId: pane.tabId },
+    pane.paneId,
+    { workerName, kind: "omp", options: spec.options, argv: spec.argv, env: spec.env },
+  );
+  return { ...handle, workerName: handle.id };
 }
 
-/** Close a candidate's pane so a failed candidate leaves no worker behind. */
-async function closeCandidateWorker(candidate: { workerName: string; paneId: string }): Promise<void> {
+/** Close a candidate's worker pane so a failed candidate leaves nothing behind. */
+async function closeCandidateWorker(candidate: WorkerHandle & { workerName: string }, attempt: TaskAttempt): Promise<void> {
   try {
-    await closePane(candidate.paneId);
+    const runtime = attemptRuntime(attempt);
+    const adapter = runtimeAdapter(runtime);
+    await adapter.closePane({
+      id: candidate.workerName,
+      surfaceId: runtime === "rex" ? attempt.rexSessionId : attempt.herdrWorkspaceId,
+      paneId: candidate.paneId,
+      windowId: candidate.windowId,
+    });
   } catch {
     // A pane that is already gone needs no cleanup; never let cleanup mask
     // the failure that caused the candidate to be abandoned.
@@ -871,14 +905,16 @@ async function closeCandidateWorker(candidate: { workerName: string; paneId: str
 /**
  * The output a worker produced.
  *
- * `herdr agent prompt` reports the agent's STATE, not its answer: the text
- * lives in the agent's terminal output, which is a screen dump containing the
- * prompt, the agent's reply and the surrounding UI. It is returned raw, under
- * an explicit name, so no caller mistakes it for a parsed answer.
+ * The runtime prompt call reports the worker's STATE, not its answer: the
+ * text lives in the worker's terminal output, which is a screen dump
+ * containing the prompt, the agent's reply and the surrounding UI. It is
+ * returned raw, under an explicit name, so no caller mistakes it for a
+ * parsed answer.
  */
-async function readWorkerOutput(workerName: string): Promise<string | undefined> {
+async function readWorkerOutput(handle: WorkerHandle): Promise<string | undefined> {
   try {
-    const read = await readAgent(workerName, { source: "recent", lines: 200 });
+    const adapter = runtimeAdapter(handle.runtime ?? "herdr");
+    const read = await adapter.readWorker(handle, { lines: 200 });
     return read.output?.trim() || undefined;
   } catch {
     return undefined;
@@ -903,13 +939,19 @@ function credentialScopeFor(config: Config, providerKey: string): string {
  * enough to resume or audit without Herdr state.
  */
 /** Read the worker identity/output fields out of an unknown executor result. */
-function servedWorker(result: unknown): { output?: string; workerName?: string; paneId?: string } | null {
+function servedWorker(result: unknown): { output?: string; workerName?: string; paneId?: string; surfaceId?: string; windowId?: string } | null {
   if (!isPlainObject(result)) return null;
   const pick = (key: string): string | undefined => {
     const v = result[key];
     return typeof v === "string" ? v : undefined;
   };
-  return { output: pick("output"), workerName: pick("workerName"), paneId: pick("paneId") };
+  return {
+    output: pick("output"),
+    workerName: pick("workerName"),
+    paneId: pick("paneId"),
+    surfaceId: pick("surfaceId"),
+    windowId: pick("windowId"),
+  };
 }
 
 function recordCandidateAttempt(
@@ -936,6 +978,7 @@ function recordCandidateAttempt(
     }
   }
   const served = servedWorker(record.result);
+  const runtime = attemptRuntime(parent);
   const attempt: TaskAttempt = {
     id: randomUUID(),
     taskId: parent.taskId,
@@ -945,9 +988,14 @@ function recordCandidateAttempt(
     attemptNumber: state.history.length + 1,
     startedAt: new Date().toISOString(),
     status: record.success ? "completed" : "failed",
-    herdrWorkerName: served?.workerName,
-    herdrPaneId: served?.paneId,
-    herdrWorkspaceId: parent.herdrWorkspaceId,
+    runtime,
+    ...attemptRuntimeFields(runtime, {
+      surfaceId: runtime === "rex" ? (served?.surfaceId ?? parent.rexSessionId) : parent.herdrWorkspaceId,
+      paneId: served?.paneId,
+      windowId: served?.windowId,
+      workerId: served?.workerName ?? "",
+      workerLabel: runtime === "rex" ? served?.workerName : undefined,
+    }),
     generation: parent.generation,
     fallbackCandidate: record.candidate ?? undefined,
     error: record.classified ?? undefined,
@@ -971,12 +1019,15 @@ export async function startTaskAttempt(
   attempt: TaskAttempt,
   prompt: string,
   opts?: { timeoutMs?: number; evidenceSinceMs?: number; lease?: Lease; attemptKey?: string }
-): Promise<{ success: boolean; error?: ClassifiedError; result?: unknown; workerName?: string; paneId?: string }> {
+): Promise<{ success: boolean; error?: ClassifiedError; result?: unknown; workerName?: string; paneId?: string; surfaceId?: string; windowId?: string }> {
   // --timeout propagates to every prompt wait in this attempt (primary and
   // each fallback candidate); the default matches the previous fixed bound.
   const promptTimeoutMs = opts?.timeoutMs ?? 300000;
-  if (!attempt.herdrWorkerName || !attempt.herdrPaneId) {
-    throw new ContractError("state", "No Herdr worker name or pane in attempt");
+  const runtime = attemptRuntime(attempt);
+  const adapter = runtimeAdapter(runtime);
+  const primaryHandle = workerHandleOf(attempt);
+  if (!primaryHandle) {
+    throw new ContractError("state", `No ${runtime} worker in attempt`);
   }
 
   // Provider evidence window: session events count only at/after this
@@ -1022,8 +1073,8 @@ export async function startTaskAttempt(
         // run the primary again instead of the candidate the profile
         // authorized.
         if (candidate === null) {
-          const promptResult = await journaledEffect(opts?.lease, uniqueEffectId("prompt", attempt.herdrWorkerName!), "prompt-send", attempt.herdrWorkerName!, () =>
-            promptAgent(attempt.herdrWorkerName!, prompt, { wait: true, timeoutMs: promptTimeoutMs }), promptSendVerdict, prompt);
+          const promptResult = await journaledEffect(opts?.lease, uniqueEffectId("prompt", primaryHandle.id), "prompt-send", primaryHandle.id, () =>
+            adapter.promptWorker(primaryHandle, prompt, { wait: true, timeoutMs: promptTimeoutMs }), promptSendVerdict, prompt);
           const signal = promptFailureSignal(promptResult);
           if (signal) {
             const enriched = primaryProvider
@@ -1031,10 +1082,19 @@ export async function startTaskAttempt(
               : signal;
             return { success: false, error: enriched };
           }
-          const output = await readWorkerOutput(attempt.herdrWorkerName!);
+          const output = await readWorkerOutput(primaryHandle);
           const late = primaryProvider ? lateProviderError(primaryProvider) : null;
           if (late) return { success: false, error: late };
-          return { success: true, result: { output, workerName: attempt.herdrWorkerName! } };
+          return {
+            success: true,
+            result: {
+              output,
+              workerName: primaryHandle.id,
+              paneId: primaryHandle.paneId,
+              surfaceId: primaryHandle.surfaceId,
+              windowId: primaryHandle.windowId,
+            },
+          };
         }
 
         const candidateRoute = formatRouteId(routeRef);
@@ -1063,14 +1123,19 @@ export async function startTaskAttempt(
         preparedProviders.set(routeRef.provider, candidatePrepared);
         await verifyOmpManagedCredential(candidateProvider);
         const options = buildAgentStartOptions(candidateProvider, model, candidatePrepared);
+        const candidateArgv = [
+          candidateHarness.command,
+          ...(options[0] === "--" ? options.slice(1) : options),
+        ];
         const candidateAttempt = await journaledEffect(
           opts?.lease,
           uniqueEffectId("dispatch", workerName),
           "worker-start",
           workerName,
-          () => startCandidateWorker(attempt, workerName, options, {
-            ...taskWorkerEnv(candidateProvider),
-            OMP_SKIP_SETUP: "1",
+          () => startCandidateWorker(attempt, workerName, {
+            options,
+            argv: candidateArgv,
+            env: { ...taskWorkerEnv(candidateProvider), OMP_SKIP_SETUP: "1" },
           }),
         );
 
@@ -1079,8 +1144,8 @@ export async function startTaskAttempt(
         if (opts?.attemptKey) assertNoPendingEffects(opts.attemptKey, attempt.taskId);
         let outcome: { success: boolean; error?: FailureSignal; result?: unknown } | undefined;
         try {
-          const promptResult = await journaledEffect(opts?.lease, uniqueEffectId("prompt", candidateAttempt.workerName), "prompt-send", candidateAttempt.workerName, () =>
-            promptAgent(candidateAttempt.workerName, prompt, { wait: true, timeoutMs: promptTimeoutMs }), promptSendVerdict, prompt);
+          const promptResult = await journaledEffect(opts?.lease, uniqueEffectId("prompt", candidateAttempt.id), "prompt-send", candidateAttempt.id, () =>
+            adapter.promptWorker(candidateAttempt, prompt, { wait: true, timeoutMs: promptTimeoutMs }), promptSendVerdict, prompt);
           const signal = promptFailureSignal(promptResult);
           if (signal) {
             outcome = {
@@ -1092,7 +1157,7 @@ export async function startTaskAttempt(
             // success the pane stays OPEN until collectTaskAttempt has read
             // the serving worker (closing it here made collect read a dead
             // pane).
-            const output = await readWorkerOutput(candidateAttempt.workerName);
+            const output = await readWorkerOutput(candidateAttempt);
             const late = lateProviderError(candidateProvider);
             if (late) {
               outcome = { success: false, error: late };
@@ -1101,8 +1166,10 @@ export async function startTaskAttempt(
                 success: true,
                 result: {
                   output,
-                  workerName: candidateAttempt.workerName,
+                  workerName: candidateAttempt.id,
                   paneId: candidateAttempt.paneId,
+                  surfaceId: candidateAttempt.surfaceId,
+                  windowId: candidateAttempt.windowId,
                 },
               };
             }
@@ -1112,7 +1179,7 @@ export async function startTaskAttempt(
           // a successful candidate's worker must stay alive until
           // collectTaskAttempt reads it.
           if (!outcome || !outcome.success) {
-            await closeCandidateWorker(candidateAttempt);
+            await closeCandidateWorker(candidateAttempt, attempt);
           }
         }
         return outcome ?? { success: false };
@@ -1128,11 +1195,13 @@ export async function startTaskAttempt(
         result: { output: served?.output },
         workerName: served?.workerName,
         paneId: served?.paneId,
+        surfaceId: served?.surfaceId,
+        windowId: served?.windowId,
       };
     } else {
       // No fallback profile - single route execution
-      const promptResult = await journaledEffect(opts?.lease, uniqueEffectId("prompt", attempt.herdrWorkerName!), "prompt-send", attempt.herdrWorkerName!, () =>
-        promptAgent(attempt.herdrWorkerName!, prompt, { wait: true, timeoutMs: promptTimeoutMs }), promptSendVerdict, prompt);
+      const promptResult = await journaledEffect(opts?.lease, uniqueEffectId("prompt", primaryHandle.id), "prompt-send", primaryHandle.id, () =>
+        adapter.promptWorker(primaryHandle, prompt, { wait: true, timeoutMs: promptTimeoutMs }), promptSendVerdict, prompt);
       const signal = promptFailureSignal(promptResult);
       if (signal) {
         const enriched = primaryProvider
@@ -1140,12 +1209,25 @@ export async function startTaskAttempt(
           : signal;
         return { success: false, error: classifyFailure(enriched, new Date().toISOString()) };
       }
-      const output = await readWorkerOutput(attempt.herdrWorkerName!);
+      const output = await readWorkerOutput(primaryHandle);
       const late = primaryProvider ? lateProviderError(primaryProvider) : null;
       if (late) {
         return { success: false, error: classifyFailure(late, new Date().toISOString()) };
       }
-      return { success: true, result: { output }, workerName: attempt.herdrWorkerName };
+      return {
+        success: true,
+        result: {
+          output,
+          workerName: primaryHandle.id,
+          paneId: primaryHandle.paneId,
+          surfaceId: primaryHandle.surfaceId,
+          windowId: primaryHandle.windowId,
+        },
+        workerName: primaryHandle.id,
+        paneId: primaryHandle.paneId,
+        surfaceId: primaryHandle.surfaceId,
+        windowId: primaryHandle.windowId,
+      };
     }
   } catch (error) {
     // Every candidate was exhausted: the executor already classified the
@@ -1176,13 +1258,15 @@ export async function observeTaskAttempt(attempt: TaskAttempt): Promise<{
   status: "running" | "completed" | "failed" | "blocked";
   output?: string;
 }> {
-  if (!attempt.herdrWorkerName) {
-    return { status: "failed", output: "No Herdr worker name" };
+  const handle = workerHandleOf(attempt);
+  if (!handle) {
+    return { status: "failed", output: `No ${attemptRuntime(attempt)} worker in attempt` };
   }
+  const adapter = runtimeAdapter(attemptRuntime(attempt));
 
-  const waitResult = await waitAgent(attempt.herdrWorkerName, 5000);
+  const waitResult = await adapter.waitWorker(handle, 5000);
   if (waitResult.completed) {
-    const readResult = await readAgent(attempt.herdrWorkerName, { source: "recent", lines: 100 });
+    const readResult = await adapter.readWorker(handle, { lines: 100 });
     return { status: "completed", output: readResult.output };
   }
   return { status: "running", output: "Agent still working" };
@@ -1195,21 +1279,23 @@ export async function collectTaskAttempt(
   attempt: TaskAttempt,
   timeoutMs: number = 300000
 ): Promise<CollectResult> {
-  if (!attempt.herdrWorkerName) {
+  const handle = workerHandleOf(attempt);
+  if (!handle) {
     return {
       taskId: attempt.taskId,
       attempt,
       success: false,
-      error: { category: "unknown", observedAt: new Date().toISOString(), resetAt: null, retryAfterMs: null, exhausted: false, reason: "No Herdr worker name", quotaScopeKey: null },
+      error: { category: "unknown", observedAt: new Date().toISOString(), resetAt: null, retryAfterMs: null, exhausted: false, reason: `No ${attemptRuntime(attempt)} worker in attempt`, quotaScopeKey: null },
     };
   }
+  const adapter = runtimeAdapter(attemptRuntime(attempt));
 
   try {
     // Wait for the attempt to complete
-    const waitResult = await waitAgent(attempt.herdrWorkerName, timeoutMs);
-    
+    const waitResult = await adapter.waitWorker(handle, timeoutMs);
+
     // Read the output
-    const readResult = await readAgent(attempt.herdrWorkerName, { source: "recent", lines: 200 });
+    const readResult = await adapter.readWorker(handle, { lines: 200 });
     
     return {
       taskId: attempt.taskId,
@@ -1445,9 +1531,14 @@ export async function runTaskToCompletion(
   }
   // Dispatch the task
   const { attempt } = await dispatchTask(config, descriptor);
-  
+  const taskRuntime = attemptRuntime(attempt);
+  const taskAdapter = runtimeAdapter(taskRuntime);
+  const primaryHandle = workerHandleOf(attempt);
+
   // Wait for agent to be ready
-  await waitAgent(attempt.herdrWorkerName!, 30000);
+  if (primaryHandle) {
+    await taskAdapter.waitWorker(primaryHandle, 30000);
+  }
 
   // Exclusive execution lease: fences any concurrent resume/dispatch on the
   // same task and anchors journal pre/post entries for this run.
@@ -1479,12 +1570,20 @@ export async function runTaskToCompletion(
 
   // Collect from the worker that served the request: a fallback candidate
   // runs on its own worker, and reading the primary's terminal would
-  // return the wrong output.
-  const serving = startResult.workerName ?? attempt.herdrWorkerName!;
-  const collected = await collectTaskAttempt(
-    { ...attempt, herdrWorkerName: serving },
-    descriptor.timeoutMs,
-  );
+  // return the wrong output. The serving identity is rebuilt in the
+  // attempt's runtime namespace so collect probes the right resource.
+  const servingId = startResult.workerName ?? attemptWorkerId(attempt);
+  const servingAttempt: TaskAttempt = {
+    ...attempt,
+    ...attemptRuntimeFields(taskRuntime, {
+      surfaceId: startResult.surfaceId ?? primaryHandle?.surfaceId,
+      paneId: startResult.paneId ?? primaryHandle?.paneId,
+      windowId: startResult.windowId ?? primaryHandle?.windowId,
+      workerId: servingId ?? "",
+      workerLabel: taskRuntime === "rex" ? servingId : undefined,
+    }),
+  };
+  const collected = await collectTaskAttempt(servingAttempt, descriptor.timeoutMs);
   // Acceptance criteria are verified against the workspace AFTER collect,
   // independently of worker success: a completed worker with failing
   // criteria is NOT a completed task.
@@ -1527,18 +1626,16 @@ export async function runTaskToCompletion(
   // resume/status/evidence must reference the provider that actually served.
   const persisted = loadTaskState(descriptor.id);
   const servingRecord = persisted?.history.find(
-    (a) => a.id !== attempt.id && a.herdrWorkerName === serving,
+    (a) => a.id !== attempt.id && attemptWorkerId(a) === servingId,
   );
   const recordedAttempt: TaskAttempt = servingRecord
     ? {
-        ...attempt,
-        herdrWorkerName: serving,
-        herdrPaneId: servingRecord.herdrPaneId ?? attempt.herdrPaneId,
+        ...servingAttempt,
         route: servingRecord.route,
         model: servingRecord.model,
         ...(servingRecord.fallbackCandidate ? { fallbackCandidate: servingRecord.fallbackCandidate } : {}),
       }
-    : { ...attempt, herdrWorkerName: serving };
+    : servingAttempt;
   recordAttemptOutcome(descriptor.id, recordedAttempt, {
     status: taskSucceeded ? "completed" : "failed",
     error: outcomeError,
@@ -1618,8 +1715,24 @@ export async function reconcileTaskEffects(
         const manies = verdicts.filter((v) => v === "many").length;
         if (ones === 1 && manies === 0) outcome = "succeeded";
       } else if (effect.kind === "worker-start") {
-        const agent = await getAgent(effect.target).catch(() => null);
-        if (agent !== null) outcome = "succeeded";
+        // The effect target is the worker name used at dispatch. Runtime is
+        // per-task (the descriptor never changes it), so probe through the
+        // owning attempt's adapter; a worker whose attempt record was never
+        // persisted stays pending — fail closed, never assume it is gone.
+        const runtime = state.currentAttempt
+          ? attemptRuntime(state.currentAttempt)
+          : (state.history[0] ? attemptRuntime(state.history[0]) : "herdr");
+        const adapter = runtimeAdapter(runtime);
+        const owner = [state.currentAttempt, ...state.history]
+          .filter((a): a is TaskAttempt => a !== undefined && a !== null)
+          .find((a) =>
+            runtime === "rex"
+              ? a.rexWorkerLabel === effect.target || a.rexBlockId === effect.target
+              : a.herdrWorkerName === effect.target,
+          );
+        const handle = owner ? workerHandleOf(owner) : null;
+        const worker = handle ? await adapter.getWorker(handle).catch(() => null) : null;
+        if (worker !== null) outcome = "succeeded";
       }
       if (outcome !== null) {
         journalPostEffect(taskAttemptStore, taskJournalStore, lease, {
@@ -1653,18 +1766,21 @@ export async function resumeTaskAttempt(
   if (attempt.status === "completed") {
     throw new ContractError("state", `task '${taskId}' already completed`);
   }
-  if (!attempt.herdrWorkerName) {
-    throw new ContractError("state", `task '${taskId}' attempt has no worker to resume`);
+  const runtime = attemptRuntime(attempt);
+  const adapter = runtimeAdapter(runtime);
+  const resumeHandle = workerHandleOf(attempt);
+  if (!resumeHandle) {
+    throw new ContractError("state", `task '${taskId}' attempt has no ${runtime} worker to resume`);
   }
-  // Safety gate: the worker must EXIST in Herdr, not merely fail to report
-  // "completed" — waitAgent's timeout path is indistinguishable from a live
-  // worker, so probe the agent record itself. A dead/gone worker fails
+  // Safety gate: the worker must EXIST in the runtime, not merely fail to
+  // report "completed" — a wait timeout is indistinguishable from a live
+  // worker, so probe the worker record itself. A dead/gone worker fails
   // closed: resuming into nothing would silently drop the task.
-  const agent = await getAgent(attempt.herdrWorkerName).catch(() => null);
-  if (agent === null) {
+  const worker = await adapter.getWorker(resumeHandle).catch(() => null);
+  if (worker === null) {
     throw new ContractError(
       "state",
-      `task '${taskId}' worker '${attempt.herdrWorkerName}' is not present in Herdr; ` +
+      `task '${taskId}' worker '${attemptWorkerId(attempt)}' is not present in ${runtime}; ` +
         "re-dispatch with agent task run",
     );
   }
@@ -1701,8 +1817,8 @@ export async function resumeTaskAttempt(
   // resume or stale writer is fenced until the new state is committed.
   let promptResult;
   try {
-    promptResult = await journaledEffect(lease, uniqueEffectId("prompt", resumed.herdrWorkerName!), "prompt-send", resumed.herdrWorkerName!, () =>
-      promptAgent(resumed.herdrWorkerName!, prompt, { wait: true, timeoutMs: promptTimeoutMs }), promptSendVerdict, prompt);
+    promptResult = await journaledEffect(lease, uniqueEffectId("prompt", resumeHandle.id), "prompt-send", resumeHandle.id, () =>
+      adapter.promptWorker(resumeHandle, prompt, { wait: true, timeoutMs: promptTimeoutMs }), promptSendVerdict, prompt);
   const signal = promptFailureSignal(promptResult);
   if (signal) {
     // Same evidence contract as dispatch: real provider errorStatus from
@@ -1727,7 +1843,7 @@ export async function resumeTaskAttempt(
     recordAttemptOutcome(taskId, resumed, { status: "failed", error }, { lease });
     return { taskId, attempt: resumed, success: false, error };
   }
-  const output = await readWorkerOutput(resumed.herdrWorkerName!);
+  const output = await readWorkerOutput(resumeHandle);
   const collected = await collectTaskAttempt(
     { ...resumed, result: { output } },
     opts?.timeoutMs,
