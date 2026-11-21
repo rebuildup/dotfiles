@@ -1128,10 +1128,10 @@ status = "verified-live"
 provenance = "measured"
 
 [catalog.routes."claude.openrouter-free".e2e.evidence]
-at = "2026-11-01T00:00:00Z"
+at = "2026-11-21T08:25:00Z"
 source = "live-e2e"
-sha = "fe67db6e8d27fc2b1b0f604ec2299eafb6e3f4e2"
-note = "Real response + Bash tool call, claude 2.1.314."
+sha = "9547021c2da03170e883dec307223c12f4a8480d"
+note = "Real response + shell tool call (file create verified on disk) via agent launcher print mode, claude 2.1.328, 2026-11-21."
 
 [catalog.routes."opencode.openrouter-free".e2e]
 value = [{ model = "nvidia/nemotron-3-ultra-550b-a55b:free", tool_call = true }]
@@ -1139,10 +1139,10 @@ status = "verified-live"
 provenance = "measured"
 
 [catalog.routes."opencode.openrouter-free".e2e.evidence]
-at = "2026-11-01T00:00:00Z"
+at = "2026-11-21T08:25:00Z"
 source = "live-e2e"
-sha = "fe67db6e8d27fc2b1b0f604ec2299eafb6e3f4e2"
-note = "Real response + Bash tool call, opencode 2.2.3."
+sha = "9547021c2da03170e883dec307223c12f4a8480d"
+note = "Real response + shell tool call (file create verified on disk) through the launcher run mode, opencode 2.3.2, 2026-11-21."
 
 [catalog.routes."omp.openrouter-free".e2e]
 value = [{ model = "nvidia/nemotron-3-ultra-550b-a55b:free", tool_call = true }]
