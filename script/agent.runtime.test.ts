@@ -117,4 +117,25 @@ describe("task run --runtime parsing", () => {
       parseArgs(["task", "run", "omp.paid", "--runtime", "tmux"]),
     ).toThrow();
   });
+
+  it("parses --rex-host and --cwd for remote execution (dotfiles#209)", () => {
+    const action = parseArgs([
+      "task", "run", "omp.paid",
+      "--runtime", "rex",
+      "--rex-host", "ssh://rex-wsl",
+      "--cwd", "/home/basic/src/project",
+      "--prompt", "hi",
+    ]);
+    if (action[0] !== "task" || action[1] !== "run") throw new Error("unexpected action");
+    expect(action[3].runtime).toBe("rex");
+    expect(action[3].rexHost).toBe("ssh://rex-wsl");
+    expect(action[3].cwd).toBe("/home/basic/src/project");
+  });
+
+  it("defaults rexHost/cwd to null", () => {
+    const action = parseArgs(["task", "run", "omp.paid"]);
+    if (action[0] !== "task" || action[1] !== "run") throw new Error("unexpected action");
+    expect(action[3].rexHost).toBeNull();
+    expect(action[3].cwd).toBeNull();
+  });
 });

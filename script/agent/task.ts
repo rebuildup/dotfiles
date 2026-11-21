@@ -25,9 +25,11 @@ import {
   LIMIT_CATEGORIES,
 } from "./fallback-exec.ts";
 import {
+  ompCustomProfileName,
   ompNeedsManagedProfile,
   ompWorkerArgs,
   prepareOmpWorker,
+  renderOmpModelsYaml,
   type OmpWorkerPreparation,
 } from "./omp.ts";
 import { type Config, type Provider } from "./config.ts";
@@ -60,6 +62,12 @@ import {
   pendingSideEffects,
 } from "./checkpoint.ts";
 import { extractProviderFailureEvidence, providerTurnObserved } from "./evidence.ts";
+import {
+  checkRexServer,
+  probeRemoteHome,
+  remoteExec,
+  remoteWriteFile,
+} from "./rex.ts";
 import { randomUUID } from "node:crypto";
 
 // ---------------------------------------------------------------------------
@@ -80,6 +88,13 @@ export interface TaskDescriptor {
   timeoutMs?: number;
   /** Execution runtime (ADR-0021). Absent = "herdr" (pre---runtime records). */
   runtime?: RuntimeKind;
+  /** Rex host label/address for remote execution (dotfiles#209). Only valid
+   *  with runtime "rex"; the attempt records it and resume/reconcile probe
+   *  ONLY this host — never another host, the local server, or Herdr. */
+  rexHost?: string;
+  /** Working directory for the worker. For remote hosts this MUST be an
+   *  absolute path ON THE REMOTE host — the local cwd is never reused. */
+  cwd?: string;
   /** Explicit operator acknowledgement that fallback may run with side
    *  effects outside observable scope (no --accept, non-git cwd). */
   allowUnobservedEffects?: boolean;
@@ -103,6 +118,12 @@ export interface TaskAttempt {
   rexWindowId?: string;
   rexBlockId?: string;
   rexWorkerLabel?: string;
+  /** Rex host label/address recorded at dispatch; absent = local server. */
+  rexHost?: string;
+  /** Working directory on the Rex host (remote: absolute remote path). */
+  rexCwd?: string;
+  /** Remote account $HOME resolved at dispatch (remote argv paths). */
+  rexHome?: string;
   generation: number;
   fallbackCandidate?: FallbackCandidate;
   /** Credential scope used (env name or infisical:<secret>), never a value. */
@@ -443,6 +464,9 @@ function parseStoredAttempt(raw: unknown, where: string): TaskAttempt {
   const rexWindowId = optStr(raw, "rexWindowId");
   const rexBlockId = optStr(raw, "rexBlockId");
   const rexWorkerLabel = optStr(raw, "rexWorkerLabel");
+  const rexHost = optStr(raw, "rexHost");
+  const rexCwd = optStr(raw, "rexCwd");
+  const rexHome = optStr(raw, "rexHome");
   const credentialScope = optStr(raw, "credentialScope");
   return {
     id: requireStr(raw, "id", where),
@@ -462,6 +486,9 @@ function parseStoredAttempt(raw: unknown, where: string): TaskAttempt {
     ...(rexWindowId !== undefined ? { rexWindowId } : {}),
     ...(rexBlockId !== undefined ? { rexBlockId } : {}),
     ...(rexWorkerLabel !== undefined ? { rexWorkerLabel } : {}),
+    ...(rexHost !== undefined ? { rexHost } : {}),
+    ...(rexCwd !== undefined ? { rexCwd } : {}),
+    ...(rexHome !== undefined ? { rexHome } : {}),
     ...(credentialScope !== undefined ? { credentialScope } : {}),
     ...(candidate != null ? { fallbackCandidate: parseStoredCandidate(candidate, `${where}.fallbackCandidate`) } : {}),
     ...(error != null ? { error: parseStoredError(error, `${where}.error`) } : {}),
@@ -560,7 +587,7 @@ export function buildAgentStartOptions(
   provider: Provider,
   model: string,
   prepared?: OmpWorkerPreparation,
-  options: { rexStatus?: boolean } = {},
+  options: { rexStatus?: boolean; remoteHome?: string } = {},
 ): string[] {
   // The worker argv is built by the same function the interactive plan path
   // uses, so a Herdr worker gets the destructive guard, tool-surface overlay,
@@ -584,6 +611,123 @@ export function buildAgentStartOptions(
   }
   const fallback: OmpWorkerPreparation = prepared ?? { profile: null, managed: null };
   return ["--", ...ompWorkerArgs(provider, model, fallback, options)];
+}
+
+// ---------------------------------------------------------------------------
+// Remote Rex preflight (dotfiles#209)
+// ---------------------------------------------------------------------------
+//
+// A remote attempt must prove its environment BEFORE the worker starts.
+// Everything runs through `remoteExec` on the SAME recorded rex host inside
+// the task session; a failure is a dispatch-time ContractError. Nothing here
+// falls back to another host, the local server, or Herdr.
+
+/** Files the remote OMP worker argv references inside ~/.dotfiles. */
+const REMOTE_DOTFILES_FILES = [
+  "script/omp-destructive-guard.ts",
+  "script/omp-worker-overlay.yml",
+  "script/rex-omp-agent-state.ts",
+];
+const OMP_MODELS_MANAGED_MARKER = "# Managed by the dotfiles agent launcher";
+
+function remoteShQuote(path: string): string {
+  return `'${path.replace(/'/g, `'\''`)}'`;
+}
+
+async function remoteRequire(
+  server: string,
+  sessionId: string,
+  check: { desc: string; argv: string[] },
+  timeoutMs = 60000,
+): Promise<void> {
+  const { code, output } = await remoteExec(server, sessionId, check.argv, timeoutMs);
+  if (code !== 0) {
+    throw new ContractError(
+      "state",
+      `remote preflight on '${server}' failed: ${check.desc} (exit ${code})` +
+        (output.trim() ? `: ${output.trim().slice(0, 300)}` : ""),
+    );
+  }
+}
+
+async function preflightRemoteWorker(
+  server: string,
+  sessionId: string,
+  remoteHome: string,
+  provider: Provider,
+  prepared: OmpWorkerPreparation,
+): Promise<void> {
+  const dotfiles = join(remoteHome, ".dotfiles");
+  for (const rel of REMOTE_DOTFILES_FILES) {
+    await remoteRequire(server, sessionId, {
+      desc: `missing ${dotfiles}/${rel} (remote dotfiles checkout required)`,
+      argv: ["test", "-f", join(dotfiles, rel)],
+    });
+  }
+  if (provider.secret) {
+    await remoteRequire(server, sessionId, {
+      desc: `missing ${dotfiles}/script/agent/infisical-key.sh`,
+      argv: ["test", "-f", join(dotfiles, "script", "agent", "infisical-key.sh")],
+    });
+  }
+  // The worker argv[0] is the harness command (omp); the interactive block
+  // shell resolves it via mise. Preflight uses the same shims dir so the
+  // check does not depend on login-shell profile quirks.
+  const shims = join(remoteHome, ".local", "share", "mise", "shims");
+  // `env` does not expand $PATH — spell out a sane remote PATH so `bash`
+  // itself resolves regardless of the rex server's minimal environment.
+  const remotePath = `${shims}:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin`;
+  await remoteRequire(server, sessionId, {
+    desc: "harness command not resolvable via mise shims on remote host",
+    argv: ["env", `PATH=${remotePath}`, "bash", "-c", "command -v omp >/dev/null"],
+  });
+
+  if (ompNeedsManagedProfile(provider)) {
+    // Remote models.yml mirrors ensureOmpManagedProfile, but the file lives
+    // on the REMOTE host and the user-owned check must run there too.
+    const profile = ompCustomProfileName(provider.key);
+    const agentDir = join(remoteHome, ".omp", "profiles", profile, "agent");
+    const modelsPath = join(agentDir, "models.yml");
+    const content = renderOmpModelsYaml(provider, remoteHome);
+    const marker = OMP_MODELS_MANAGED_MARKER;
+    // startsWith semantics, like ensureOmpManagedProfile: the marker is a
+    // prefix of the first line, not the whole line.
+    const owned = `[ ! -e ${remoteShQuote(modelsPath)} ] || head -1 ${remoteShQuote(modelsPath)} | grep -qF ${remoteShQuote(marker)}`;
+    await remoteRequire(server, sessionId, {
+      desc: `remote models.yml exists without the managed marker: ${modelsPath}`,
+      argv: ["sh", "-c", owned],
+    });
+    await remoteWriteFile(server, sessionId, modelsPath, content);
+  }
+  void prepared;
+}
+
+/** Resolve the provider secret through the REMOTE infisical-key.sh — proof
+ *  that remote authentication works before a model call is attempted. The
+ *  secret value never leaves the remote host. */
+async function verifyRemoteOmpCredential(
+  server: string,
+  sessionId: string,
+  remoteHome: string,
+  provider: Provider,
+): Promise<void> {
+  if (!provider.secret) return;
+  const script = join(remoteHome, ".dotfiles", "script", "agent", "infisical-key.sh");
+  const shims = join(remoteHome, ".local", "share", "mise", "shims");
+  const remotePath = `${shims}:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin`;
+  const { code, output } = await remoteExec(
+    server,
+    sessionId,
+    ["env", `PATH=${remotePath}`, "bash", "-c", `bash ${remoteShQuote(script)} ${provider.secret}`],
+    120000,
+  );
+  if (code !== 0) {
+    throw new ContractError(
+      "state",
+      `remote credential probe on '${server}' failed for provider '${provider.key}'` +
+        ` (exit ${code})` + (output.trim() ? `: ${output.trim().slice(0, 200)}` : ""),
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -659,14 +803,50 @@ export async function dispatchTask(
   const adapter = runtimeAdapter(runtime);
   const launchEnv = { ...workerEnv, OMP_SKIP_SETUP: "1" };
 
+  // Remote execution (dotfiles#209): --rex-host selects a `rex hosts` label;
+  // the recorded host is the ONLY endpoint every later operation uses.
+  const remote = runtime === "rex" && descriptor.rexHost !== undefined;
+  const rexHost = remote ? descriptor.rexHost : undefined;
+  const cwd = descriptor.cwd ?? process.cwd();
+  if (remote) {
+    if (rexHost === undefined || rexHost === "" || /\s/.test(rexHost)) {
+      throw new ContractError("identity", `invalid rex host '${descriptor.rexHost}'`);
+    }
+    if (!cwd.startsWith("/")) {
+      throw new ContractError("identity", `remote rex cwd must be an absolute remote path, got '${cwd}'`);
+    }
+    const probe = await checkRexServer(rexHost);
+    if (!probe.reachable) {
+      throw new ContractError("state", `rex host '${rexHost}' unreachable: ${probe.error ?? "unknown"}`);
+    }
+  }
+
   // Create the runtime surface for the task (Herdr workspace / Rex session).
-  const surface = await adapter.createSurface(process.cwd(), `task-${descriptor.id.slice(0, 8)}`, launchEnv);
+  const surface = await adapter.createSurface(cwd, `task-${descriptor.id.slice(0, 8)}`, launchEnv,
+    remote ? { server: rexHost } : undefined);
   const surfaceId = surface.surfaceId;
+
+  // Resolve remote prerequisites BEFORE the worker starts: the remote
+  // account home (for ~/.dotfiles argv paths), the managed files, and the
+  // credential command — all on the SAME recorded host. Failures here are
+  // dispatch-time ContractErrors, never silent fallbacks.
+  let remoteHome: string | undefined;
+  if (remote && rexHost) {
+    try {
+      remoteHome = await probeRemoteHome(rexHost, surfaceId);
+      await preflightRemoteWorker(rexHost, surfaceId, remoteHome, provider, prepared);
+      await verifyRemoteOmpCredential(rexHost, surfaceId, remoteHome, provider);
+    } catch (error) {
+      await adapter.destroySurface?.(surfaceId, rexHost).catch(() => {});
+      throw error;
+    }
+  }
 
   // Build worker name
   const workerName = `worker-${descriptor.id.slice(0, 8)}-${route.harness}-${randomUUID().slice(0, 8)}`;
   const agentOptions = buildAgentStartOptions(provider, descriptor.model, prepared, {
     rexStatus: runtime === "rex",
+    remoteHome,
   });
   // Rex runs the harness argv directly inside a block; Herdr launches the
   // agent by kind inside a pane. The argv strips buildAgentStartOptions'
@@ -683,11 +863,12 @@ export async function dispatchTask(
     options: agentOptions,
     argv: workerArgv,
     env: launchEnv,
+    server: rexHost,
   });
   const workerNameFinal = handle.id;
 
   // Split pane for output (right side)
-  const pane = await adapter.createPane(surfaceId, { cwd: process.cwd(), split: "right", noFocus: true });
+  const pane = await adapter.createPane(surfaceId, { cwd, split: "right", noFocus: true, server: rexHost });
   const paneId = pane.paneId;
 
   // Map the worker to the task (audit-only record; the attempt is canonical)
@@ -698,6 +879,7 @@ export async function dispatchTask(
     windowId: handle.windowId,
     workerId: workerNameFinal,
     workerLabel: workerName,
+    server: rexHost,
     createdAt: new Date().toISOString(),
     route: descriptor.route,
     model: descriptor.model,
@@ -715,6 +897,8 @@ export async function dispatchTask(
     startedAt: new Date().toISOString(),
     status: "running",
     runtime,
+    ...(rexHost !== undefined ? { rexHost } : {}),
+    ...(remote ? { rexCwd: cwd, ...(remoteHome !== undefined ? { rexHome: remoteHome } : {}) } : {}),
     ...attemptRuntimeFields(runtime, {
       surfaceId,
       paneId: handle.paneId,
@@ -874,16 +1058,17 @@ async function startCandidateWorker(
     throw new ContractError("state", `No ${runtime} surface in attempt`);
   }
   const pane = await adapter.createPane(surfaceId, {
-    cwd: process.cwd(),
+    cwd: attempt.rexCwd ?? process.cwd(),
     split: "right",
     noFocus: true,
+    server: attempt.rexHost,
   });
   // The pane must be at an interactive shell prompt before an agent can start.
   await new Promise(r => setTimeout(r, 2000));
   const handle = await adapter.startWorker(
-    { surfaceId, paneId: pane.paneId, tabId: pane.tabId },
+    { surfaceId, paneId: pane.paneId, tabId: pane.tabId, server: attempt.rexHost },
     pane.paneId,
-    { workerName, kind: "omp", options: spec.options, argv: spec.argv, env: spec.env },
+    { workerName, kind: "omp", options: spec.options, argv: spec.argv, env: spec.env, server: attempt.rexHost },
   );
   return { ...handle, workerName: handle.id };
 }
@@ -1127,6 +1312,7 @@ export async function startTaskAttempt(
         await verifyOmpManagedCredential(candidateProvider);
         const options = buildAgentStartOptions(candidateProvider, model, candidatePrepared, {
           rexStatus: attemptRuntime(attempt) === "rex",
+          remoteHome: attempt.rexHome,
         });
         const candidateArgv = [
           candidateHarness.command,

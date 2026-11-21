@@ -520,6 +520,11 @@ export async function cmdTask(config: Config, action: TaskAction): Promise<numbe
   // the selected runtime itself is unavailable. The default stays Herdr;
   // --runtime rex selects the Rex path explicitly (ADR-0021).
   const runtime = o.runtime ?? "herdr";
+  // --rex-host is meaningful only for the Rex runtime; silently ignoring it
+  // under herdr would dispatch to the wrong execution target.
+  if (o.rexHost && runtime !== "rex") {
+    throw new AgentError("--rex-host requires --runtime rex", EXIT_USAGE);
+  }
   const { runtimeAdapter } = await import("./runtime.ts");
   const rt = await runtimeAdapter(runtime).checkAvailable();
   if (!rt.available) {
@@ -541,6 +546,8 @@ export async function cmdTask(config: Config, action: TaskAction): Promise<numbe
       ...(o.timeoutMs !== null ? { timeoutMs: o.timeoutMs } : {}),
       ...(o.allowUnobservedEffects ? { allowUnobservedEffects: true } : {}),
       ...(o.runtime ? { runtime: o.runtime } : {}),
+      ...(o.rexHost ? { rexHost: o.rexHost } : {}),
+      ...(o.cwd ? { cwd: o.cwd } : {}),
     });
   } catch (error) {
     // ContractError carries the classified reason (bad route/model/profile,

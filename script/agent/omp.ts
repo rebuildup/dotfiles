@@ -77,8 +77,11 @@ function ompCustomBaseUrl(provider: Provider): string {
  * repo-shipped helper resolves the named Infisical secret with the canonical
  * self-host flags (never Infisical Cloud).
  */
-function ompInfisicalKeyCommand(secretName: string): string {
-  return `${join(import.meta.dir, "infisical-key.sh")} ${secretName}`;
+function ompInfisicalKeyCommand(secretName: string, remoteHome?: string): string {
+  const script = remoteHome !== undefined
+    ? join(remoteHome, ".dotfiles", "script", "agent", "infisical-key.sh")
+    : join(import.meta.dir, "infisical-key.sh");
+  return `${script} ${secretName}`;
 }
 
 function ompModelLimits(provider: Provider, modelId: string): { contextWindow?: number; maxTokens?: number } {
@@ -100,7 +103,7 @@ export function ompNeedsManagedProfile(provider: Provider): boolean {
 }
 
 /** Deterministic models.yml content for a managed OMP profile. */
-export function renderOmpModelsYaml(provider: Provider): string {
+export function renderOmpModelsYaml(provider: Provider, remoteHome?: string): string {
   if (!ompNeedsManagedProfile(provider)) {
     throw new AgentError(
       `provider '${provider.key}' does not need a managed OMP profile`,
@@ -122,7 +125,7 @@ export function renderOmpModelsYaml(provider: Provider): string {
       "# Managed by the dotfiles agent launcher (config/agents.toml). Do not edit.",
       "providers:",
       `  ${provider.omp_id}:`,
-      `    apiKey: ${JSON.stringify(`!${ompInfisicalKeyCommand(secret)}`)}`,
+      `    apiKey: ${JSON.stringify(`!${ompInfisicalKeyCommand(secret, remoteHome)}`)}`,
       "",
     ].join("\n");
   }
@@ -142,7 +145,7 @@ export function renderOmpModelsYaml(provider: Provider): string {
     // worker path. The env-name form remains for providers whose credential
     // is ambient-only (no Infisical secret name).
     lines.push(
-      `    apiKey: ${JSON.stringify(`!${ompInfisicalKeyCommand(provider.secret)}`)}`
+      `    apiKey: ${JSON.stringify(`!${ompInfisicalKeyCommand(provider.secret, remoteHome)}`)}`
     );
   } else {
     const envName = provider.env;
@@ -215,7 +218,13 @@ export function ensureOmpManagedProfile(provider: Provider): OmpManagedProfile {
 /** Absolute real path of the destructive guard shipped next to this launcher.
  * It is loaded with --trusted-extension, which aborts when loading fails, so
  * a missing file must fail before a process starts. */
-function ompDestructiveGuardPath(): string {
+function ompDestructiveGuardPath(remoteHome?: string): string {
+  if (remoteHome !== undefined) {
+    // Remote worker: the path must exist on the REMOTE host's dotfiles
+    // checkout (~/.dotfiles convention); existence is preflighted by the
+    // dispatcher, argv elements are exec'd without shell expansion.
+    return join(remoteHome, ".dotfiles", "script", OMP_DESTRUCTIVE_GUARD);
+  }
   const candidate = join(import.meta.dir, "..", OMP_DESTRUCTIVE_GUARD);
   try {
     return realpathSync(candidate);
@@ -234,7 +243,10 @@ function ompDestructiveGuardPath(): string {
  * `--config` loader aborts on a missing file, but the launcher must fail
  * before it builds a command — without the overlay a session would start
  * with MCP servers mounted. */
-function ompWorkerOverlayPath(): string {
+function ompWorkerOverlayPath(remoteHome?: string): string {
+  if (remoteHome !== undefined) {
+    return join(remoteHome, ".dotfiles", "script", OMP_WORKER_OVERLAY);
+  }
   const candidate = join(import.meta.dir, "..", OMP_WORKER_OVERLAY);
   try {
     return realpathSync(candidate);
@@ -282,7 +294,10 @@ const OMP_REX_STATUS = "rex-omp-agent-state.ts";
  * program-status records to the enclosing Rex block (ADR-0021). Shipped next
  * to this launcher and loaded with --trusted-extension like the destructive
  * guard; a missing file must fail before a process starts. */
-function ompRexStatusPath(): string {
+function ompRexStatusPath(remoteHome?: string): string {
+  if (remoteHome !== undefined) {
+    return join(remoteHome, ".dotfiles", "script", OMP_REX_STATUS);
+  }
   const candidate = join(import.meta.dir, "..", OMP_REX_STATUS);
   try {
     return realpathSync(candidate);
@@ -389,8 +404,9 @@ export function ompWorkerArgs(
   provider: Provider,
   model: string,
   prepared: OmpWorkerPreparation,
-  options: { rexStatus?: boolean } = {},
+  options: { rexStatus?: boolean; remoteHome?: string } = {},
 ): string[] {
+  const remoteHome = options.remoteHome;
   const args: string[] = [
     "--provider", provider.omp_id,
     "--model", model,
@@ -418,18 +434,18 @@ export function ompWorkerArgs(
     "--no-lsp",
     "--no-pty",
     "--no-title",
-    "--trusted-extension", ompDestructiveGuardPath(),
-    "--config", ompWorkerOverlayPath(),
+    "--trusted-extension", ompDestructiveGuardPath(remoteHome),
+    "--config", ompWorkerOverlayPath(remoteHome),
   );
-  if (insideHerdr()) {
+  if (insideHerdr() && remoteHome === undefined) {
     args.push("--trusted-extension", ompHerdrExtensionPath());
   }
   // The Rex status reporter is added for Rex-dispatched workers (explicit
   // rexStatus) and for interactive launches already inside a Rex block. It
   // self-disables unless REX_* env is present, so it cannot double-report
   // into Herdr even if both flags were ever combined.
-  if (options.rexStatus || insideRex()) {
-    args.push("--trusted-extension", ompRexStatusPath());
+  if (options.rexStatus || (insideRex() && remoteHome === undefined)) {
+    args.push("--trusted-extension", ompRexStatusPath(remoteHome));
   }
   return args;
 }

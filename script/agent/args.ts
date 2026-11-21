@@ -117,12 +117,13 @@ function parseTaskArgs(argv: string[]): Action {
   if (!route || route.startsWith("-")) {
     throw new AgentError(
       "usage: agent task run <harness.provider> [--model <id>] [--fallback <profile-id>] " +
+        "[--runtime herdr|rex] [--rex-host <label>] [--cwd <path>] " +
         "[--prompt <text>] [--accept <criteria>]..."
     );
   }
   const opts: TaskRunOptions = {
     model: null, fallback: null, prompt: null, accept: [], timeoutMs: null,
-    allowUnobservedEffects: false, runtime: null,
+    allowUnobservedEffects: false, runtime: null, rexHost: null, cwd: null,
   };
   const rest = argv.slice(2);
   for (let i = 0; i < rest.length; i++) {
@@ -143,6 +144,8 @@ function parseTaskArgs(argv: string[]): Action {
       }
       opts.runtime = value;
     }
+    else if (token === "--rex-host") opts.rexHost = take();
+    else if (token === "--cwd") opts.cwd = take();
     else if (token === "--allow-unobserved-effects") opts.allowUnobservedEffects = true;
     else if (token === "--timeout") {
       const raw = take();
@@ -154,7 +157,8 @@ function parseTaskArgs(argv: string[]): Action {
     } else {
       throw new AgentError(
         `unexpected argument '${token}'; usage: agent task run <route> ` +
-          "[--model <id>] [--fallback <profile-id>] [--prompt <text>] " +
+          "[--model <id>] [--fallback <profile-id>] [--runtime herdr|rex] " +
+          "[--rex-host <label>] [--cwd <path>] [--prompt <text>] " +
           "[--accept <criteria>]... [--timeout <ms>]"
       );
     }
@@ -171,6 +175,10 @@ export interface TaskRunOptions {
   allowUnobservedEffects: boolean;
   /** Explicit execution runtime (ADR-0021); null = herdr (default). */
   runtime: "herdr" | "rex" | null;
+  /** Rex host label/address (dotfiles#209); requires --runtime rex. */
+  rexHost: string | null;
+  /** Worker working directory; remote hosts require an absolute remote path. */
+  cwd: string | null;
 }
 
 export interface TaskResumeOptions {
