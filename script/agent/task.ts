@@ -53,6 +53,7 @@ import {
   acquireLease,
   releaseLease,
   assertLeaseCurrent,
+  parseLease,
   type Lease,
 } from "./attempts.ts";
 import {
@@ -63,7 +64,11 @@ import {
 } from "./checkpoint.ts";
 import { extractProviderFailureEvidence, providerTurnObserved } from "./evidence.ts";
 import {
+  blockProcess,
+  blockProgramStatus,
+  captureBlock,
   checkRexServer,
+  inspectBlockPresence,
   probeRemoteHome,
   remoteExec,
   remoteWriteFile,
@@ -287,14 +292,42 @@ function promptSendVerdict(r: { blocked?: boolean; stalled?: boolean; errorCode?
   return "succeeded";
 }
 
+/** Task lease owners are '<verb>-<pid>'. When the owning process is gone
+ *  (ESRCH) the lease can never be released or renewed, so reclaim it:
+ *  marking it released lets the next acquire take a new generation, which
+ *  fences the dead owner's workers. Unknown owners, live PIDs, and EPERM
+ *  all fail closed — the lease is left untouched. */
+function reclaimDeadOwnerLease(attemptKey: string, now: number): void {
+  const generations = taskAttemptStore.listGenerations(attemptKey);
+  const current = generations.length > 0 ? generations[generations.length - 1] : 0;
+  if (current === 0) return;
+  const raw = taskAttemptStore.readLease(attemptKey, current);
+  if (raw === null) return;
+  const lease = parseLease(raw, `lease(${attemptKey}#${current})`);
+  if (lease.released || Date.parse(lease.expiresAt) <= now) return;
+  const pidMatch = /-(\d+)$/.exec(lease.owner);
+  if (pidMatch === null) return;
+  const pid = Number(pidMatch[1]);
+  if (!Number.isInteger(pid) || pid <= 0) return;
+  try {
+    process.kill(pid, 0);
+    return; // owner still alive
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ESRCH") return;
+  }
+  releaseLease(taskAttemptStore, lease, now);
+}
+
 /** Acquire the exclusive execution lease for a task attempt. */
 function acquireTaskLease(
   descriptor: { route: string; model: string; id: string },
   owner: string,
 ): Lease {
   const attemptKey = taskAttemptKey(descriptor);
+  const now = Date.now();
+  reclaimDeadOwnerLease(attemptKey, now);
   return acquireLease(taskAttemptStore, attemptKey, owner, {
-    now: Date.now(),
+    now,
     leaseMs: 6 * 60 * 60 * 1000,
   });
 }
@@ -1874,6 +1907,9 @@ export async function runTaskToCompletion(
  * the worker still exists in Herdr. Everything else stays pending and
  * keeps blocking replay. The reconcile itself holds the execution lease
  * so it cannot interleave with a live run/resume.
+ *
+ * Remote Rex prompt-sends cannot use local provider evidence; they are
+ * resolved by remotePromptSendVerdict against the recorded host block.
  */
 export async function reconcileTaskEffects(
   config: Config,
@@ -1907,6 +1943,22 @@ export async function reconcileTaskEffects(
         const ones = verdicts.filter((v) => v === "one").length;
         const manies = verdicts.filter((v) => v === "many").length;
         if (ones === 1 && manies === 0) outcome = "succeeded";
+        if (outcome === null) {
+          // Remote Rex workers leave their turn evidence on the host — local
+          // provider logs cannot see it. Probe the recorded block instead.
+          const owner = [state.currentAttempt, ...state.history]
+            .filter((a): a is TaskAttempt => a !== undefined && a !== null)
+            .find((a) => a.rexSessionId && a.rexBlockId);
+          if (owner?.rexSessionId && owner.rexBlockId) {
+            outcome = await remotePromptSendVerdict(
+              owner.rexSessionId,
+              owner.rexBlockId,
+              owner.rexHost,
+              effect.prompt ?? state.descriptor.prompt,
+              sinceMs,
+            );
+          }
+        }
       } else if (effect.kind === "worker-start") {
         // The effect target is the worker name used at dispatch. Runtime is
         // per-task (the descriptor never changes it), so probe through the
@@ -1943,6 +1995,50 @@ export async function reconcileTaskEffects(
     try { releaseLease(taskAttemptStore, lease, Date.now()); } catch { /* expiry fences */ }
   }
   return { resolved, pending: stillPending };
+}
+
+/** Reconcile a remote Rex prompt-send against evidence ON THE HOST.
+ *  Returns "succeeded"/"failed" only on positive evidence; null keeps the
+ *  effect pending (fail closed). Evidence, strongest first:
+ *  1. block capture contains the sent prompt text — the send reached the
+ *     worker's terminal;
+ *  2. a program_status record was (re)reported after the send instant with
+ *     an active/done state — the worker processed a turn since then;
+ *  3. block absent — the send target no longer exists ("failed": replay
+ *     decisions belong to resume, which probes the worker separately). */
+async function remotePromptSendVerdict(
+  sessionId: string,
+  blockId: string,
+  server: string | undefined,
+  prompt: string,
+  sinceMs: number,
+): Promise<"succeeded" | "failed" | null> {
+  const presence = await inspectBlockPresence(sessionId, blockId, server).catch(() => "unknown" as const);
+  if (presence === "absent") return "failed";
+  if (presence !== "present") return null;
+  const needle = prompt.replace(/\s+/g, " ").trim();
+  if (needle !== "") {
+    try {
+      const capture = await captureBlock(sessionId, blockId, { server, tailLines: 400 });
+      if (capture.replace(/\s+/g, " ").includes(needle)) return "succeeded";
+    } catch { /* capture unavailable — fall through to status evidence */ }
+  }
+  const records = await blockProgramStatus(sessionId, blockId, server).catch(() => []);
+  const fresh = records.some((record) => {
+    if (record.updatedAt === undefined) return false;
+    const at = Date.parse(record.updatedAt);
+    if (!Number.isFinite(at) || at <= sinceMs) return false;
+    return record.state === "working" || record.state === "blocked" || record.state === "done";
+  });
+  if (fresh) return "succeeded";
+  // The block record survives a server restart but its foreground process
+  // does not — a bare interactive shell means the worker is gone and no
+  // further evidence can ever appear. Resolve "failed" so resume can apply
+  // its own worker-absent policy instead of blocking replay forever.
+  const proc = await blockProcess(sessionId, blockId, server).catch(() => null);
+  const fg = proc?.foreground?.name ?? "";
+  if (/^(ba|z|da|fi)?sh$/.test(fg)) return "failed";
+  return null;
 }
 
 export async function resumeTaskAttempt(
