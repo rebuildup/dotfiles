@@ -40,6 +40,11 @@ export function validateRegistry(values:unknown[]):Device[] {
  return nodes.sort((a,b)=>a.id.localeCompare(b.id));
 }
 function quotePath(p:string){if(/[\r\n"%]/.test(p))throw Error('unsupported path');return '"'+p.replaceAll('\\','/')+'"';}
+// Windows OpenSSH resolves Include files without a leading '/' as relative to
+// ~/.ssh, so a 'C:/...' absolute path never matches. '~' expands correctly.
+function includeDirective(dir:string){
+ return `Include ${platform()==='win32'?'~/.ssh/devices.conf':quotePath(join(dir,'devices.conf'))}\n`;
+}
 export function renderSSH(nodes:Device[],home:string):string {
  return marker+nodes.map(n=>`Host device-${n.id}
   HostName ${n.host}
@@ -143,7 +148,7 @@ function generated(path:string,text:string){
 }
 export function preflightSSH(home:string){
  const dir=join(home,'.ssh');
- const config=join(dir,'config'),include=`Include ${quotePath(join(dir,'devices.conf'))}\n`;
+ const config=join(dir,'config'),include=includeDirective(dir);
  let linkedConfig=false;
  for(const path of [dir,...['config','config.before-devices','devices.conf','devices_known_hosts'].map(p=>join(dir,p))]){
   try{
@@ -167,7 +172,7 @@ export function preflightSSH(home:string){
 export function installSSH(nodes:Device[],home:string){
  preflightSSH(home);
  const dir=join(home,'.ssh');mkdirSync(dir,{recursive:true,mode:0o700});
- const config=join(dir,'config'),include=`Include ${quotePath(join(dir,'devices.conf'))}\n`;
+ const config=join(dir,'config'),include=includeDirective(dir);
  const existed=existsSync(config),old=existed?readFileSync(config,'utf8'):'';
  // Exclusive backup must succeed before any generated or user SSH file changes.
  if(existed&&!old.startsWith(include))copyFileSync(config,config+'.before-devices',constants.COPYFILE_EXCL);
@@ -185,7 +190,7 @@ export function assertSyncedTarget(n:Device,home:string){
  const expected=renderSSH([n],home).slice(marker.length).replace(/\nHost \*\n$/, '');
  if(!existsSync(config)||!readGenerated(config).includes(expected)||!existsSync(known)||!readGenerated(known).split(/\r?\n/).includes(`device-${n.id} ${n.hostKey}`))throw Error(`${n.id}: SSH definition changed or missing; run devices sync explicitly`);
  const userConfig=join(home,'.ssh/config');
- if(!existsSync(userConfig)||!readFileSync(userConfig,'utf8').startsWith(`Include ${quotePath(config)}\n`))throw Error('managed SSH Include missing; run devices sync explicitly');
+ if(!existsSync(userConfig)||!readFileSync(userConfig,'utf8').startsWith(includeDirective(join(home,'.ssh'))))throw Error('managed SSH Include missing; run devices sync explicitly');
 }
 function profiles():Profile[]{
  const raw:unknown=JSON.parse(run(['herdr','machine','list','--json']));
