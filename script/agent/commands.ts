@@ -251,8 +251,9 @@ export function cmdCheck(config: Config): number {
   // tables: a malformed profile (bad primary_route, bad cap, bad billing) must
   // fail CI here rather than at `agent fallback` time with a stack trace.
   let profileCount = 0;
+  let parsedToml: Record<string, unknown>;
   try {
-    const parsedToml = parseTomlTable(readFileSync(config.path, "utf8"), config.path);
+    parsedToml = parseTomlTable(readFileSync(config.path, "utf8"), config.path);
     for (const id of listFallbackProfiles(parsedToml)) {
       parseFallbackProfile(parsedToml, id);
       profileCount++;
@@ -262,6 +263,38 @@ export function cmdCheck(config: Config): number {
       throw new AgentError(error.message, EXIT_USAGE);
     }
     throw error;
+  }
+  // Attestation freshness is time-dependent: committed e2e evidence older
+  // than DEFAULT_MAX_EVIDENCE_AGE_MS silently disables every fallback
+  // candidate (dotfiles#203). Surface rejections as warnings on every
+  // `agent check` run — CI prints them — without failing the structural
+  // check, since renewal needs real provider calls CI cannot perform.
+  try {
+    const catalogFacts = loadCatalog(config.path);
+    const catalogLike = buildFallbackCatalog(config, catalogFacts);
+    const attestationMap = mergeAttestations(
+      seedAttestationsFromCatalog(catalogFacts),
+      loadCatalogAttestations(),
+    );
+    for (const id of listFallbackProfiles(parsedToml)) {
+      const profile = parseFallbackProfile(parsedToml, id);
+      if (profile === null) continue;
+      const resolution = resolveFallbackProfile(
+        profile,
+        catalogLike,
+        attestationMap,
+        getPrimaryQuotaScope(catalogFacts, profile.primaryRoute),
+      );
+      for (const rejected of resolution.rejected) {
+        const target = rejected.candidate
+          ? `${rejected.candidate.route}/${rejected.candidate.model}`
+          : "(unresolved)";
+        console.log(`warning: fallback '${id}' rejects ${target}: ${rejected.reason}`);
+      }
+    }
+  } catch {
+    // Resolution warnings are advisory; structural validation above already
+    // failed closed on malformed input.
   }
   console.log(
     `config OK: ${config.path} ` +

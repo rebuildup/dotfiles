@@ -1150,10 +1150,10 @@ status = "verified-live"
 provenance = "measured"
 
 [catalog.routes."omp.openrouter-free".e2e.evidence]
-at = "2026-11-04T00:00:00Z"
+at = "2026-11-21T08:20:00Z"
 source = "live-e2e"
-sha = "bed3716a5008c424a3b2bf97204f1d8ebafe8a6b"
-note = "Real response + Bash tool call, OMP 18.16.0."
+sha = "9547021c2da03170e883dec307223c12f4a8480d"
+note = "Real response + shell tool call (file create verified on disk) via agent launcher print mode, omp 19.0.0, 2026-11-21."
 
 [catalog.routes."claude.opencode-go".quota]
 scope = "plan"
@@ -1597,31 +1597,28 @@ note = "Real response + tool call + file edits through the launcher, claude 2.1.
 [catalog.routes."opencode.kilo".e2e]
 value = [
   { model = "nvidia/nemotron-3-ultra-550b-a55b:free", tool_call = true },
-  { model = "kilo-auto/free", tool_call = true },
-  { model = "cohere/north-mini-code:free", tool_call = true },
 ]
 status = "verified-live"
 provenance = "measured"
 
 [catalog.routes."opencode.kilo".e2e.evidence]
-at = "2026-11-13T00:00:00Z"
+at = "2026-11-21T08:20:00Z"
 source = "live-e2e"
-sha = "65a2bbc21d3e8dc889669c7bb818e567358a891f"
-note = "Real response + tool call + file edits through the launcher, opencode 2.2.7; create-task and bug-fix task."
+sha = "9547021c2da03170e883dec307223c12f4a8480d"
+note = "Real response + shell tool call (file create verified on disk) through the launcher run mode, opencode 2.3.2, 2026-11-21. kilo-auto/free and cohere/north-mini-code:free dropped from this attestation pending re-verification."
 
 [catalog.routes."omp.kilo".e2e]
 value = [
   { model = "nvidia/nemotron-3-ultra-550b-a55b:free", tool_call = true },
-  { model = "kilo-auto/free", tool_call = true },
 ]
 status = "verified-live"
 provenance = "measured"
 
 [catalog.routes."omp.kilo".e2e.evidence]
-at = "2026-11-13T00:00:00Z"
+at = "2026-11-21T08:20:00Z"
 source = "live-e2e"
-sha = "65a2bbc21d3e8dc889669c7bb818e567358a891f"
-note = "Real response + bash/edit tool calls + bun test through the launcher, omp 18.18.9; create-task and bug-fix task."
+sha = "9547021c2da03170e883dec307223c12f4a8480d"
+note = "Real response + shell tool calls (file create verified on disk) through agent task run, omp 19.0.0, 2026-11-21. kilo-auto/free dropped from this attestation pending re-verification."
 
 [catalog.routes."claude.requesty".e2e]
 value = [
@@ -1669,10 +1666,10 @@ status = "verified-live"
 provenance = "measured"
 
 [catalog.routes."omp.groq".e2e.evidence]
-at = "2026-11-13T00:00:00Z"
+at = "2026-11-21T08:20:00Z"
 source = "live-e2e"
-sha = "65a2bbc21d3e8dc889669c7bb818e567358a891f"
-note = "Real response + bash/edit tool calls + bun test through the launcher, omp 18.18.9; create-task 320s and the bug-fix task."
+sha = "9547021c2da03170e883dec307223c12f4a8480d"
+note = "Real response + shell tool calls (file create verified on disk) through agent task run, omp 19.0.0, 2026-11-21."
 
 # ---------------------------------------------------------------------------
 # Fallback profiles (issue #136 / T020, Epic #86): opt-in continuity profiles
