@@ -145,6 +145,9 @@ export interface RexProgramStatusRecord {
   app?: string;
   msg?: string;
   progress?: number;
+  /** Server-side report timestamp; distinguishes a re-report of an identical
+   * state (a new turn's `done`) from the stale record it replaces. */
+  updatedAt?: string;
 }
 
 export interface RexProcessInfo {
@@ -449,6 +452,7 @@ export async function blockProgramStatus(sessionId: string, blockId: string): Pr
       app: rexStr(raw["app"]),
       msg: rexStr(raw["msg"]),
       progress: typeof raw["progress"] === "number" ? raw["progress"] : undefined,
+      updatedAt: rexStr(raw["updated_at"]),
     });
   }
   return records;
@@ -548,16 +552,22 @@ export async function promptBlock(
 
   const timeoutMs = options.timeoutMs ?? 300000;
   const deadline = Date.now() + timeoutMs;
+  // A fresh `idle` record only settles the wait after this prompt has been
+  // seen making progress (working/blocked/done/error). Startup `idle`
+  // reports — emitted while the worker boots, after the baseline snapshot —
+  // are indistinguishable from a real post-turn idle and must not settle.
+  let sawProgress = false;
   for (;;) {
     const records = await blockProgramStatus(sessionId, blockId).catch(() => [] as RexProgramStatusRecord[]);
     const signature = JSON.stringify(records);
     const fresh = signature !== baselineSignature;
     const state = deriveWorkerState(records);
+    if (fresh && state !== "idle" && state !== "unknown") sawProgress = true;
     if (fresh && state === "blocked") {
       const kind = records.find((r) => r.state === "blocked")?.kind;
       return { blocked: true, errorCode: kind ? `agent-blocked-${kind}` : "agent-blocked" };
     }
-    if (fresh && records.length > 0 && (state === "idle" || state === "done")) {
+    if (fresh && records.length > 0 && (state === "done" || (state === "idle" && sawProgress))) {
       return {};
     }
     // No NEW OSC 7501 records: fall back to process liveness. A gone block
