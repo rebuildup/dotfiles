@@ -180,6 +180,32 @@ const herdrAdapter: TaskRuntimeAdapter = {
       paneId,
       options: spec.options,
     });
+    // `herdr agent prompt --wait` requires an observed working/blocked
+    // transition within 5s of submission. OMP 19 cold-boots slower than
+    // that, so prompting immediately reports agent_prompt_stalled even
+    // though the worker is healthy (dotfiles#212). Wait for herdr's
+    // interactive_ready signal — the TUI is up and can register a turn —
+    // before the caller prompts. A herdr that never reports the field
+    // keeps the legacy no-wait behaviour; a field that stays false past
+    // the deadline is a startup failure, not a prompt failure.
+    const readyDeadline = Date.now() + 30000;
+    let sawReadyField = false;
+    for (;;) {
+      const agent = await herdrGetAgent(start.agentName).catch(() => null);
+      if (agent?.interactiveReady !== undefined) sawReadyField = true;
+      if (agent?.interactiveReady === true) break;
+      if (Date.now() >= readyDeadline) {
+        // A herdr too old to report interactive_ready keeps the legacy
+        // fire-and-observe behaviour; a reported-but-never-ready worker is
+        // a startup failure distinct from a prompt failure.
+        if (!sawReadyField) break;
+        throw new ContractError(
+          "state",
+          `herdr worker '${start.agentName}' not interactive-ready within 30s`,
+        );
+      }
+      await new Promise((r) => setTimeout(r, 500));
+    }
     return {
       runtime: "herdr",
       id: start.agentName,
@@ -190,7 +216,32 @@ const herdrAdapter: TaskRuntimeAdapter = {
     };
   },
 
-  promptWorker: (handle, prompt, opts) => herdrPromptAgent(handle.id, prompt, opts),
+  promptWorker: async (handle, prompt, opts) => {
+    const result = await herdrPromptAgent(handle.id, prompt, opts);
+    // `agent prompt --wait` demands an observed working/blocked transition
+    // within a hardcoded 5s of submission. OMP 19 reports its turn through
+    // the herdr extension with enough delay that the window can expire
+    // while the worker is healthy — the prompt text was still delivered
+    // and the turn runs to completion (dotfiles#212). A stalled verdict
+    // here is therefore NOT proof of failure: keep observing agent state
+    // until the turn settles or the caller's budget expires. Only a turn
+    // we actually saw progress on may settle as success; silence past the
+    // deadline stays stalled — never upgraded to completion.
+    if (!result.stalled || result.errorCode !== "agent_prompt_stalled") {
+      return result;
+    }
+    const deadline = Date.now() + (opts?.timeoutMs ?? 300000);
+    let sawProgress = false;
+    for (;;) {
+      const agent = await herdrGetAgent(handle.id).catch(() => null);
+      const status = agent?.status;
+      if (status === "working" || status === "blocked") sawProgress = true;
+      if (status === "done" || (sawProgress && status === "idle")) return {};
+      if (status === "blocked") return { blocked: true, errorCode: "agent-blocked" };
+      if (Date.now() >= deadline) return result;
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+  },
 
   readWorker: (handle, opts) =>
     herdrReadAgent(handle.id, { source: "recent", lines: opts?.lines ?? 200 }),

@@ -8,8 +8,9 @@
 import { describe, it, expect } from "bun:test";;
 import { checkHerdrAvailable, listWorkspaces, getWorkspace, createWorkspace, createPane, getPaneStatus, closePane, startAgent, promptAgent, readAgent, waitAgent, listAgents, getAgent, saveHerdrTaskMapping, loadHerdrTaskMapping } from "./agent/herdr.ts";;
 ;
-import { rmSync, existsSync } from "node:fs";;
+import { rmSync, existsSync, mkdtempSync, writeFileSync, chmodSync } from "node:fs";;
 import { join } from "node:path";;
+import { tmpdir } from "node:os";;
 import { agentStateDir } from "./agent/contract.ts";;
 
 // ---------------------------------------------------------------------------
@@ -135,5 +136,40 @@ describe("Herdr task mapping persistence", () => {
     expect(loaded!.paneId).toBe("pane-1");
     expect(loaded!.workerName).toBe("worker-1");
     expect(loaded!.route).toBe("omp.mistral");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fault injection: a fake `herdr` binary via HERDR_CLI.
+// Regression for dotfiles#212: `agent prompt` writes its error envelope to
+// STDERR; parsing stdout alone dropped errorCode and every stall classified
+// as an unrecognizable failure.
+// ---------------------------------------------------------------------------
+
+describe("promptAgent error envelope (fake herdr)", () => {
+  it("reads error.code/message from stderr, not just stdout", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "fake-herdr-"));
+    const bin = join(dir, "herdr");
+    writeFileSync(bin, `#!/usr/bin/env bash
+if [ "$1" = "--version" ]; then echo "herdr 0.0.0-test"; exit 0; fi
+if [ "$1" = "agent" ] && [ "$2" = "prompt" ]; then
+  echo '{"error":{"code":"agent_prompt_stalled","message":"no working state within 5000 ms"}}' >&2
+  exit 1
+fi
+exit 0
+`);
+    chmodSync(bin, 0o755);
+    const prev = process.env.HERDR_CLI;
+    process.env.HERDR_CLI = bin;
+    try {
+      const result = await promptAgent("w", "hi", { wait: true, timeoutMs: 1000 });
+      expect(result.stalled).toBe(true);
+      expect(result.blocked).toBe(false);
+      expect(result.errorCode).toBe("agent_prompt_stalled");
+      expect(result.response).toContain("no working state");
+    } finally {
+      if (prev === undefined) delete process.env.HERDR_CLI; else process.env.HERDR_CLI = prev;
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
