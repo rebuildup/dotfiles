@@ -459,11 +459,16 @@ export async function cmdTask(config: Config, action: TaskAction): Promise<numbe
       throw new AgentError(`invalid task id '${taskId}'`, EXIT_USAGE);
     }
     const ro = action[3];
-    const { checkHerdrAvailable } = await import("./herdr.ts");
-    const herdr = await checkHerdrAvailable();
-    if (!herdr.available) {
+    // The runtime is recorded on the attempt, not the CLI: resume must probe
+    // the SAME runtime that owns the worker (ADR-0021). Records written
+    // before --runtime existed are Herdr attempts.
+    const stored = task.loadTaskState(taskId);
+    const runtime = stored?.currentAttempt?.runtime === "rex" ? "rex" : "herdr";
+    const { runtimeAdapter } = await import("./runtime.ts");
+    const rt = await runtimeAdapter(runtime).checkAvailable();
+    if (!rt.available) {
       throw new AgentError(
-        `Herdr is not available (${herdr.error ?? "unknown"}); task resume requires Herdr`,
+        `${runtime} is not available (${rt.error ?? "unknown"}); task resume requires ${runtime}`,
         EXIT_RUNTIME,
       );
     }
@@ -512,12 +517,14 @@ export async function cmdTask(config: Config, action: TaskAction): Promise<numbe
     );
   }
   // Fail fast with a clear message instead of a ContractError stack when
-  // Herdr itself is unavailable.
-  const { checkHerdrAvailable } = await import("./herdr.ts");
-  const herdr = await checkHerdrAvailable();
-  if (!herdr.available) {
+  // the selected runtime itself is unavailable. The default stays Herdr;
+  // --runtime rex selects the Rex path explicitly (ADR-0021).
+  const runtime = o.runtime ?? "herdr";
+  const { runtimeAdapter } = await import("./runtime.ts");
+  const rt = await runtimeAdapter(runtime).checkAvailable();
+  if (!rt.available) {
     throw new AgentError(
-      `Herdr is not available (${herdr.error ?? "unknown"}); task dispatch requires Herdr`,
+      `${runtime} is not available (${rt.error ?? "unknown"}); task dispatch requires ${runtime}`,
       EXIT_RUNTIME,
     );
   }
@@ -533,6 +540,7 @@ export async function cmdTask(config: Config, action: TaskAction): Promise<numbe
       ...(o.accept.length > 0 ? { acceptanceCriteria: o.accept } : {}),
       ...(o.timeoutMs !== null ? { timeoutMs: o.timeoutMs } : {}),
       ...(o.allowUnobservedEffects ? { allowUnobservedEffects: true } : {}),
+      ...(o.runtime ? { runtime: o.runtime } : {}),
     });
   } catch (error) {
     // ContractError carries the classified reason (bad route/model/profile,

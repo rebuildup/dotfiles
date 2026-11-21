@@ -21,7 +21,12 @@ import { ContractError, agentStateDir, isPlainObject } from "./contract.ts";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
-const REX_CLI = "rex";
+// REX_CLI override exists for fault-injection tests and exotic installs;
+// production use leaves it unset and resolves `rex` from PATH. Read per
+// spawn so tests can swap the binary between cases.
+function rexBin(): string {
+  return process.env.REX_CLI?.trim() || "rex";
+}
 
 // ---------------------------------------------------------------------------
 // CLI availability
@@ -29,7 +34,7 @@ const REX_CLI = "rex";
 
 export async function checkRexAvailable(): Promise<{ available: boolean; version?: string; error?: string }> {
   try {
-    const proc = await Bun.spawn([REX_CLI, "version"], {
+    const proc = await Bun.spawn([rexBin(), "version"], {
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -57,7 +62,7 @@ interface RexSpawnResult {
 
 async function rexSpawn(args: string[], opts: { cwd?: string; timeoutMs?: number } = {}): Promise<RexSpawnResult | null> {
   try {
-    const proc = await Bun.spawn([REX_CLI, ...args], {
+    const proc = await Bun.spawn([rexBin(), ...args], {
       stdout: "pipe",
       stderr: "pipe",
       cwd: opts.cwd,
@@ -140,6 +145,9 @@ export interface RexProgramStatusRecord {
   app?: string;
   msg?: string;
   progress?: number;
+  /** Server-side report timestamp; distinguishes a re-report of an identical
+   * state (a new turn's `done`) from the stale record it replaces. */
+  updatedAt?: string;
 }
 
 export interface RexProcessInfo {
@@ -264,6 +272,8 @@ export interface RunBlockOptions {
   split?: { anchorBlockId: string; direction: "right" | "left" | "above" | "below"; ratio?: number };
   focus?: boolean;
   keepOpen?: boolean;
+  /** Also read the shell's interactive startup files (needed for mise/agent PATH). */
+  interactive?: boolean;
 }
 
 function envPrefix(env: Record<string, string> | undefined): string[] {
@@ -302,7 +312,10 @@ export async function runBlock(options: RunBlockOptions): Promise<{ blockId: str
   if (options.cwd) args.push("-c", options.cwd);
   if (options.keepOpen) args.push("--keep-open");
   if (options.focus === false) args.push("--focus=false");
-  args.push("--json", "--", ...argv);
+  if (options.interactive) args.push("--interactive");
+  args.push("--json");
+  // No argv -> plain `--` omitted so the block runs a login shell.
+  if (argv.length > 0) args.push("--", ...argv);
   const result = requireRex(await rexSpawn(args), "block create");
   return parseBlockCreation(parseRexJson(result.stdout.trim(), "block create"), "block create");
 }
@@ -324,6 +337,34 @@ export async function getBlock(sessionId: string, blockId: string): Promise<RexB
   if (!isPlainObject(parsed)) return null;
   const block = isPlainObject(parsed["block"]) ? parsed["block"] : parsed;
   return rexBlockFromRaw(block);
+}
+
+export type BlockPresence = "present" | "absent" | "unknown";
+
+/**
+ * Authoritative worker-existence probe. The three outcomes are distinct on
+ * purpose (ADR-0021 §4 fail-closed rule):
+ *
+ * - "present": `block inspect` returned a block record.
+ * - "absent": the server answered and reported the block (or its session)
+ *   as not found — exit 3 with a "not found" diagnostic. Only this outcome
+ *   may be read as "the worker is gone".
+ * - "unknown": the CLI is missing, the server is unreachable, or the
+ *   command failed for any other reason. Callers must NOT treat this as
+ *   absence — a transport blip is not evidence the worker exited.
+ */
+export async function inspectBlockPresence(sessionId: string, blockId: string): Promise<BlockPresence> {
+  const result = await rexSpawn(["block", "inspect", "-s", sessionId, blockId, "--json"]);
+  if (result === null) return "unknown";
+  if (result.code === 0) {
+    const parsed = parseRexJsonOrNull(result.stdout.trim());
+    if (!isPlainObject(parsed)) return "unknown";
+    const block = isPlainObject(parsed["block"]) ? parsed["block"] : parsed;
+    return rexBlockFromRaw(block) !== null ? "present" : "unknown";
+  }
+  const detail = `${result.stderr}\n${result.stdout}`;
+  if (result.code === 3 && /not found/i.test(detail)) return "absent";
+  return "unknown";
 }
 
 export async function closeBlock(sessionId: string, blockId: string): Promise<void> {
@@ -411,6 +452,7 @@ export async function blockProgramStatus(sessionId: string, blockId: string): Pr
       app: rexStr(raw["app"]),
       msg: rexStr(raw["msg"]),
       progress: typeof raw["progress"] === "number" ? raw["progress"] : undefined,
+      updatedAt: rexStr(raw["updated_at"]),
     });
   }
   return records;
@@ -495,31 +537,51 @@ export async function promptBlock(
   prompt: string,
   options: { wait?: boolean; timeoutMs?: number } = {}
 ): Promise<PromptResult> {
+  // Correlate status records to THIS prompt: a `done` record survives a new
+  // prompt until the program reports again, so the pre-send snapshot is the
+  // baseline. Only a CHANGED record set may settle the wait — an unchanged
+  // snapshot is stale evidence, never proof of completion.
+  const baselineRecords = await blockProgramStatus(sessionId, blockId).catch(
+    () => [] as RexProgramStatusRecord[],
+  );
+  const baselineSignature = JSON.stringify(baselineRecords);
+
   await sendText(sessionId, blockId, prompt);
   await sendKey(sessionId, blockId, "enter");
   if (!options.wait) return {};
 
   const timeoutMs = options.timeoutMs ?? 300000;
   const deadline = Date.now() + timeoutMs;
+  // A fresh `idle` record only settles the wait after this prompt has been
+  // seen making progress (working/blocked/done/error). Startup `idle`
+  // reports — emitted while the worker boots, after the baseline snapshot —
+  // are indistinguishable from a real post-turn idle and must not settle.
+  let sawProgress = false;
   for (;;) {
     const records = await blockProgramStatus(sessionId, blockId).catch(() => [] as RexProgramStatusRecord[]);
+    const signature = JSON.stringify(records);
+    const fresh = signature !== baselineSignature;
     const state = deriveWorkerState(records);
-    if (state === "blocked") {
+    if (fresh && state !== "idle" && state !== "unknown") sawProgress = true;
+    if (fresh && state === "blocked") {
       const kind = records.find((r) => r.state === "blocked")?.kind;
       return { blocked: true, errorCode: kind ? `agent-blocked-${kind}` : "agent-blocked" };
     }
-    if (records.length > 0 && (state === "idle" || state === "done")) {
+    if (fresh && records.length > 0 && (state === "done" || (state === "idle" && sawProgress))) {
       return {};
     }
-    // No OSC 7501 records: fall back to process liveness. A gone block or a
-    // dead foreground child means the worker exited.
-    if (records.length === 0) {
+    // No NEW OSC 7501 records: fall back to process liveness. A gone block
+    // or a dead foreground child means the worker exited. A transport
+    // failure stays "unknown" — never success; only a definitive "absent"
+    // probe may settle the wait as exited.
+    if (records.length === 0 || !fresh) {
       const proc = await blockProcess(sessionId, blockId).catch(() => null);
-      if (proc === null) {
-        // Block inspect would be the authoritative check; treat a failed
-        // process call as "still unknown" rather than success.
-      } else if (proc.lastExit !== null) {
+      if (proc !== null && proc.lastExit !== null) {
         return {};
+      }
+      if (proc === null) {
+        const presence = await inspectBlockPresence(sessionId, blockId);
+        if (presence === "absent") return {};
       }
     }
     if (Date.now() >= deadline) {

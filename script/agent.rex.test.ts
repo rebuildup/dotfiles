@@ -6,7 +6,7 @@
  * session and is skipped when the Rex CLI or server is unavailable.
  */
 
-import { describe, it, expect } from "bun:test";
+import { describe, it, expect, beforeAll, afterAll } from "bun:test";
 import {
   checkRexAvailable,
   createSession,
@@ -14,6 +14,7 @@ import {
   getSession,
   listBlocks,
   getBlock,
+  inspectBlockPresence,
   runBlock,
   sendText,
   sendKey,
@@ -27,7 +28,9 @@ import {
   loadRexTaskMapping,
   type RexProgramStatusRecord,
 } from "./agent/rex.ts";
-import { rmSync, existsSync } from "node:fs";
+import { runtimeAdapter } from "./agent/runtime.ts";
+import { mkdtempSync, rmSync, existsSync, writeFileSync, chmodSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { agentStateDir } from "./agent/contract.ts";
 
@@ -94,6 +97,102 @@ describe("Task mapping persistence", () => {
     expect(loadRexTaskMapping("nonexistent-task")).toBeNull();
     rmSync(join(agentStateDir(), "rex-tasks", `${taskId}.json`), { force: true });
     expect(existsSync(join(agentStateDir(), "rex-tasks", `${taskId}.json`))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fault injection: a fake `rex` binary driven by REX_CLI + a mode file.
+// Covers the ADR-0021 fail-closed rule — worker absence, transport failure
+// and command failure must never collapse into the same verdict.
+// ---------------------------------------------------------------------------
+
+const FAKE_REX_SCRIPT = `#!/usr/bin/env bash
+set -u
+MODE_FILE="__MODE_FILE__"
+mode="$(cat "$MODE_FILE" 2>/dev/null || echo error)"
+if [ "$1" = "block" ] && [ "$2" = "inspect" ]; then
+  case "$mode" in
+    absent)  echo 'Error: block target "block:x" not found' >&2; exit 3 ;;
+    error)   echo 'Error: connection refused' >&2; exit 1 ;;
+    present) echo '{"block":{"block_id":"block:1","label":"w","window_id":"window:1"}}'; exit 0 ;;
+  esac
+fi
+if [ "$1" = "block" ] && [ "$2" = "call" ]; then
+  method="\${@: -1}"
+  case "$method" in
+    program_status) echo '{"records":[{"state":"idle"}]}';;
+    process) echo '{"last_exit":null}';;
+    *) echo '{}' ;;
+  esac
+  exit 0
+fi
+exit 0
+`;
+
+describe("Fault injection (fake rex binary)", () => {
+  let dir: string;
+  let fakeBin: string;
+  let modeFile: string;
+  let savedCli: string | undefined;
+
+  const setMode = (mode: string) => writeFileSync(modeFile, mode);
+
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), "fake-rex-"));
+    fakeBin = join(dir, "rex");
+    modeFile = join(dir, "mode");
+    // Bun.spawn does not propagate env vars set after process start, so the
+    // mode-file path is baked into the generated script instead.
+    writeFileSync(fakeBin, FAKE_REX_SCRIPT.replace("__MODE_FILE__", modeFile));
+    chmodSync(fakeBin, 0o755);
+    savedCli = process.env.REX_CLI;
+    process.env.REX_CLI = fakeBin;
+  });
+
+  afterAll(() => {
+    if (savedCli === undefined) delete process.env.REX_CLI;
+    else process.env.REX_CLI = savedCli;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const handle = { runtime: "rex" as const, id: "block:1", surfaceId: "session:1", paneId: "block:1" };
+
+  it("distinguishes absent / unreachable / present block", async () => {
+    setMode("absent");
+    expect(await inspectBlockPresence("session:1", "block:1")).toBe("absent");
+    setMode("error");
+    expect(await inspectBlockPresence("session:1", "block:1")).toBe("unknown");
+    setMode("present");
+    expect(await inspectBlockPresence("session:1", "block:1")).toBe("present");
+  });
+
+  it("getWorker: absent -> null, unreachable -> throws, present -> record", async () => {
+    const adapter = runtimeAdapter("rex");
+    setMode("absent");
+    expect(await adapter.getWorker(handle)).toBeNull();
+    setMode("error");
+    await expect(adapter.getWorker(handle)).rejects.toThrow(/inconclusive/);
+    setMode("present");
+    const worker = await adapter.getWorker(handle);
+    expect(worker?.name).toBe("block:1");
+  });
+
+  it("waitWorker never reports a transport failure as worker exit", async () => {
+    const adapter = runtimeAdapter("rex");
+    setMode("absent");
+    const gone = await adapter.waitWorker(handle, 5000);
+    expect(gone.completed).toBe(true);
+    expect(gone.reason).toBe("worker exited");
+
+    setMode("error");
+    const unreachable = await adapter.waitWorker(handle, 1500);
+    expect(unreachable.completed).toBe(false);
+    expect(unreachable.reason).toBe("runtime-unreachable");
+
+    setMode("present");
+    const settled = await adapter.waitWorker(handle, 5000);
+    expect(settled.completed).toBe(true);
+    expect(settled.reason).toBe("idle");
   });
 });
 
