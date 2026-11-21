@@ -73,10 +73,30 @@ async function rexSpawn(args: string[], opts: { cwd?: string; timeoutMs?: number
       // CLI process — passing it would fail the spawn itself.
       cwd: opts.server ? undefined : opts.cwd,
     });
+    // rexSpawn callers pass no timeout for most commands, but a dead host
+    // or stalled ssh forward must not hang the task forever: bound every
+    // call. Long-running commands (rex wait) pass an explicit larger value.
+    const timeoutMs = opts.timeoutMs ?? 120_000;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const outcome = await Promise.race([
+      proc.exited.then((code) => ({ kind: "exit" as const, code })),
+      new Promise<{ kind: "timeout" }>((resolve) => {
+        timer = setTimeout(() => resolve({ kind: "timeout" }), timeoutMs);
+      }),
+    ]);
+    if (timer !== undefined) clearTimeout(timer);
+    if (outcome.kind === "timeout") {
+      proc.kill();
+      await proc.exited.catch(() => {});
+      return {
+        stdout: "",
+        stderr: `rex ${args[0] ?? ""} timed out after ${timeoutMs}ms`,
+        code: 124,
+      };
+    }
     const stdout = await new TextDecoder().decode(await new Response(proc.stdout).arrayBuffer());
     const stderr = await new TextDecoder().decode(await new Response(proc.stderr).arrayBuffer());
-    const code = await proc.exited;
-    return { stdout, stderr, code };
+    return { stdout, stderr, code: outcome.code };
   } catch {
     // "Executable not found in $PATH" — rex not installed
     return null;
@@ -507,7 +527,7 @@ export function deriveWorkerState(records: RexProgramStatusRecord[]): "idle" | "
  */
 export async function waitBlock(sessionId: string, blockId: string, timeoutMs: number, server?: string): Promise<{ completed: boolean; reason?: string }> {
   const seconds = Math.max(1, Math.ceil(timeoutMs / 1000));
-  const result = await rexSpawn(["wait", blockId, "-s", sessionId, "--for", `${seconds}s`, "--json"], { server });
+  const result = await rexSpawn(["wait", blockId, "-s", sessionId, "--for", `${seconds}s`, "--json"], { server, timeoutMs: timeoutMs + 30_000 });
   if (result === null) return { completed: false, reason: "rex not available" };
   if (result.code !== 0) {
     const detail = result.stderr.trim() || result.stdout.trim();

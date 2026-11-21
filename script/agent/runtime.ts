@@ -440,7 +440,15 @@ const rexAdapter: TaskRuntimeAdapter = {
       throw new ContractError("state", `Rex worker probe inconclusive for block ${blockId}`);
     }
     const block = await getBlock(sessionId, blockId, handle.server).catch(() => null);
-    return block === null ? null : { name: block.id, status: "present" };
+    if (block === null) return null;
+    // A block record outlives its foreground process (e.g. across a server
+    // restart the block respawns a bare shell). Presence of the record is
+    // not presence of the worker — a shell foreground means the agent is
+    // gone, so report the worker absent rather than resuming into nothing.
+    const proc = await blockProcess(sessionId, blockId, handle.server).catch(() => null);
+    const fg = proc?.foreground?.name ?? "";
+    if (/^(ba|z|da|fi)?sh$/.test(fg)) return null;
+    return { name: block.id, status: "present" };
   },
 
   closePane: async (handle) => {
