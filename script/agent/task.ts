@@ -587,7 +587,7 @@ export function buildAgentStartOptions(
   provider: Provider,
   model: string,
   prepared?: OmpWorkerPreparation,
-  options: { rexStatus?: boolean; remoteHome?: string } = {},
+  options: { rexStatus?: boolean; herdrStatus?: boolean; remoteHome?: string } = {},
 ): string[] {
   // The worker argv is built by the same function the interactive plan path
   // uses, so a Herdr worker gets the destructive guard, tool-surface overlay,
@@ -846,6 +846,7 @@ export async function dispatchTask(
   const workerName = `worker-${descriptor.id.slice(0, 8)}-${route.harness}-${randomUUID().slice(0, 8)}`;
   const agentOptions = buildAgentStartOptions(provider, descriptor.model, prepared, {
     rexStatus: runtime === "rex",
+    herdrStatus: runtime === "herdr",
     remoteHome,
   });
   // Rex runs the harness argv directly inside a block; Herdr launches the
@@ -1312,6 +1313,7 @@ export async function startTaskAttempt(
         await verifyOmpManagedCredential(candidateProvider);
         const options = buildAgentStartOptions(candidateProvider, model, candidatePrepared, {
           rexStatus: attemptRuntime(attempt) === "rex",
+          herdrStatus: attemptRuntime(attempt) === "herdr",
           remoteHome: attempt.rexHome,
         });
         const candidateArgv = [

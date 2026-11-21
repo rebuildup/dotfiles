@@ -404,7 +404,7 @@ export function ompWorkerArgs(
   provider: Provider,
   model: string,
   prepared: OmpWorkerPreparation,
-  options: { rexStatus?: boolean; remoteHome?: string } = {},
+  options: { rexStatus?: boolean; herdrStatus?: boolean; remoteHome?: string } = {},
 ): string[] {
   const remoteHome = options.remoteHome;
   const args: string[] = [
@@ -437,7 +437,12 @@ export function ompWorkerArgs(
     "--trusted-extension", ompDestructiveGuardPath(remoteHome),
     "--config", ompWorkerOverlayPath(remoteHome),
   );
-  if (insideHerdr() && remoteHome === undefined) {
+  // Task-dispatched Herdr workers always run inside a Herdr pane, so they
+  // always need the status reporter — gating on the DISPATCHER's env (the
+  // old insideHerdr() check) left workers launched from a plain shell
+  // unobservable, and `agent prompt --wait` failed agent_prompt_stalled
+  // (dotfiles#212). Interactive launches keep the env-based detection.
+  if ((options.herdrStatus || insideHerdr()) && remoteHome === undefined) {
     args.push("--trusted-extension", ompHerdrExtensionPath());
   }
   // The Rex status reporter is added for Rex-dispatched workers (explicit
