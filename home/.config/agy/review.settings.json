@@ -1,0 +1,13 @@
+{
+  "$schema": "https://antigravity.google/schemas/v1/settings.json",
+  "permissions": {
+    "deny": [
+      "write_file(*)",
+      "command(*)",
+      "read_url(*)",
+      "execute_url(*)",
+      "mcp(*)",
+      "unsandboxed(*)"
+    ]
+  }
+}
