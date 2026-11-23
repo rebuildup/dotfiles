@@ -290,6 +290,20 @@ describe("runLocal pipeline (stub agy)", () => {
     const noModel = await runAgyReview({ ...base(), agyBin: stub });
     expect(noModel.model).toBeNull();
     expect(noModel.specSha256).toBe(createHash("sha256").update("review this", "utf8").digest("hex"));
+    // agy 1.5.14 does not report the effective model: null, never guessed.
+    expect(noModel.resolvedModel).toBeNull();
+  });
+
+  it("resolvedModel reflects an envelope-reported model when present", async () => {
+    const env = JSON.stringify({
+      status: "SUCCESS",
+      response: JSON.stringify({ verdict: "approve", summary: "s", findings: [] }),
+      resolved_model: "gemini-4-neon-high",
+    });
+    const stub = makeStub("rmodel.sh", `cat <<'EOF'\n${env}\nEOF`);
+    const result = await runAgyReview({ ...base(), agyBin: stub });
+    expect(result.resolvedModel).toBe("gemini-4-neon-high");
+    expect(result.model).toBeNull();
   });
 
   it("recovers the verdict when the response duplicates the JSON object", async () => {
