@@ -3,6 +3,8 @@ name: Attestation renewal
 on:
   schedule:
     # Weekly reminder only: this workflow never calls providers or uses credentials.
+    # GitHub executes schedules from the default branch only; on release/* this
+    # stays dormant until the authorized release-* -> main landing.
     - cron: '23 1 * * 1'
   workflow_dispatch:
 

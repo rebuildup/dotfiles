@@ -368,7 +368,12 @@ fallback candidate's route/model, usable verdict, rejection reason, attestation
 status/provenance, and evidence timestamp/source/SHA without calling a provider
 or reading credentials. The scheduled **Attestation renewal** workflow runs the
 same report weekly and opens or comments on an issue only when a candidate is
-`attestation-stale` or `attestation-unknown`.
+`attestation-stale` or `attestation-unknown`. GitHub runs scheduled workflows
+only from the repository default branch, so this schedule stays dormant while
+the workflow lives on `release/*`; it becomes active after the authorized
+`release-* -> main` landing. Until then, run `agent attest status --json`
+manually (or `workflow_dispatch` where available) and track the first
+post-main scheduled/dispatch run as release acceptance evidence.
 
 Renewal is deliberately manual and measured: run the real route/model probe,
 confirm the tool/file effect on disk, then update only that route/model's
