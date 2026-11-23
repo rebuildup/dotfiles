@@ -279,6 +279,19 @@ describe("runLocal pipeline (stub agy)", () => {
     expect(existsSync(join(result.isolation.workdir, "inputs", "00-shot.png"))).toBe(true);
   });
 
+  it("records model and spec identity for reproducible evidence (#231)", async () => {
+    const stub = makeStub("meta.sh", `cat <<'EOF'\n${VALID_ENVELOPE}\nEOF`);
+    const spec = "review this\nwith a newline";
+    const result = await runAgyReview({ ...base(), spec, agyBin: stub, model: "claude-sonnet-5-5-high" });
+    expect(result.model).toBe("claude-sonnet-5-5-high");
+    const { createHash } = await import("node:crypto");
+    expect(result.specSha256).toBe(createHash("sha256").update(spec, "utf8").digest("hex"));
+
+    const noModel = await runAgyReview({ ...base(), agyBin: stub });
+    expect(noModel.model).toBeNull();
+    expect(noModel.specSha256).toBe(createHash("sha256").update("review this", "utf8").digest("hex"));
+  });
+
   it("recovers the verdict when the response duplicates the JSON object", async () => {
     // Observed with claude-sonnet-5-5-high: agy returns two complete verdict
     // objects concatenated; the last one is the final answer (#227).

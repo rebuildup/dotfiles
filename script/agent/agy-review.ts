@@ -23,7 +23,7 @@
  *      the structured verdict.
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   copyFileSync,
   existsSync,
@@ -77,6 +77,10 @@ export type ReviewClassification =
 export interface AgyReviewResult {
   version: string;
   id: string;
+  /** Model id passed via --model, or null when agy picked the default. */
+  model: string | null;
+  /** SHA-256 of the review spec text — the criteria version actually used. */
+  specSha256: string;
   classification: ReviewClassification;
   /** True only when every verification layer passed and a valid verdict exists. */
   verified: boolean;
@@ -680,10 +684,24 @@ function emptyReadonly(protectedPath: string | null): AgyReviewResult["readonly"
   };
 }
 
-function baseResult(id: string, workdir: string, osSandbox: AgyReviewResult["isolation"]["osSandbox"], executor: "local" | "herdr", protectedPath: string | null): AgyReviewResult {
+interface ReviewMeta {
+  model: string | null;
+  specSha256: string;
+}
+
+function reviewMeta(opts: AgyReviewOptions, spec: string): ReviewMeta {
+  return {
+    model: opts.model ?? null,
+    specSha256: createHash("sha256").update(spec, "utf8").digest("hex"),
+  };
+}
+
+function baseResult(id: string, workdir: string, osSandbox: AgyReviewResult["isolation"]["osSandbox"], executor: "local" | "herdr", protectedPath: string | null, meta: ReviewMeta): AgyReviewResult {
   return {
     version: AGY_REVIEW_VERSION,
     id,
+    model: meta.model,
+    specSha256: meta.specSha256,
     classification: "executor-error",
     verified: false,
     verdict: null,
@@ -781,7 +799,7 @@ export async function runAgyReview(opts: AgyReviewOptions): Promise<AgyReviewRes
   if (exclusive) {
     lockPath = acquireReviewLock(id);
     if (lockPath === null) {
-      const deferred = baseResult(id, prepareWorkdir(id), osSandboxMode(opts), executor, protectPath);
+      const deferred = baseResult(id, prepareWorkdir(id), osSandboxMode(opts), executor, protectPath, reviewMeta(opts, spec));
       deferred.classification = "deferred";
       deferred.reasons.push("another review holds the single-flight lock; retry later");
       if (opts.outDir) {
@@ -807,7 +825,7 @@ export async function runAgyReview(opts: AgyReviewOptions): Promise<AgyReviewRes
       const quota = await fetchAgyQuota(QUOTA_TIMEOUT_MS, opts.agyBin);
       const min = minQuotaFraction(quota, opts.model);
       if (min === null || min < opts.minRemaining) {
-        const exhausted = baseResult(id, prepareWorkdir(id), osSandboxMode(opts), executor, protectPath);
+        const exhausted = baseResult(id, prepareWorkdir(id), osSandboxMode(opts), executor, protectPath, reviewMeta(opts, spec));
         exhausted.classification = "quota-exhausted";
         exhausted.quota = quota;
         exhausted.reasons.push(
@@ -843,7 +861,7 @@ async function runLocal(
   const home = process.env["HOME"] ?? "";
   const useSeatbelt = process.platform === "darwin" && !opts.noOsSandbox;
   const osSandbox = osSandboxMode(opts);
-  const result = baseResult(id, workdir, osSandbox, "local", protectPath);
+  const result = baseResult(id, workdir, osSandbox, "local", protectPath, reviewMeta(opts, spec));
 
   // 1. Input isolation: copy images into the workdir; the prompt references
   //    only these copies.
@@ -1023,7 +1041,7 @@ async function runViaHerdr(
   protectPath: string | null
 ): Promise<AgyReviewResult> {
   const workdir = prepareWorkdir(id);
-  const result = baseResult(id, workdir, "unsupported", "herdr", protectPath);
+  const result = baseResult(id, workdir, "unsupported", "herdr", protectPath, reviewMeta(opts, spec));
 
   // Materialize inputs so the pane command only needs flags, not big payloads.
   const imagePaths: string[] = [];
