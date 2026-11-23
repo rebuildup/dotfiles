@@ -485,7 +485,9 @@ describe("launcher integration", () => {
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("usage:");
     // Progressive disclosure: the entry stays bounded and names the doors.
-    expect(result.stdout.split("\n").length).toBeLessThanOrEqual(100);
+    // 120 leaves headroom for one new subcommand entry (#219 `agent review`)
+    // while still failing if help degenerates into an unbounded dump.
+    expect(result.stdout.split("\n").length).toBeLessThanOrEqual(120);
     expect(result.stdout).toContain("agent guide [topic]");
     expect(result.stdout).toContain("agent routes [--json]");
   }, 60000);

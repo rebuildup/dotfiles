@@ -700,6 +700,15 @@ label = "Mistral Vibe CLI"
 command = "vibe"
 adapter = "passthrough"
 
+# Antigravity CLI (agy): Google AI Pro subscription auth via OS keyring, no
+# Infisical secret. `agent agy` / `agent native agy` run it untouched; the
+# read-only visual review contract lives in `agent review` (agy-review.ts,
+# ADR-0023), not in a provider route.
+[harnesses.agy]
+label = "Antigravity"
+command = "agy"
+adapter = "passthrough"
+
 # Claude adapter environment names (Claude Code's own protocol contract).
 # These are names, never values; values are derived at launch time.
 [harnesses.claude.env]
