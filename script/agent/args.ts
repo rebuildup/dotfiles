@@ -202,6 +202,7 @@ export type Action =
   | ["native", string, string[]]
   | ["run", string, string, string | null, string[]]
   | ["fallback", string, boolean]  // profile-id, json
+  | ["review", string[]]           // `agent review ...` tokens after the verb
   | TaskAction
 export function parseArgs(argv: string[]): Action {
   // Parse argv without touching the config.
@@ -253,6 +254,11 @@ export function parseArgs(argv: string[]): Action {
   }
   if (head === "task") {
     return parseTaskArgs(argv.slice(1));
+  }
+  if (head === "review") {
+    // `agent review run|run-file ...` — parsed by cmdReview; kept out of the
+    // harness/provider grammar so 'review' is never mistaken for a harness.
+    return ["review", argv.slice(1)];
   }
   if (head === "fallback") {
     if (argv.length < 2) {

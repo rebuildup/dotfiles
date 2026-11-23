@@ -604,3 +604,117 @@ export async function cmdTask(config: Config, action: TaskAction): Promise<numbe
   return result.success && accepted ? 0 : EXIT_RUNTIME;
 }
 
+
+// ---------------------------------------------------------------------------
+// `agent review` — Antigravity visual review harness (dotfiles#219)
+// ---------------------------------------------------------------------------
+
+const REVIEW_USAGE =
+  "usage: agent review run --image <path>... --spec <text>|--spec-file <path> " +
+  "[--schema-file <path>] [--model <id>] [--out <dir>] [--protect <dir>] " +
+  "[--executor local|herdr] [--timeout <ms>] [--no-quota]";
+
+/**
+ * `agent review run|run-file`: single-shot `agy -p` review with layered
+ * read-only verification. Exit 0 only for classification "review-completed";
+ * every other outcome (denied ops, invalid output, auth, timeout, executor
+ * failure) exits non-zero so schedulers fail closed. The result JSON is always
+ * printed to stdout.
+ */
+export async function cmdReview(args: string[]): Promise<number> {
+  const review = await import("./agy-review.ts");
+  const sub = args[0];
+  if (sub === "run-file") {
+    const workdir = args[1];
+    if (!workdir || args.length > 2) {
+      throw new AgentError("usage: agent review run-file <workdir>", EXIT_USAGE);
+    }
+    const result = await review.runAgyReviewFile(workdir);
+    console.log(redactJson(result));
+    return result.classification === "review-completed" ? 0 : EXIT_RUNTIME;
+  }
+  if (sub !== "run") {
+    throw new AgentError(REVIEW_USAGE, EXIT_USAGE);
+  }
+
+  const images: string[] = [];
+  let spec: string | undefined;
+  let specFile: string | undefined;
+  let schemaFile: string | undefined;
+  let model: string | undefined;
+  let outDir: string | undefined;
+  let protect: string | undefined;
+  let executor: "local" | "herdr" | undefined;
+  let timeoutMs: number | undefined;
+  let skipQuota = false;
+  let noOsSandbox = false;
+  let agyBin: string | undefined;
+
+  const need = (flag: string, i: number): string => {
+    const v = args[i + 1];
+    if (v === undefined) throw new AgentError(`${flag} requires a value`, EXIT_USAGE);
+    return v;
+  };
+  for (let i = 1; i < args.length; i++) {
+    const t = args[i];
+    switch (t) {
+      case "--image": images.push(need(t, i)); i++; break;
+      case "--spec": spec = need(t, i); i++; break;
+      case "--spec-file": specFile = need(t, i); i++; break;
+      case "--schema-file": schemaFile = need(t, i); i++; break;
+      case "--model": model = need(t, i); i++; break;
+      case "--out": outDir = need(t, i); i++; break;
+      case "--protect": protect = need(t, i); i++; break;
+      case "--executor": {
+        const v = need(t, i); i++;
+        if (v !== "local" && v !== "herdr") {
+          throw new AgentError(`--executor must be local|herdr, got '${v}'`, EXIT_USAGE);
+        }
+        executor = v;
+        break;
+      }
+      case "--timeout": {
+        const v = need(t, i); i++;
+        const n = Number(v);
+        if (!Number.isFinite(n) || n <= 0) {
+          throw new AgentError(`--timeout must be a positive number of ms, got '${v}'`, EXIT_USAGE);
+        }
+        timeoutMs = n;
+        break;
+      }
+      case "--no-quota": skipQuota = true; break;
+      case "--no-os-sandbox": noOsSandbox = true; break;
+      case "--agy": agyBin = need(t, i); i++; break;
+      default:
+        throw new AgentError(`unexpected argument '${t}'; ${REVIEW_USAGE}`, EXIT_USAGE);
+    }
+  }
+  if (spec === undefined && specFile === undefined) {
+    throw new AgentError(`--spec or --spec-file is required; ${REVIEW_USAGE}`, EXIT_USAGE);
+  }
+
+  let result;
+  try {
+    result = await review.runAgyReview({
+      images,
+      spec: spec ?? "",
+      specFile,
+      schemaFile,
+      model,
+      outDir,
+      protect,
+      executor,
+      timeoutMs,
+      skipQuota,
+      noOsSandbox,
+      agyBin,
+    });
+  } catch (error) {
+    if (error instanceof ContractError) {
+      throw new AgentError(error.message, EXIT_RUNTIME);
+    }
+    throw error;
+  }
+  console.log(redactJson(result));
+  return result.classification === "review-completed" ? 0 : EXIT_RUNTIME;
+}

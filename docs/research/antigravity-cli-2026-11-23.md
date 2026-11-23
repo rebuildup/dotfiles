@@ -99,3 +99,17 @@ Issue #218 の実装根拠。対象マシン: macOS arm64、agy 1.5.14
 - keyring 認証が SSH 越しのヘッドレス実行で常に使えるか（本機では成功）。
 - `JETSKI_APP_DATA_DIR` 等の環境変数による app-data-dir 上書きの有無と
   安全性。
+
+## ハーネス統合での追加実測 (#219, agy 1.5.14)
+
+- `--print-timeout` は裸の数値を拒否し `time: missing unit in duration` で
+  exit 2。`"235s"` のような duration 文字列が必須。
+- `agy -p "/quota" --output-format json` の `response` は JSON ではなく TSV:
+  `<group>\t<label>\t<remaining %>\t<reset ISO>`（例:
+  `Gemini Models\tWeekly Limit Remaining\t99%\t2026-11-29T17:03:28Z`）。
+  `agent review` の quota probe はこの形式を正規化して buckets 化する。
+- Seatbelt (`sandbox-exec` deny file-write* + allowlist) 配下でも keyring
+  認証・モデル呼び出し・`--settings` deny は正常動作することを実機確認
+  （`agent review run` で review-completed / protectedCheck clean）。
+- `agent review run --executor herdr` は herdr workspace + `pane run` で
+  `agent review run-file` を起動し、同一結果契約を返すことを実機確認。

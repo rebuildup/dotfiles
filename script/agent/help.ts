@@ -674,6 +674,8 @@ usage:
       [--prompt <text>] [--accept <criteria>]...
   agent task resume <task-id> [--prompt <text>] [--timeout <ms>]
   agent task status|reconcile <task-id>
+  agent review run --image <p>... --spec <t>|--spec-file <f>
+      [--protect <dir>] [--executor local|herdr] [--out <dir>] [--no-quota]
   agent help
 subcommands:
   agent help                 show this help
@@ -706,6 +708,11 @@ subcommands:
                              --fallback needs --accept, git cwd, or --allow-unobserved-effects
   agent task resume <task-id>          continue an attempt in place
   agent task status|reconcile <task-id> durable state / resolve journal UNKNOWNs
+  agent review run                     single-shot agy visual review in an
+                             isolated, read-only-verified workdir; prints a
+                             classified result JSON (exit 0 only on
+                             review-completed); --executor herdr = same
+                             contract in a Herdr pane (#219)
   agent help --json          machine-readable help (quotes this text)
 
 shortcut form:

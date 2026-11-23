@@ -57,6 +57,7 @@ import {
   cmdList,
   cmdModels,
   cmdRoutes,
+  cmdReview,
   cmdRun,
   cmdRunNative,
   cmdRunShortcut,
@@ -155,6 +156,9 @@ async function main(argv: string[]): Promise<number> {
   }
   if (action[0] === "task") {
     return cmdTask(config, action);
+  }
+  if (action[0] === "review") {
+    return cmdReview(action[1]);
   }
   if (action[0] === "native") {
     const [, harnessKey, nativePassthru] = action;
