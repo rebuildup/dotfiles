@@ -1,5 +1,5 @@
 import {expect, test} from 'bun:test';
-import {validateNode, validateRegistry, renderSSH, assertIdentity,preflightSSH,installSSH,identityCommand,localInstance} from './devices';
+import {validateNode, validateRegistry, renderSSH, assertIdentity,preflightSSH,installSSH,identityCommand,localInstance,includeDirective,managedIncludeState,replaceManagedInclude} from './devices';
 const node = {id:'wsl',label:'Ubuntu',os:'linux',instanceId:'306ab9474cff458ca563e7807ded1da5',host:'100.118.123.62',port:2222,user:'basic',hostKey:'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIB7vsV/ZP4V/Z1+MyVUCRAomZRpDsMWUm6A2rzOFv7ce',session:'default'};
 test('rejects SSH config and command injection before effects',()=>{
  for(const patch of [{host:'ok\nProxyCommand evil'},{user:'$(id)'},{session:'a;id'},{id:'../x'},{hostKey:'ssh-ed25519 nope'},{port:0},{os:'other'},{privateKey:'secret'}]) expect(()=>validateNode({...node,...patch})).toThrow();
@@ -37,6 +37,15 @@ import {mkdtempSync,writeFileSync,mkdirSync,readFileSync,rmSync,existsSync,symli
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 const unixTest=process.platform==='win32'?test.skip:test;
+test('Windows Include uses ~/.ssh and migrates only the previous first-line managed Include',()=>{
+ const home=join(tmpdir(),'devices-win-home'),dir=join(home,'.ssh');
+ expect(includeDirective(dir,true)).toBe('Include ~/.ssh/devices.conf\n');
+ const legacy=`Include "${join(dir,'devices.conf').replaceAll('\\','/')}"\r\nHost keep\r\n`;
+ expect(managedIncludeState(legacy,home,true)).toBe('legacy');
+ expect(replaceManagedInclude(legacy,home,true)).toBe('Include ~/.ssh/devices.conf\nHost keep\r\n');
+ expect(managedIncludeState(`Host keep\n${legacy}`,home,true)).toBe('none');
+ expect(managedIncludeState('Include ~/.ssh/devices.conf\r\nHost keep\r\n',home,true)).toBe('current');
+});
 unixTest('real CLI sync is idempotent, isolates foreign profiles and rejects wrong replacement identity',()=>{
  const dir=mkdtempSync(join(tmpdir(),'devices-test-')),home=join(dir,'home'),bin=join(dir,'bin');
  mkdirSync(home);mkdirSync(bin);
