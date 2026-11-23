@@ -345,6 +345,31 @@ describe("runLocal pipeline (stub agy)", () => {
     expect(result.classification).toBe("auth-required");
   });
 
+  it("quota-exhausted when agy reports RESOURCE_EXHAUSTED", async () => {
+    const stub = makeStub(
+      "quota.sh",
+      `cat >&2 <<'EOF'
+error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 2h37m14s.
+AGY_ERROR: {"short_error":"RESOURCE_EXHAUSTED (code 429): Individual quota reached. Please upgrade your subscription"}
+EOF
+exit 3`
+    );
+    const result = await runAgyReview({ ...base(), agyBin: stub });
+    expect(result.classification).toBe("quota-exhausted");
+  });
+
+  it("quota-exhausted wins over auth heuristic on mixed stderr", async () => {
+    const stub = makeStub(
+      "quotaauth.sh",
+      `cat >&2 <<'EOF'
+RESOURCE_EXHAUSTED (code 429): quota reached; request unauthorized for this window
+EOF
+exit 3`
+    );
+    const result = await runAgyReview({ ...base(), agyBin: stub });
+    expect(result.classification).toBe("quota-exhausted");
+  });
+
   it("protected path mutation is detected via git status", async () => {
     const repo = join(tmp, "repo");
     mkdirSync(repo, { recursive: true });
