@@ -259,12 +259,14 @@ opencode_npm = "@ai-sdk/openai-compatible"
 opencode_base_url = "https://logfare.ai/v1"
 omp_custom = true
 
-# Google AI Studio Gemini Developer API. The account owner confirmed that
-# this key belongs to a dedicated Free Tier project with no linked billing
-# account or Prepay. Infisical presence alone is not billing evidence; this
-# route is fixed to the standard Gemini API model and has no paid fallback.
+# Google AI Studio Gemini Developer API. The operator reports that this key
+# is intended for a dedicated Free Tier project with no linked billing
+# account or Prepay, but authoritative Google project/billing metadata is
+# still unverified (issue #185). Infisical presence alone is not billing
+# evidence; this route is fixed to the standard Gemini API model and has no
+# paid fallback.
 [providers.gemini]
-label = "Google AI Studio Gemini Developer API (Free Tier)"
+label = "Google AI Studio Gemini Developer API"
 base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
 secret = "GEMINI_API_KEY"
 env = "GEMINI_API_KEY"
@@ -780,7 +782,7 @@ note = "Keep MiniMax-M3 as the known working route default; the formal MiniMax-M
 note = "Explicit Logfare route (OpenAI-compatible https://logfare.ai/v1, custom provider registered via opencode_npm). Never a fallback target and never selected implicitly: 5,000 req/day, 6 concurrent per account. Needs Infisical LOGFARE_API_KEY plus the /consent training opt-in (both models are premium). Real response + shell-tool call + both models verified 2026-11-05."
 
 [routes."opencode.gemini"]
-note = "Explicit opt-in route to only gemini-4-hydrogen at xhigh. GEMINI_API_KEY is read only from Infisical; the process-scoped OpenCode guard pins every request to this model and stops on 429. Dedicated AI Studio Free Tier project, no billing account or Prepay, owner-confirmed 2026-11-19. No grounding tools, implicit fallback, or paid route."
+note = "Explicit opt-in route to only gemini-4-hydrogen at xhigh. GEMINI_API_KEY is read only from Infisical; the process-scoped OpenCode guard pins every request to this model and stops on 429. Operator-reported dedicated AI Studio Free Tier project with no linked billing account or Prepay, but authoritative billing metadata remains unverified (issue #185); this is not a billing guarantee. No grounding tools, implicit fallback, or paid route."
 
 [routes."opencode.mistral"]
 note = "Infisical Vibe plan key, volume-first GLM 5.3 Flash, no automatic paid or model fallback. Verify real model availability before use."
@@ -1032,6 +1034,10 @@ at = "2026-11-01T00:00:00Z"
 source = "live-e2e"
 sha = "57315124d62eaf090883666d2d17039cfce26849"
 note = "Real response + tool call via the claude route (observation recorded on that route below)."
+
+[catalog.providers.gemini]
+billing = "unknown"
+terms = "Operator reports a dedicated AI Studio Free Tier project with no linked billing account or Prepay (2026-11-19), but authoritative Google project/billing metadata is unverified; Infisical presence is not billing evidence. Explicit opt-in route only, never a fallback target."
 
 [catalog.providers.logfare]
 billing = "unknown"

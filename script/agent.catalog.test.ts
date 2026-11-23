@@ -104,6 +104,7 @@ describe("loadCatalog: real config", () => {
   test("loads every catalogued provider and route", () => {
     expect(Object.keys(catalog.providers).sort()).toEqual([
       "deepseek",
+      "gemini",
       "groq",
       "kilo",
       "logfare",

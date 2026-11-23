@@ -1,16 +1,22 @@
 # Gemini 4 Hydrogen Free Tier candidate — 2026-11-19
 
-Status: **not adopted**. A shared practical coding-agent benchmark shows a
-stronger aggregate score for Hydrogen than MiniMax M3, but public evidence does
-not yet verify every requested task dimension or the exact route configuration.
-The candidate remains blocked by those performance evidence gaps and by the
-unverified billing state of the project behind the existing API key. Tracking issue:
+Status: **explicit opt-in route implemented; adoption gates partially open**.
+A shared practical coding-agent benchmark shows a stronger aggregate score for
+Hydrogen than MiniMax M3, but public evidence does not verify every requested
+task dimension or the exact route configuration. The explicit
+`opencode.gemini` route was later added by PR #191 with a real
+`gemini-4-hydrogen` inference check, while authoritative Google
+project/billing metadata and the remaining performance evidence stay
+unverified. Tracking issue:
 [#185](https://github.com/rebuildup/dotfiles/issues/185).
 
-No Gemini route was added. This follows
-[ADR-0018](../adr/ADR-0018.md): a stored key and provider price statement do
-not prove that this account is entitled to a $0 route; an unproven candidate
-must remain unreachable.
+The route is reachable only by explicit opt-in and is fixed to
+`gemini-4-hydrogen` at `xhigh`; it has no implicit or paid fallback. It must
+not be read as proof that the key's project is entitled to a $0 route: a
+stored key, an operator report, and a provider price statement do not prove
+account billing state. Per
+[ADR-0018](../adr/ADR-0018.md), an unproven billing boundary is catalogued as
+unknown rather than free.
 
 ## Infisical and key handling
 
