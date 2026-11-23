@@ -23,6 +23,7 @@ import {
   parseAgyQuota,
   releaseReviewLock,
   reviewEnv,
+  reviewSettingsJson,
   runAgyReview,
   runAgyReviewFile,
   sanitizeImageName,
@@ -172,6 +173,25 @@ describe("envelope/quota parsing", () => {
       resetTime: "2026-11-29T17:03:28Z",
     });
     expect(q?.buckets[1].remainingFraction).toBeCloseTo(0.42);
+  });
+
+  it("reviewSettingsJson strips $schema from the managed payload", () => {
+    const home = mkdtempSync(join(tmpdir(), "agy-home-"));
+    mkdirSync(join(home, ".config/agy"), { recursive: true });
+    writeFileSync(
+      join(home, ".config/agy/review.settings.json"),
+      JSON.stringify({ $schema: "https://example/schemas/v1.json", permissions: { deny: ["command(*)"] } })
+    );
+    const prev = process.env["HOME"];
+    process.env["HOME"] = home;
+    try {
+      const parsed = JSON.parse(reviewSettingsJson()) as Record<string, unknown>;
+      expect(parsed["$schema"]).toBeUndefined();
+      expect(parsed["permissions"]).toEqual({ deny: ["command(*)"] });
+    } finally {
+      if (prev === undefined) delete process.env["HOME"];
+      else process.env["HOME"] = prev;
+    }
   });
 
   it("reviewEnv strips API-key credentials, keeps the rest", () => {

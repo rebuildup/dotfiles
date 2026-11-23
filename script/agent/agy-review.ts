@@ -292,13 +292,22 @@ function agyBin(override?: string): string {
   return resolved;
 }
 
-function reviewSettingsJson(): string {
+export function reviewSettingsJson(): string {
   // Prefer the dotfiles-managed payload; fall back to the identical inline
   // rules so the harness still fails closed on machines where the link is
-  // not yet applied.
+  // not yet applied. `agy --settings` rejects unknown top-level keys, so the
+  // editor-only `$schema` hint is stripped before the payload is passed.
   const managed = join(process.env["HOME"] ?? "", ".config/agy/review.settings.json");
   if (existsSync(managed)) {
-    return readFileSync(managed, "utf8").trim();
+    try {
+      const parsed: unknown = JSON.parse(readFileSync(managed, "utf8"));
+      if (isPlainObject(parsed)) {
+        const { "$schema": _schema, ...rest } = parsed;
+        return JSON.stringify(rest);
+      }
+    } catch {
+      // Unparseable managed file — fall through to the inline payload.
+    }
   }
   return JSON.stringify({ permissions: { deny: [...REVIEW_DENY_RULES] } });
 }
