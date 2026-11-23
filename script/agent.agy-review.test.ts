@@ -198,6 +198,21 @@ describe("envelope/quota parsing", () => {
     expect(minQuotaFraction({ error: "x" })).toBeNull();
     expect(minQuotaFraction(null)).toBeNull();
   });
+
+  it("minQuotaFraction scopes buckets to the model family when identifiable", () => {
+    const quota = {
+      buckets: [
+        { group: "Gemini Models", remainingFraction: 0.9 },
+        { group: "Claude and GPT models", remainingFraction: 0.05 },
+        { group: "Gemini 4 Argon", remainingFraction: 0.8 },
+      ],
+    };
+    expect(minQuotaFraction(quota)).toBe(0.05);
+    expect(minQuotaFraction(quota, "gemini-3-pro")).toBe(0.8);
+    expect(minQuotaFraction(quota, "claude-sonnet-4-5")).toBe(0.05);
+    // Unrecognized model id never narrows the gate.
+    expect(minQuotaFraction(quota, "unknown-model-x")).toBe(0.05);
+  });
 });
 
 describe("single-flight lock (#221)", () => {
@@ -377,6 +392,21 @@ describe("pre-flight quota gate and single-flight (#221)", () => {
     const stub = quotaStub("80%", "quota-ok.sh");
     const result = await runAgyReview({ ...base(), agyBin: stub, minRemaining: 0.5 });
     expect(result.classification).toBe("review-completed");
+  });
+
+  it("quota gate scopes to the model family when --model is given", async () => {
+    const quotaEnv = JSON.stringify({
+      status: "SUCCESS",
+      response: [
+        "Gemini Models\tWeekly Limit Remaining\t80%\t2026-11-29T00:00:00Z",
+        "Claude and GPT models\tWeekly Limit Remaining\t5%\t2026-11-29T00:00:00Z",
+      ].join("\n"),
+    });
+    const stub = makeStub("quota-scoped.sh", `if [ "$2" = "/quota" ]; then\ncat <<'QEOF'\n${quotaEnv}\nQEOF\nelse\ncat <<'VEOF'\n${VALID_ENVELOPE}\nVEOF\nfi`);
+    const scoped = await runAgyReview({ ...base(), agyBin: stub, minRemaining: 0.5, model: "gemini-3-pro" });
+    expect(scoped.classification).toBe("review-completed");
+    const unscoped = await runAgyReview({ ...base(), agyBin: stub, minRemaining: 0.5 });
+    expect(unscoped.classification).toBe("quota-exhausted");
   });
 
   it("fails closed when the quota probe itself fails", async () => {

@@ -715,7 +715,8 @@ subcommands:
                              classified result JSON (exit 0 only on
                              review-completed); --executor herdr = same
                              contract in a Herdr pane; --min-remaining gates
-                             on /quota, single-flight lock is default (#219/#221)
+                             on /quota (model-scoped), single-flight lock is
+                             default (#219/#221)
   agent review quota                   print normalized agy quota buckets
   agent help --json          machine-readable help (quotes this text)
 

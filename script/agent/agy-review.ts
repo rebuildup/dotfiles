@@ -31,6 +31,7 @@ import {
   readFileSync,
   statSync,
   unlinkSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, extname, join, resolve } from "node:path";
@@ -130,16 +131,17 @@ export interface AgyReviewOptions {
   /**
    * Pre-flight quota gate (#221): fetch `/quota` before the model call and
    * refuse with `quota-exhausted` when the minimum remaining fraction across
-   * reported buckets is below this threshold (0..1). Conservative: any
-   * nearly-empty shared window defers the run. Per-model scoping is future
-   * work — the gate does not know which quota group a given --model draws on.
+   * the buckets relevant to `model` (all buckets when unset) is below this
+   * threshold (0..1). Conservative: any nearly-empty shared window defers
+   * the run; unrecognized model/group names never narrow the gate.
    */
   minRemaining?: number;
   /**
    * Single-flight lock (#221): serialize reviews through a state-dir
    * lockfile so concurrent runs cannot consume the same quota window at
-   * once. Default on; a fresh lock yields `deferred`, a stale one (>30min)
-   * is reclaimed. `--no-exclusive` opts out.
+   * once. Default on; a fresh lock yields `deferred`. The holder refreshes
+   * the lock mtime while alive, so a lock stale for >30min means the holder
+   * is gone and is reclaimed. `--no-exclusive` opts out.
    */
   exclusive?: boolean;
 }
@@ -518,11 +520,34 @@ export async function fetchAgyQuota(timeoutMs = QUOTA_TIMEOUT_MS, agyOverride?: 
   }
 }
 
-/** Minimum remainingFraction across parsed quota buckets; null when unknown. */
-export function minQuotaFraction(quota: unknown): number | null {
+/**
+ * Buckets plausibly drawn on by `model`. Exclusion-based on purpose: a
+ * bucket is dropped only when its group/label names a *different* known
+ * quota family, so an unrecognized model id or group name never narrows
+ * the gate (fail-closed). No model → all buckets.
+ */
+function quotaBucketsForModel(buckets: AgyQuotaBucket[], model: string | undefined): AgyQuotaBucket[] {
+  if (!model) return buckets;
+  const m = model.toLowerCase();
+  const gemini = /gemini|argon/.test(m);
+  const claudeGpt = /claude|gpt|openai|^o\d/.test(m);
+  if (gemini === claudeGpt) return buckets; // unknown or ambiguous family
+  return buckets.filter((b) => {
+    const text = `${b.group ?? ""} ${b.label ?? ""} ${b.name ?? ""}`.toLowerCase();
+    return gemini ? !/claude|gpt/.test(text) : !/gemini|argon/.test(text);
+  });
+}
+
+/**
+ * Minimum remainingFraction across the quota buckets relevant to `model`
+ * (all buckets when no model is given); null when unknown.
+ */
+export function minQuotaFraction(quota: unknown, model?: string): number | null {
   if (!isPlainObject(quota) || !Array.isArray(quota["buckets"])) return null;
-  const fracs = (quota["buckets"] as unknown[])
-    .map((b) => (isPlainObject(b) ? b["remainingFraction"] : null))
+  const buckets = (quota["buckets"] as unknown[]).filter(isPlainObject) as unknown as AgyQuotaBucket[];
+  const scoped = quotaBucketsForModel(buckets, model);
+  const fracs = scoped
+    .map((b) => b.remainingFraction)
     .filter((f): f is number => typeof f === "number" && Number.isFinite(f));
   return fracs.length > 0 ? Math.min(...fracs) : null;
 }
@@ -533,6 +558,7 @@ export function minQuotaFraction(quota: unknown): number | null {
 
 const REVIEW_LOCK_NAME = ".single-flight.lock";
 const REVIEW_LOCK_STALE_MS = 30 * 60 * 1000;
+const REVIEW_LOCK_HEARTBEAT_MS = 60 * 1000;
 
 function reviewLockPath(): string {
   return join(agentStateDir(), "agy-review", REVIEW_LOCK_NAME);
@@ -540,8 +566,9 @@ function reviewLockPath(): string {
 
 /**
  * O_EXCL lockfile. Returns the lock path on success, null when a fresh lock
- * is held. A lock older than REVIEW_LOCK_STALE_MS is treated as abandoned
- * (crashed run) and reclaimed once.
+ * is held. The holder keeps the mtime fresh via heartbeat, so a lock whose
+ * mtime is older than REVIEW_LOCK_STALE_MS is treated as abandoned (dead or
+ * hung holder) and reclaimed once — a live run of any length keeps it fresh.
  */
 export function acquireReviewLock(id: string): string | null {
   const path = reviewLockPath();
@@ -697,6 +724,7 @@ export async function runAgyReview(opts: AgyReviewOptions): Promise<AgyReviewRes
   // Herdr inner run-file skips both (the outer dispatch already holds them).
   const exclusive = opts.exclusive !== false;
   let lockPath: string | null = null;
+  let lockBeat: ReturnType<typeof setInterval> | null = null;
   if (exclusive) {
     lockPath = acquireReviewLock(id);
     if (lockPath === null) {
@@ -709,11 +737,22 @@ export async function runAgyReview(opts: AgyReviewOptions): Promise<AgyReviewRes
       }
       return deferred;
     }
+    // Keep the lock mtime fresh for the whole run: staleness then means the
+    // holder is actually gone, so arbitrarily long --timeout values are safe.
+    lockBeat = setInterval(() => {
+      try {
+        const now = new Date();
+        utimesSync(lockPath as string, now, now);
+      } catch {
+        // Lock already released or removed — nothing to refresh.
+      }
+    }, REVIEW_LOCK_HEARTBEAT_MS);
+    lockBeat.unref();
   }
   try {
     if (opts.minRemaining !== undefined) {
       const quota = await fetchAgyQuota(QUOTA_TIMEOUT_MS, opts.agyBin);
-      const min = minQuotaFraction(quota);
+      const min = minQuotaFraction(quota, opts.model);
       if (min === null || min < opts.minRemaining) {
         const exhausted = baseResult(id, prepareWorkdir(id), osSandboxMode(opts), executor, protectPath);
         exhausted.classification = "quota-exhausted";
@@ -735,6 +774,7 @@ export async function runAgyReview(opts: AgyReviewOptions): Promise<AgyReviewRes
     }
     return await runLocal(opts, id, spec, schema, protectPath);
   } finally {
+    if (lockBeat !== null) clearInterval(lockBeat);
     if (lockPath !== null) releaseReviewLock(lockPath, id);
   }
 }
