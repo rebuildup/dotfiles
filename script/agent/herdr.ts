@@ -15,14 +15,17 @@ import { join } from "node:path";;
 // Herdr CLI availability
 // ---------------------------------------------------------------------------
 
-const HERDR_CLI = "herdr";
+function herdrBin(): string {
+  // HERDR_CLI override exists for fault-injection tests only.
+  return process.env.HERDR_CLI?.trim() || "herdr";
+}
 
 /**
  * Check if Herdr CLI is available and get version.
  */
 export async function checkHerdrAvailable(): Promise<{ available: boolean; version?: string; error?: string }> {
   try {
-    const proc = await Bun.spawn([HERDR_CLI, "--version"], {
+    const proc = await Bun.spawn([herdrBin(), "--version"], {
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -49,7 +52,7 @@ interface HerdrSpawnResult {
 
 async function herdrSpawn(args: string[], cwd?: string): Promise<HerdrSpawnResult | null> {
   try {
-    const proc = await Bun.spawn([HERDR_CLI, ...args], {
+    const proc = await Bun.spawn([herdrBin(), ...args], {
       stdout: "pipe",
       stderr: "pipe",
       cwd,
@@ -424,14 +427,20 @@ export async function promptAgent(
   }
   if (result.code !== 0) {
     // The CLI reports a structured error: {"error":{"code":"...","message":"..."}}.
+    // The envelope may arrive on EITHER stream — herdr writes it to stderr
+    // for prompt failures, so parsing stdout alone dropped errorCode and
+    // every stall classified as unrecognizable (dotfiles#212).
     let errorCode: string | undefined;
     let message = result.stderr || "Agent prompt failed";
-    const parsed = parseHerdrJsonOrNull(result.stdout.trim());
-    const errorObj = isPlainObject(parsed) ? parsed["error"] : null;
-    if (isPlainObject(errorObj)) {
-      errorCode = herdrStr(errorObj["code"]);
-      const errorMessage = herdrStr(errorObj["message"]);
-      if (errorMessage) message = errorMessage;
+    for (const text of [result.stdout.trim(), result.stderr.trim()]) {
+      const parsed = parseHerdrJsonOrNull(text);
+      const errorObj = isPlainObject(parsed) ? parsed["error"] : null;
+      if (isPlainObject(errorObj)) {
+        errorCode = herdrStr(errorObj["code"]);
+        const errorMessage = herdrStr(errorObj["message"]);
+        if (errorMessage) message = errorMessage;
+        break;
+      }
     }
     // Not a JSON envelope: keep the stderr text.
     // A prompt rejected because the agent is blocked is an authorization
@@ -511,7 +520,7 @@ export async function waitAgent(
  */
 export async function attachAgent(workerName: string): Promise<void> {
   try {
-    const proc = await Bun.spawn([HERDR_CLI, "agent", "attach", workerName], {
+    const proc = await Bun.spawn([herdrBin(), "agent", "attach", workerName], {
       stdin: "inherit",
       stdout: "inherit",
       stderr: "inherit",
@@ -560,6 +569,7 @@ export async function getAgent(workerName: string): Promise<{
   status: string;
   workspaceId?: string;
   cwd?: string;
+  interactiveReady?: boolean;
 } | null> {
   const result = await herdrSpawn(["agent", "get", workerName]);
   if (result === null || result.code !== 0) return null;
@@ -575,10 +585,14 @@ export async function getAgent(workerName: string): Promise<{
   const status = herdrStr(agent["status"]) ?? herdrStr(agent["agent_status"]) ?? "unknown";
   const workspaceId = herdrStr(agent["workspace_id"]) ?? herdrStr(agent["workspaceId"]);
   const cwd = herdrStr(agent["cwd"]);
+  const interactiveReady = agent["interactive_ready"] === true ? true
+    : agent["interactive_ready"] === false ? false
+    : undefined;
   return {
     name, kind, paneId, status,
     ...(workspaceId !== undefined ? { workspaceId } : {}),
     ...(cwd !== undefined ? { cwd } : {}),
+    ...(interactiveReady !== undefined ? { interactiveReady } : {}),
   };
 }
 

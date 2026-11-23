@@ -331,6 +331,11 @@ rejects a candidate when:
   profile/global cap (`spend-cap-invalid` / `spend-cap-exceeded`). A
   `global_max_spend = 0` profile admits only candidates that cannot bill at
   all;
+- for billable candidates, `max_spend` is only the operator-declared ceiling
+  used by admission arithmetic. The resolver does not estimate task cost or
+  measure provider spend, so a positive budget is not a spending guarantee;
+  the account-side limit remains the only hard stop where the provider offers
+  one;
 - the candidate's *effective* scope equals the primary's
   (`quota-exhausted-scope`) — e.g. two models on the *same* Kilo account are
   not fresh capacity — or its scope is not catalogued (`quota-scope-unknown`).
@@ -355,6 +360,27 @@ with no e2e, such as `omp.deepseek`'s 402, would otherwise have no seeded entry)
 Any present restriction blocks; only an explicit `unknown` status is treated as
 "no fact". A route with no committed evidence stays `attestation-unknown` and is
 not usable.
+
+### Attestation renewal
+
+`agent attest status [--json]` is the read-only renewal report: it lists every
+fallback candidate's route/model, usable verdict, rejection reason, attestation
+status/provenance, and evidence timestamp/source/SHA without calling a provider
+or reading credentials. The scheduled **Attestation renewal** workflow runs the
+same report weekly and opens or comments on an issue only when a candidate is
+`attestation-stale` or `attestation-unknown`. GitHub runs scheduled workflows
+only from the repository default branch, so this schedule stays dormant while
+the workflow lives on `release/*`; it becomes active after the authorized
+`release-* -> main` landing. Until then, run `agent attest status --json`
+manually (or `workflow_dispatch` where available) and track the first
+post-main scheduled/dispatch run as release acceptance evidence.
+
+Renewal is deliberately manual and measured: run the real route/model probe,
+confirm the tool/file effect on disk, then update only that route/model's
+committed `catalog.routes.*.e2e` evidence (`at`, `sha`, `note`, and the observed
+`tool_call` result). Do not copy another model's evidence, do not mark an
+unverified route `verified-live`, and do not extend `DEFAULT_MAX_EVIDENCE_AGE_MS`
+or weaken freshness checks to avoid renewal.
 
 ## Route coverage notes
 

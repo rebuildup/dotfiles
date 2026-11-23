@@ -12,7 +12,7 @@ import { readFileSync } from "node:fs";;
 import { join } from "node:path";;
 import { getPrimaryQuotaScope, loadCatalog } from "./catalog.ts";;
 import { buildFallbackCatalog, listFallbackProfiles, loadCatalogAttestations, mergeAttestations, parseFallbackProfile, resolveFallbackProfile, renderFallbackResolution, seedAttestationsFromCatalog } from "./fallback.ts";;
-import { ContractError, parseTomlTable, redactJson, splitRouteKey } from "./contract.ts";;
+import { ContractError, DEFAULT_MAX_EVIDENCE_AGE_MS, parseTomlTable, redactJson, splitRouteKey } from "./contract.ts";;
 import { routeDefaultModel, type Config, type Harness, type Provider, type Route } from "./config.ts";;
 import { AgentError, EXIT_RUNTIME, EXIT_USAGE } from "./errors.ts";;
 import { finalize, launchArgv, needsInjection, runInherited, startViaWithSecrets } from "./exec.ts";;
@@ -251,8 +251,9 @@ export function cmdCheck(config: Config): number {
   // tables: a malformed profile (bad primary_route, bad cap, bad billing) must
   // fail CI here rather than at `agent fallback` time with a stack trace.
   let profileCount = 0;
+  let parsedToml: Record<string, unknown>;
   try {
-    const parsedToml = parseTomlTable(readFileSync(config.path, "utf8"), config.path);
+    parsedToml = parseTomlTable(readFileSync(config.path, "utf8"), config.path);
     for (const id of listFallbackProfiles(parsedToml)) {
       parseFallbackProfile(parsedToml, id);
       profileCount++;
@@ -263,6 +264,38 @@ export function cmdCheck(config: Config): number {
     }
     throw error;
   }
+  // Attestation freshness is time-dependent: committed e2e evidence older
+  // than DEFAULT_MAX_EVIDENCE_AGE_MS silently disables every fallback
+  // candidate (dotfiles#203). Surface rejections as warnings on every
+  // `agent check` run — CI prints them — without failing the structural
+  // check, since renewal needs real provider calls CI cannot perform.
+  try {
+    const catalogFacts = loadCatalog(config.path);
+    const catalogLike = buildFallbackCatalog(config, catalogFacts);
+    const attestationMap = mergeAttestations(
+      seedAttestationsFromCatalog(catalogFacts),
+      loadCatalogAttestations(),
+    );
+    for (const id of listFallbackProfiles(parsedToml)) {
+      const profile = parseFallbackProfile(parsedToml, id);
+      if (profile === null) continue;
+      const resolution = resolveFallbackProfile(
+        profile,
+        catalogLike,
+        attestationMap,
+        getPrimaryQuotaScope(catalogFacts, profile.primaryRoute),
+      );
+      for (const rejected of resolution.rejected) {
+        const target = rejected.candidate
+          ? `${rejected.candidate.route}/${rejected.candidate.model}`
+          : "(unresolved)";
+        console.log(`warning: fallback '${id}' rejects ${target}: ${rejected.reason}`);
+      }
+    }
+  } catch {
+    // Resolution warnings are advisory; structural validation above already
+    // failed closed on malformed input.
+  }
   console.log(
     `config OK: ${config.path} ` +
       `(${Object.keys(config.providers).length} providers, ` +
@@ -270,6 +303,111 @@ export function cmdCheck(config: Config): number {
       `${Object.keys(config.routes).length} routes, ` +
       `${profileCount} fallback profiles)`
   );
+  return 0;
+}
+
+/**
+ * `agent attest status [--json]`: report every fallback candidate's current
+ * attestation state without executing providers. This is the read-only side of
+ * the weekly renewal loop: stale/unknown entries identify exactly which
+ * route+model pairs need a fresh measured E2E before they can be verified.
+ */
+export function cmdAttestStatus(config: Config, json: boolean): number {
+  let parsedToml: Record<string, unknown>;
+  try {
+    parsedToml = parseTomlTable(readFileSync(config.path, "utf8"), config.path);
+  } catch (error) {
+    if (error instanceof ContractError) throw new AgentError(error.message, EXIT_USAGE);
+    throw error;
+  }
+  let catalogFacts;
+  try {
+    catalogFacts = loadCatalog(config.path);
+  } catch (error) {
+    if (error instanceof ContractError) throw new AgentError(error.message, EXIT_RUNTIME);
+    throw error;
+  }
+  const catalogLike = buildFallbackCatalog(config, catalogFacts);
+  const attestationMap = mergeAttestations(
+    seedAttestationsFromCatalog(catalogFacts),
+    loadCatalogAttestations(),
+  );
+  let profileIds: string[];
+  try {
+    profileIds = listFallbackProfiles(parsedToml);
+  } catch (error) {
+    if (error instanceof ContractError) throw new AgentError(error.message, EXIT_USAGE);
+    throw error;
+  }
+  const rows: Array<Record<string, unknown>> = [];
+  for (const id of profileIds) {
+    let profile;
+    try {
+      profile = parseFallbackProfile(parsedToml, id);
+    } catch (error) {
+      if (error instanceof ContractError) throw new AgentError(error.message, EXIT_USAGE);
+      throw error;
+    }
+    if (profile === null) continue;
+    let resolution;
+    try {
+      resolution = resolveFallbackProfile(
+        profile,
+        catalogLike,
+        attestationMap,
+        getPrimaryQuotaScope(catalogFacts, profile.primaryRoute),
+      );
+    } catch (error) {
+      if (error instanceof ContractError) throw new AgentError(error.message, EXIT_RUNTIME);
+      throw error;
+    }
+    const usable = new Set(
+      resolution.usable.map((u) => `${u.candidate.route}#${u.candidate.model}`),
+    );
+    for (const candidate of profile.candidates) {
+      const key = `${candidate.route}#${candidate.model}`;
+      const att = attestationMap.get(key);
+      const value = att?.value;
+      const valueStatus =
+        typeof value === "object" && value !== null && typeof value.status === "string"
+          ? value.status
+          : null;
+      const rejected = resolution.rejected.find(
+        (r) => r.candidate?.route === candidate.route && r.candidate.model === candidate.model,
+      );
+      rows.push({
+        profile: profile.id,
+        route: candidate.route,
+        model: candidate.model,
+        usable: usable.has(key),
+        reason: rejected?.reason ?? null,
+        status: valueStatus ?? att?.status ?? "absent",
+        provenance: (typeof value === "object" && value !== null ? value.provenance : null) ?? att?.provenance ?? null,
+        evidence: (typeof value === "object" && value !== null ? value.evidence : null) ?? att?.evidence ?? null,
+      });
+    }
+  }
+  const generatedAt = new Date().toISOString();
+  if (json) {
+    console.log(redactJson({
+      generatedAt,
+      maxEvidenceAgeMs: DEFAULT_MAX_EVIDENCE_AGE_MS,
+      candidates: rows,
+    }));
+    return 0;
+  }
+  console.log(
+    `attestation status ${generatedAt} (max evidence age ${Math.round(DEFAULT_MAX_EVIDENCE_AGE_MS / 86400000)}d)`,
+  );
+  for (const row of rows) {
+    const evidence = row.evidence as { at?: string; source?: string; sha?: string } | null;
+    console.log(
+      `${String(row.profile)} ${String(row.route)}/${String(row.model)}: ` +
+        `${row.usable ? "usable" : String(row.reason ?? "unusable")} ` +
+        `status=${String(row.status)} evidence=${evidence?.at ?? "none"} ` +
+        `source=${evidence?.source ?? "none"} sha=${evidence?.sha ?? "none"}`,
+    );
+  }
   return 0;
 }
 
@@ -520,6 +658,11 @@ export async function cmdTask(config: Config, action: TaskAction): Promise<numbe
   // the selected runtime itself is unavailable. The default stays Herdr;
   // --runtime rex selects the Rex path explicitly (ADR-0021).
   const runtime = o.runtime ?? "herdr";
+  // --rex-host is meaningful only for the Rex runtime; silently ignoring it
+  // under herdr would dispatch to the wrong execution target.
+  if (o.rexHost && runtime !== "rex") {
+    throw new AgentError("--rex-host requires --runtime rex", EXIT_USAGE);
+  }
   const { runtimeAdapter } = await import("./runtime.ts");
   const rt = await runtimeAdapter(runtime).checkAvailable();
   if (!rt.available) {
@@ -541,6 +684,8 @@ export async function cmdTask(config: Config, action: TaskAction): Promise<numbe
       ...(o.timeoutMs !== null ? { timeoutMs: o.timeoutMs } : {}),
       ...(o.allowUnobservedEffects ? { allowUnobservedEffects: true } : {}),
       ...(o.runtime ? { runtime: o.runtime } : {}),
+      ...(o.rexHost ? { rexHost: o.rexHost } : {}),
+      ...(o.cwd ? { cwd: o.cwd } : {}),
     });
   } catch (error) {
     // ContractError carries the classified reason (bad route/model/profile,
@@ -564,3 +709,139 @@ export async function cmdTask(config: Config, action: TaskAction): Promise<numbe
   return result.success && accepted ? 0 : EXIT_RUNTIME;
 }
 
+
+// ---------------------------------------------------------------------------
+// `agent review` — Antigravity visual review harness (dotfiles#219)
+// ---------------------------------------------------------------------------
+
+const REVIEW_USAGE =
+  "usage: agent review run --image <path>... --spec <text>|--spec-file <path> " +
+  "[--schema-file <path>] [--model <id>] [--out <dir>] [--protect <dir>] " +
+  "[--executor local|herdr] [--timeout <ms>] [--no-quota] " +
+  "[--min-remaining <0..1>] [--no-exclusive] | agent review quota";
+
+/**
+ * `agent review run|run-file`: single-shot `agy -p` review with layered
+ * read-only verification. Exit 0 only for classification "review-completed";
+ * every other outcome (denied ops, invalid output, auth, timeout, executor
+ * failure) exits non-zero so schedulers fail closed. The result JSON is always
+ * printed to stdout.
+ */
+export async function cmdReview(args: string[]): Promise<number> {
+  const review = await import("./agy-review.ts");
+  const sub = args[0];
+  if (sub === "quota") {
+    if (args.length > 1) {
+      throw new AgentError("usage: agent review quota", EXIT_USAGE);
+    }
+    console.log(redactJson(await review.fetchAgyQuota()));
+    return 0;
+  }
+  if (sub === "run-file") {
+    const workdir = args[1];
+    if (!workdir || args.length > 2) {
+      throw new AgentError("usage: agent review run-file <workdir>", EXIT_USAGE);
+    }
+    const result = await review.runAgyReviewFile(workdir);
+    console.log(redactJson(result));
+    return result.classification === "review-completed" ? 0 : EXIT_RUNTIME;
+  }
+  if (sub !== "run") {
+    throw new AgentError(REVIEW_USAGE, EXIT_USAGE);
+  }
+
+  const images: string[] = [];
+  let spec: string | undefined;
+  let specFile: string | undefined;
+  let schemaFile: string | undefined;
+  let model: string | undefined;
+  let outDir: string | undefined;
+  let protect: string | undefined;
+  let executor: "local" | "herdr" | undefined;
+  let timeoutMs: number | undefined;
+  let skipQuota = false;
+  let noOsSandbox = false;
+  let agyBin: string | undefined;
+  let minRemaining: number | undefined;
+  let exclusive: boolean | undefined;
+
+  const need = (flag: string, i: number): string => {
+    const v = args[i + 1];
+    if (v === undefined) throw new AgentError(`${flag} requires a value`, EXIT_USAGE);
+    return v;
+  };
+  for (let i = 1; i < args.length; i++) {
+    const t = args[i];
+    switch (t) {
+      case "--image": images.push(need(t, i)); i++; break;
+      case "--spec": spec = need(t, i); i++; break;
+      case "--spec-file": specFile = need(t, i); i++; break;
+      case "--schema-file": schemaFile = need(t, i); i++; break;
+      case "--model": model = need(t, i); i++; break;
+      case "--out": outDir = need(t, i); i++; break;
+      case "--protect": protect = need(t, i); i++; break;
+      case "--executor": {
+        const v = need(t, i); i++;
+        if (v !== "local" && v !== "herdr") {
+          throw new AgentError(`--executor must be local|herdr, got '${v}'`, EXIT_USAGE);
+        }
+        executor = v;
+        break;
+      }
+      case "--timeout": {
+        const v = need(t, i); i++;
+        const n = Number(v);
+        if (!Number.isFinite(n) || n <= 0) {
+          throw new AgentError(`--timeout must be a positive number of ms, got '${v}'`, EXIT_USAGE);
+        }
+        timeoutMs = n;
+        break;
+      }
+      case "--no-quota": skipQuota = true; break;
+      case "--no-os-sandbox": noOsSandbox = true; break;
+      case "--agy": agyBin = need(t, i); i++; break;
+      case "--min-remaining": {
+        const v = need(t, i); i++;
+        const n = Number(v);
+        if (!Number.isFinite(n) || n < 0 || n > 1) {
+          throw new AgentError(`--min-remaining must be a fraction in [0,1], got '${v}'`, EXIT_USAGE);
+        }
+        minRemaining = n;
+        break;
+      }
+      case "--no-exclusive": exclusive = false; break;
+      default:
+        throw new AgentError(`unexpected argument '${t}'; ${REVIEW_USAGE}`, EXIT_USAGE);
+    }
+  }
+  if (spec === undefined && specFile === undefined) {
+    throw new AgentError(`--spec or --spec-file is required; ${REVIEW_USAGE}`, EXIT_USAGE);
+  }
+
+  let result;
+  try {
+    result = await review.runAgyReview({
+      images,
+      spec: spec ?? "",
+      specFile,
+      schemaFile,
+      model,
+      outDir,
+      protect,
+      executor,
+      timeoutMs,
+      skipQuota,
+      noOsSandbox,
+      agyBin,
+      minRemaining,
+      exclusive,
+    });
+  } catch (error) {
+    if (error instanceof ContractError) {
+      throw new AgentError(error.message, EXIT_RUNTIME);
+    }
+    throw error;
+  }
+  console.log(redactJson(result));
+  return result.classification === "review-completed" ? 0 : EXIT_RUNTIME;
+}

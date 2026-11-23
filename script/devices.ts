@@ -40,8 +40,31 @@ export function validateRegistry(values:unknown[]):Device[] {
  return nodes.sort((a,b)=>a.id.localeCompare(b.id));
 }
 function quotePath(p:string){if(/[\r\n"%]/.test(p))throw Error('unsupported path');return '"'+p.replaceAll('\\','/')+'"';}
-export function renderSSH(nodes:Device[],home:string):string {
- return marker+nodes.map(n=>`Host device-${n.id}
+function quotePathOrNull(p:string){return /[\r\n"%]/.test(p)?null:'"'+p.replaceAll('\\','/')+'"';}
+// Windows OpenSSH resolves Include files without a leading '/' as relative to
+// ~/.ssh, so a 'C:/...' absolute path never matches. '~' expands correctly.
+export function includeDirective(dir:string,windows=platform()==='win32'){return `Include ${windows?'~/.ssh/devices.conf':quotePath(join(dir,'devices.conf'))}\n`;}
+function firstLine(text:string){const i=text.indexOf('\n');return (i===-1?text:text.slice(0,i)).replace(/\r$/,'');}
+function legacyInclude(dir:string){const quoted=quotePathOrNull(join(dir,'devices.conf'));return quoted?`Include ${quoted}`:null;}
+export type ManagedIncludeState='current'|'legacy'|'none';
+export function managedIncludeState(text:string,home:string,windows=platform()==='win32'):ManagedIncludeState{
+ const dir=join(home,'.ssh'),first=firstLine(text),current=includeDirective(dir,windows);
+ if(first===current.slice(0,-1))return 'current';
+ if(windows){const old=legacyInclude(dir);if(old!==null&&first===old)return 'legacy';}
+ return 'none';
+}
+export function replaceManagedInclude(text:string,home:string,windows=platform()==='win32'){
+ const state=managedIncludeState(text,home,windows),include=includeDirective(join(home,'.ssh'),windows);
+ if(state==='current')return text;
+ if(state==='legacy'){const i=text.indexOf('\n');return i===-1?include:include+text.slice(i+1);}
+ return include+text;
+}
+// The rex-* aliases mirror device-* but permit forwarding: the rex CLI reaches a
+// remote server over ssh -L streamlocal forwarding, which ClearAllForwardings
+// would otherwise strip. Host key verification still resolves through the same
+// HostKeyAlias entry, so no second trust decision is introduced.
+function sshBlock(n:Device,home:string,alias:string,forwarding:boolean){
+ return `Host ${alias}
   HostName ${n.host}
   Port ${n.port}
   User ${n.user}
@@ -55,8 +78,7 @@ export function renderSSH(nodes:Device[],home:string):string {
   UpdateHostKeys no
   ForwardAgent no
   ForwardX11 no
-  ClearAllForwardings yes
-  ProxyCommand none
+${forwarding?'':'  ClearAllForwardings yes\n'}  ProxyCommand none
   ProxyJump none
   PermitLocalCommand no
   ControlMaster no
@@ -65,7 +87,10 @@ export function renderSSH(nodes:Device[],home:string):string {
   ConnectionAttempts 1
   ServerAliveInterval 15
   ServerAliveCountMax 3
-`).join('\n')+'\nHost *\n';
+`;
+}
+export function renderSSH(nodes:Device[],home:string):string {
+ return marker+nodes.flatMap(n=>[sshBlock(n,home,`device-${n.id}`,false),sshBlock(n,home,`rex-${n.id}`,true)]).join('\n')+'\nHost *\n';
 }
 export class IdentityMismatch extends Error {}
 export function assertIdentity(n:Device,output:string){
@@ -143,8 +168,8 @@ function generated(path:string,text:string){
 }
 export function preflightSSH(home:string){
  const dir=join(home,'.ssh');
- const config=join(dir,'config'),include=`Include ${quotePath(join(dir,'devices.conf'))}\n`;
- let linkedConfig=false;
+ const config=join(dir,'config'),backup=config+'.before-devices';
+ let linkedConfig=false,old:string|null=null,state:ManagedIncludeState='none';
  for(const path of [dir,...['config','config.before-devices','devices.conf','devices_known_hosts'].map(p=>join(dir,p))]){
   try{
    if(lstatSync(path).isSymbolicLink()){
@@ -157,27 +182,46 @@ export function preflightSSH(home:string){
  }
  for(const name of ['devices.conf','devices_known_hosts']){const p=join(dir,name);if(existsSync(p)&&!readGenerated(p).startsWith(marker))throw Error(`foreign ${name}`);}
  if(existsSync(config)){
-  const old=readFileSync(config,'utf8');
-  if(linkedConfig&&!old.startsWith(include))throw Error('SSH config symlink must already contain the managed Include; refusing to modify its target');
-  if(!old.startsWith(include)&&existsSync(config+'.before-devices'))throw Error('backup path already exists; preserve and reconcile explicitly');
-  if(!old.startsWith(include)&&old.includes('devices.conf'))throw Error('managed Include already exists elsewhere');
-  if(platform()==='win32')run(['ssh','-G','-F',config,'device-preflight']);
+  old=readFileSync(config,'utf8');state=managedIncludeState(old,home);
+  if(linkedConfig&&state!=='current')throw Error('SSH config symlink must already contain the managed Include; refusing to modify its target');
+  if(state==='none'&&existsSync(backup))throw Error('backup path already exists; preserve and reconcile explicitly');
+  if(state==='none'&&old.includes('devices.conf'))throw Error('managed Include already exists elsewhere');
+  const firstNewline=old.indexOf('\n');
+  if(state==='legacy'&&firstNewline!==-1&&old.slice(firstNewline+1).includes('devices.conf'))throw Error('managed Include already exists elsewhere');
+  if(platform()==='win32'){
+   if(state==='legacy'&&old!==null){
+    // Validate the post-migration text without touching the user's config.
+    const tmp=join(dir,`.config.preflight-${process.pid}-${randomUUID()}`);
+    let fd:number|undefined;
+    try{
+     fd=openSync(tmp,'wx',0o600);writeFileSync(fd,replaceManagedInclude(old,home));closeSync(fd);fd=undefined;
+     run(['ssh','-G','-F',tmp,'device-preflight']);
+    }finally{if(fd!==undefined)closeSync(fd);try{rmSync(tmp);}catch(e){if(errnoCode(e)!=='ENOENT')throw e;}}
+   }else run(['ssh','-G','-F',config,'device-preflight']);
+  }
  }
 }
 export function installSSH(nodes:Device[],home:string){
  preflightSSH(home);
  const dir=join(home,'.ssh');mkdirSync(dir,{recursive:true,mode:0o700});
- const config=join(dir,'config'),include=`Include ${quotePath(join(dir,'devices.conf'))}\n`;
- const existed=existsSync(config),old=existed?readFileSync(config,'utf8'):'';
+ const config=join(dir,'config'),backup=config+'.before-devices',include=includeDirective(dir);
+ const existed=existsSync(config),old=existed?readFileSync(config,'utf8'):'',state=existed?managedIncludeState(old,home):'none';
  // Exclusive backup must succeed before any generated or user SSH file changes.
- if(existed&&!old.startsWith(include))copyFileSync(config,config+'.before-devices',constants.COPYFILE_EXCL);
+ // A legacy managed Include was already backed up by the sync that wrote it;
+ // create the backup only when it is genuinely absent.
+ if(existed&&state==='none')copyFileSync(config,backup,constants.COPYFILE_EXCL);
+ else if(existed&&state==='legacy'&&!existsSync(backup))copyFileSync(config,backup,constants.COPYFILE_EXCL);
  generated(join(dir,'devices_known_hosts'),marker+nodes.map(n=>`device-${n.id} ${n.hostKey}\n`).join(''));
  generated(join(dir,'devices.conf'),renderSSH(nodes,home));
- if(!old.startsWith(include)){
+ if(state==='none'){
   if(existed){
    // Keep the existing inode and ACL. Never apply generated-file ACLs to user config.
    writeFileSync(config,include+old);
   }else atomic(config,include);
+ }else if(state==='legacy'){
+  // Replace only the first, tool-owned Include line; user settings keep their
+  // inode, ACL and bytes after that line.
+  writeFileSync(config,replaceManagedInclude(old,home));
  }
 }
 export function assertSyncedTarget(n:Device,home:string){
@@ -185,7 +229,7 @@ export function assertSyncedTarget(n:Device,home:string){
  const expected=renderSSH([n],home).slice(marker.length).replace(/\nHost \*\n$/, '');
  if(!existsSync(config)||!readGenerated(config).includes(expected)||!existsSync(known)||!readGenerated(known).split(/\r?\n/).includes(`device-${n.id} ${n.hostKey}`))throw Error(`${n.id}: SSH definition changed or missing; run devices sync explicitly`);
  const userConfig=join(home,'.ssh/config');
- if(!existsSync(userConfig)||!readFileSync(userConfig,'utf8').startsWith(`Include ${quotePath(config)}\n`))throw Error('managed SSH Include missing; run devices sync explicitly');
+ if(!existsSync(userConfig)||managedIncludeState(readFileSync(userConfig,'utf8'),home)!=='current')throw Error('managed SSH Include missing; run devices sync explicitly');
 }
 function profiles():Profile[]{
  const raw:unknown=JSON.parse(run(['herdr','machine','list','--json']));

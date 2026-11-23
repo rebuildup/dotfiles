@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# `agy` / `antigravity` — Antigravity CLI launcher shim.
+# Installed into ~/.local/bin by script/link. The real binary is mise-managed
+# (pc-setup mise.global.toml, aqua:google-antigravity/antigravity-cli); this
+# shim only normalizes one environment split before exec'ing it:
+#
+# agy picks its credential store from the environment: with SSH session
+# markers (SSH_CONNECTION / SSH_CLIENT / SSH_TTY) it uses file-based token
+# storage at ~/.gemini/antigravity-cli/antigravity-oauth-token; without them
+# it uses the OS keyring. A machine that logged in from the desktop keeps its
+# credential in the keyring only, so the same `agy` over SSH (including
+# herdr/Rex workers launched from a remote session) demands a fresh OAuth
+# login even though the account is signed in.
+#
+# When an SSH marker is present AND no file-based token exists, the markers
+# are removed for the child so agy falls back to keyring auth. SSH_AUTH_SOCK
+# is preserved. When the token file exists the environment is passed through
+# unchanged, so an SSH-native login keeps working (upstream issue
+# google-antigravity/antigravity-cli#1336 documents the two-store split).
+set -euo pipefail
+
+tool="$(basename -- "$0")"
+case "$tool" in
+  agy|antigravity) ;;
+  *) printf 'agy: unexpected invocation name %s\n' "$tool" >&2; exit 2 ;;
+esac
+
+# Resolve the real binary: prefer `mise which` (version-correct), else the
+# first PATH entry that is not this shim. Never exec ourselves.
+self="$(cd -- "$(dirname -- "$0")" && pwd -P)/$(basename -- "$0")"
+real=""
+if command -v mise >/dev/null 2>&1; then
+  real="$(mise which "$tool" 2>/dev/null || true)"
+fi
+if [[ -z "$real" ]]; then
+  IFS=':' read -ra path_dirs <<< "$PATH"
+  for dir in "${path_dirs[@]}"; do
+    candidate="$dir/$tool"
+    [[ -x "$candidate" ]] || continue
+    candidate_real="$(cd -- "$(dirname -- "$candidate")" && pwd -P)/$(basename -- "$candidate")"
+    if [[ "$candidate_real" != "$self" ]]; then
+      real="$candidate"
+      break
+    fi
+  done
+fi
+
+if [[ -z "$real" ]]; then
+  printf 'agy: %s not found on PATH; install it via mise (pc-setup mise.global.toml)\n' "$tool" >&2
+  exit 127
+fi
+
+ssh_marked=0
+for var in SSH_CONNECTION SSH_CLIENT SSH_TTY; do
+  if [[ -n "${!var:-}" ]]; then ssh_marked=1; fi
+done
+
+token_file="${HOME}/.gemini/antigravity-cli/antigravity-oauth-token"
+
+if [[ "$ssh_marked" -eq 1 && ! -e "$token_file" ]]; then
+  exec env -u SSH_CONNECTION -u SSH_CLIENT -u SSH_TTY "$real" "$@"
+fi
+
+exec "$real" "$@"

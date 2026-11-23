@@ -4,6 +4,7 @@ evals/agent-router/controls.sh
 evals/system-quality/challenge.sh
 home/.claude/statusline-command.sh
 home/.local/bin/agent
+home/.local/bin/agy
 home/.local/bin/devices
 home/.local/bin/ocr-go-key
 script/agent/infisical-key.sh

@@ -41,6 +41,8 @@ $PosixOnly = @{
     '.local/bin/devices'            = 'POSIX launcher; on Windows use script/devices.ps1'
     '.local/bin/agent'              = 'POSIX symlink to agent.ts; on Windows use script/agent.ps1 and `agent shortcuts create`'
     '.claude/statusline-command.sh' = 'bash status line renderer; not wired for Windows-native Claude Code'
+    '.vimrc'                        = 'POSIX Vim entry point; Windows uses %LOCALAPPDATA%\Programs\Vim\_vimrc'
+    '.config/nvim/init.lua'         = 'POSIX Neovim entry point; Windows uses %LOCALAPPDATA%\nvim\init.lua'
 }
 
 $SourceRoot = Join-Path $RepoRoot 'home'

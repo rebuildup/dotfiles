@@ -461,7 +461,7 @@ describe("human output redaction boundary (#122)", () => {
 
 describe("help data", () => {
   test("subcommands and further entries are backed by the usage text", () => {
-    const usage = "usage:\n  agent list\n  agent models <provider>\n  agent shortcuts\n  agent check\n  agent guide [topic]\n  agent routes [--json]\n  agent help\n";
+    const usage = "usage:\n  agent list\n  agent models <provider>\n  agent shortcuts\n  agent check\n  agent attest status [--json]\n  agent guide [topic]\n  agent routes [--json]\n  agent help\n";
     const data = buildHelpData(usage);
     expect(data.usage).toBe(usage);
     // Every listed subcommand's first word must exist in the usage text.
@@ -485,7 +485,9 @@ describe("launcher integration", () => {
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("usage:");
     // Progressive disclosure: the entry stays bounded and names the doors.
-    expect(result.stdout.split("\n").length).toBeLessThanOrEqual(100);
+    // 120 leaves headroom for one new subcommand entry (#219 `agent review`)
+    // while still failing if help degenerates into an unbounded dump.
+    expect(result.stdout.split("\n").length).toBeLessThanOrEqual(120);
     expect(result.stdout).toContain("agent guide [topic]");
     expect(result.stdout).toContain("agent routes [--json]");
   }, 60000);

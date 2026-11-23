@@ -259,12 +259,14 @@ opencode_npm = "@ai-sdk/openai-compatible"
 opencode_base_url = "https://logfare.ai/v1"
 omp_custom = true
 
-# Google AI Studio Gemini Developer API. The account owner confirmed that
-# this key belongs to a dedicated Free Tier project with no linked billing
-# account or Prepay. Infisical presence alone is not billing evidence; this
-# route is fixed to the standard Gemini API model and has no paid fallback.
+# Google AI Studio Gemini Developer API. The operator reports that this key
+# is intended for a dedicated Free Tier project with no linked billing
+# account or Prepay, but authoritative Google project/billing metadata is
+# still unverified (issue #185). Infisical presence alone is not billing
+# evidence; this route is fixed to the standard Gemini API model and has no
+# paid fallback.
 [providers.gemini]
-label = "Google AI Studio Gemini Developer API (Free Tier)"
+label = "Google AI Studio Gemini Developer API"
 base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
 secret = "GEMINI_API_KEY"
 env = "GEMINI_API_KEY"
@@ -700,6 +702,15 @@ label = "Mistral Vibe CLI"
 command = "vibe"
 adapter = "passthrough"
 
+# Antigravity CLI (agy): Google AI Pro subscription auth via OS keyring, no
+# Infisical secret. `agent agy` / `agent native agy` run it untouched; the
+# read-only visual review contract lives in `agent review` (agy-review.ts,
+# ADR-0023), not in a provider route.
+[harnesses.agy]
+label = "Antigravity"
+command = "agy"
+adapter = "passthrough"
+
 # Claude adapter environment names (Claude Code's own protocol contract).
 # These are names, never values; values are derived at launch time.
 [harnesses.claude.env]
@@ -771,7 +782,7 @@ note = "Keep MiniMax-M3 as the known working route default; the formal MiniMax-M
 note = "Explicit Logfare route (OpenAI-compatible https://logfare.ai/v1, custom provider registered via opencode_npm). Never a fallback target and never selected implicitly: 5,000 req/day, 6 concurrent per account. Needs Infisical LOGFARE_API_KEY plus the /consent training opt-in (both models are premium). Real response + shell-tool call + both models verified 2026-11-05."
 
 [routes."opencode.gemini"]
-note = "Explicit opt-in route to only gemini-4-hydrogen at xhigh. GEMINI_API_KEY is read only from Infisical; the process-scoped OpenCode guard pins every request to this model and stops on 429. Dedicated AI Studio Free Tier project, no billing account or Prepay, owner-confirmed 2026-11-19. No grounding tools, implicit fallback, or paid route."
+note = "Explicit opt-in route to only gemini-4-hydrogen at xhigh. GEMINI_API_KEY is read only from Infisical; the process-scoped OpenCode guard pins every request to this model and stops on 429. Operator-reported dedicated AI Studio Free Tier project with no linked billing account or Prepay, but authoritative billing metadata remains unverified (issue #185); this is not a billing guarantee. No grounding tools, implicit fallback, or paid route."
 
 [routes."opencode.mistral"]
 note = "Infisical Vibe plan key, volume-first GLM 5.3 Flash, no automatic paid or model fallback. Verify real model availability before use."
@@ -1024,6 +1035,10 @@ source = "live-e2e"
 sha = "57315124d62eaf090883666d2d17039cfce26849"
 note = "Real response + tool call via the claude route (observation recorded on that route below)."
 
+[catalog.providers.gemini]
+billing = "unknown"
+terms = "Operator reports a dedicated AI Studio Free Tier project with no linked billing account or Prepay (2026-11-19), but authoritative Google project/billing metadata is unverified; Infisical presence is not billing evidence. Explicit opt-in route only, never a fallback target."
+
 [catalog.providers.logfare]
 billing = "unknown"
 terms = "Premium community access: both models require the training opt-in (https://logfare.ai/consent) and Discord membership in the Logfare server; without them every request returns HTTP 403 (training_optin_required)."
@@ -1128,10 +1143,10 @@ status = "verified-live"
 provenance = "measured"
 
 [catalog.routes."claude.openrouter-free".e2e.evidence]
-at = "2026-11-01T00:00:00Z"
+at = "2026-11-21T08:25:00Z"
 source = "live-e2e"
-sha = "fe67db6e8d27fc2b1b0f604ec2299eafb6e3f4e2"
-note = "Real response + Bash tool call, claude 2.1.314."
+sha = "9547021c2da03170e883dec307223c12f4a8480d"
+note = "Real response + shell tool call (file create verified on disk) via agent launcher print mode, claude 2.1.328, 2026-11-21."
 
 [catalog.routes."opencode.openrouter-free".e2e]
 value = [{ model = "nvidia/nemotron-3-ultra-550b-a55b:free", tool_call = true }]
@@ -1139,10 +1154,10 @@ status = "verified-live"
 provenance = "measured"
 
 [catalog.routes."opencode.openrouter-free".e2e.evidence]
-at = "2026-11-01T00:00:00Z"
+at = "2026-11-21T08:25:00Z"
 source = "live-e2e"
-sha = "fe67db6e8d27fc2b1b0f604ec2299eafb6e3f4e2"
-note = "Real response + Bash tool call, opencode 2.2.3."
+sha = "9547021c2da03170e883dec307223c12f4a8480d"
+note = "Real response + shell tool call (file create verified on disk) through the launcher run mode, opencode 2.3.2, 2026-11-21."
 
 [catalog.routes."omp.openrouter-free".e2e]
 value = [{ model = "nvidia/nemotron-3-ultra-550b-a55b:free", tool_call = true }]
@@ -1150,10 +1165,10 @@ status = "verified-live"
 provenance = "measured"
 
 [catalog.routes."omp.openrouter-free".e2e.evidence]
-at = "2026-11-04T00:00:00Z"
+at = "2026-11-21T08:20:00Z"
 source = "live-e2e"
-sha = "bed3716a5008c424a3b2bf97204f1d8ebafe8a6b"
-note = "Real response + Bash tool call, OMP 18.16.0."
+sha = "9547021c2da03170e883dec307223c12f4a8480d"
+note = "Real response + shell tool call (file create verified on disk) via agent launcher print mode, omp 19.0.0, 2026-11-21."
 
 [catalog.routes."claude.opencode-go".quota]
 scope = "plan"
@@ -1597,31 +1612,28 @@ note = "Real response + tool call + file edits through the launcher, claude 2.1.
 [catalog.routes."opencode.kilo".e2e]
 value = [
   { model = "nvidia/nemotron-3-ultra-550b-a55b:free", tool_call = true },
-  { model = "kilo-auto/free", tool_call = true },
-  { model = "cohere/north-mini-code:free", tool_call = true },
 ]
 status = "verified-live"
 provenance = "measured"
 
 [catalog.routes."opencode.kilo".e2e.evidence]
-at = "2026-11-13T00:00:00Z"
+at = "2026-11-21T08:20:00Z"
 source = "live-e2e"
-sha = "65a2bbc21d3e8dc889669c7bb818e567358a891f"
-note = "Real response + tool call + file edits through the launcher, opencode 2.2.7; create-task and bug-fix task."
+sha = "9547021c2da03170e883dec307223c12f4a8480d"
+note = "Real response + shell tool call (file create verified on disk) through the launcher run mode, opencode 2.3.2, 2026-11-21. kilo-auto/free and cohere/north-mini-code:free dropped from this attestation pending re-verification."
 
 [catalog.routes."omp.kilo".e2e]
 value = [
   { model = "nvidia/nemotron-3-ultra-550b-a55b:free", tool_call = true },
-  { model = "kilo-auto/free", tool_call = true },
 ]
 status = "verified-live"
 provenance = "measured"
 
 [catalog.routes."omp.kilo".e2e.evidence]
-at = "2026-11-13T00:00:00Z"
+at = "2026-11-21T08:20:00Z"
 source = "live-e2e"
-sha = "65a2bbc21d3e8dc889669c7bb818e567358a891f"
-note = "Real response + bash/edit tool calls + bun test through the launcher, omp 18.18.9; create-task and bug-fix task."
+sha = "9547021c2da03170e883dec307223c12f4a8480d"
+note = "Real response + shell tool calls (file create verified on disk) through agent task run, omp 19.0.0, 2026-11-21. kilo-auto/free dropped from this attestation pending re-verification."
 
 [catalog.routes."claude.requesty".e2e]
 value = [
@@ -1669,10 +1681,10 @@ status = "verified-live"
 provenance = "measured"
 
 [catalog.routes."omp.groq".e2e.evidence]
-at = "2026-11-13T00:00:00Z"
+at = "2026-11-21T08:20:00Z"
 source = "live-e2e"
-sha = "65a2bbc21d3e8dc889669c7bb818e567358a891f"
-note = "Real response + bash/edit tool calls + bun test through the launcher, omp 18.18.9; create-task 320s and the bug-fix task."
+sha = "9547021c2da03170e883dec307223c12f4a8480d"
+note = "Real response + shell tool calls (file create verified on disk) through agent task run, omp 19.0.0, 2026-11-21."
 
 # ---------------------------------------------------------------------------
 # Fallback profiles (issue #136 / T020, Epic #86): opt-in continuity profiles

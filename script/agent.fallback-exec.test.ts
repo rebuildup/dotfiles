@@ -5,7 +5,9 @@
 
 import { describe, it, expect } from "bun:test";;
 import { classifyFailure, executeWithFallback, FallbackExhaustedError, CATEGORY_FACTS, CATEGORY_SEVERITY, FALLBACK_CIRCUIT_BREAKER_THRESHOLD, FALLBACK_CIRCUIT_BREAKER_RESET_MS, FALLBACK_MAX_RETRIES_PER_CANDIDATE, FALLBACK_MAX_TOTAL_RETRIES, type FallbackAttemptRecord } from "./agent/fallback-exec.ts";;
-import { loadConfig } from "./agent/config.ts";;
+import { loadConfig } from "./agent/config.ts";
+import { loadCatalog } from "./agent/catalog.ts";
+import { seedAttestationsFromCatalog } from "./agent/fallback.ts";;
 import { ContractError, formatRouteId, parseRouteId } from "./agent/contract.ts";;
 import { dirname, join } from "node:path";;
 import { realpathSync } from "node:fs";;
@@ -256,11 +258,22 @@ describe("executeWithFallback", () => {
 
 describe("FallbackExhaustedError", () => {
   const realConfigPath = join(repoRoot(), "config", "agents.toml");
-  // The committed catalog e2e evidence is dated 2026-11-13; pin the
-  // resolution clock inside its 7-day freshness window so the suite does not
-  // silently start rejecting every candidate once wall-clock time passes it.
-  // The freshness check itself still runs — it just evaluates a fixed `now`.
-  const EVIDENCE_FRESH_NOW_MS = Date.parse("2026-11-14T00:00:00Z");
+  // Anchor the resolution clock just after the FRESHEST committed e2e
+  // evidence, whatever its date: pinning a fixed calendar date made the
+  // suite break every time evidence aged past (or was renewed beyond) the
+  // pin — the same date-dependent trap as dotfiles#203. Deriving `now` from
+  // the catalog keeps the freshness check itself running while making the
+  // mechanics under test independent of the renewal calendar. Staleness
+  // detection for operators lives in `agent check` warnings / `agent
+  // fallback`, not in this suite.
+  const catalogFactsForClock = loadCatalog(realConfigPath);
+  let freshestEvidenceMs = 0;
+  for (const attestation of seedAttestationsFromCatalog(catalogFactsForClock).values()) {
+    const at = attestation.evidence?.at ?? attestation.value?.evidence?.at;
+    const ms = typeof at === "string" ? Date.parse(at) : NaN;
+    if (Number.isFinite(ms) && ms > freshestEvidenceMs) freshestEvidenceMs = ms;
+  }
+  const EVIDENCE_FRESH_NOW_MS = freshestEvidenceMs + 24 * 60 * 60 * 1000;
 
   /** Run the executor against a real profile with a stub task function. */
   async function exhaustWith(

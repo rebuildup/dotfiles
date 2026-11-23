@@ -643,6 +643,7 @@ export function buildHelpData(usage: string): HelpData {
       { name: "models <provider>", summary: "credential names and models of a provider" },
       { name: "shortcuts", summary: "list/check/create/remove shortcut entry points" },
       { name: "check", summary: "validate config/agents.toml" },
+      { name: "attest status", summary: "report fallback attestation freshness without provider calls" },
       { name: "guide [topic]", summary: "progressive-disclosure guide (see --json)" },
       { name: "routes", summary: "route table with catalog facts (see --json)" },
     ],
@@ -667,6 +668,7 @@ usage:
   agent models <provider>
   agent shortcuts [list|check|create|remove]
   agent check
+  agent attest status [--json]
   agent guide [topic]
   agent routes [--json]
   agent fallback <profile-id> [--json]
@@ -674,6 +676,10 @@ usage:
       [--prompt <text>] [--accept <criteria>]...
   agent task resume <task-id> [--prompt <text>] [--timeout <ms>]
   agent task status|reconcile <task-id>
+  agent review run --image <p>... --spec <t>|--spec-file <f>
+      [--protect <dir>] [--executor local|herdr] [--out <dir>] [--no-quota]
+      [--min-remaining <0..1>] [--no-exclusive]
+  agent review quota
   agent help
 subcommands:
   agent help                 show this help
@@ -690,23 +696,33 @@ subcommands:
   agent shortcuts remove     remove only the entries that point at this
                              launcher; other files are left untouched
   agent check                validate config/agents.toml (used by CI)
+  agent attest status        report fallback attestation freshness for every
+                             configured candidate; --json for machine-readable
+                             renewal status (no provider calls)
   agent guide [topic]        progressive disclosure: routes, status, limits,
                              distributed, recovery, quality, misfire
   agent routes               route table with catalog facts (quota scopes,
                              rate limits, restrictions, e2e evidence);
                              --json emits the same data as redacted JSON
-  agent fallback <profile-id> [--json]  resolve and display an opt-in
-                             continuity profile for authorized same-harness
-                             fallback (issue #136); does not execute fallback
+  agent fallback <profile-id> [--json]  resolve and display an opt-in continuity profile for authorized same-harness fallback (#136); does not execute fallback
   agent task run <route>               dispatch a prompt to a worker on
                              <harness>.<provider>; --model picks the model
                              (route default); --fallback names an opt-in
                              continuity profile; --prompt supplies task
                              text (stdin when omitted); --accept verifies
-                             criteria post-collect; --runtime herdr|rex picks
-                             the runtime (default herdr); --fallback needs --accept, git cwd, or --allow-unobserved-effects
+                             criteria post-collect; --runtime herdr|rex (default
+                             herdr); --rex-host <label> runs on a remote rex host;
+                             --fallback needs --accept, git cwd, or --allow-unobserved-effects
   agent task resume <task-id>          continue an attempt in place
   agent task status|reconcile <task-id> durable state / resolve journal UNKNOWNs
+  agent review run                     single-shot agy visual review in an
+                             isolated, read-only-verified workdir; prints a
+                             classified result JSON (exit 0 only on
+                             review-completed); --executor herdr = same
+                             contract in a Herdr pane; --min-remaining gates
+                             on /quota (model-scoped), single-flight lock is
+                             default (#219/#221)
+  agent review quota                   print normalized agy quota buckets
   agent help --json          machine-readable help (quotes this text)
 
 shortcut form:

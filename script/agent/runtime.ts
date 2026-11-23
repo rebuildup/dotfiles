@@ -66,6 +66,8 @@ export function isRuntimeKind(value: unknown): value is RuntimeKind {
 export interface WorkerHandle {
   /** Runtime that owns this worker; absent = "herdr" (legacy records). */
   runtime?: RuntimeKind;
+  /** Rex host label/address for remote servers; absent = local server. */
+  server?: string;
   id: string;
   surfaceId?: string;
   paneId?: string;
@@ -76,6 +78,7 @@ export interface WorkerHandle {
 
 export interface SurfaceRef {
   surfaceId: string;
+  server?: string;
   paneId: string;
   windowId?: string;
   tabId?: string;
@@ -97,6 +100,8 @@ export interface WorkerStartSpec {
   argv?: string[];
   /** Non-secret env only (credential policy, ADR-0021 §5). */
   env?: Record<string, string>;
+  /** Rex host label/address for remote servers; absent = local server. */
+  server?: string;
 }
 
 export interface PromptResult {
@@ -117,15 +122,16 @@ export interface RuntimeTaskMapping {
   createdAt: string;
   route: string;
   model: string;
+  server?: string;
 }
 
 export interface TaskRuntimeAdapter {
   readonly kind: RuntimeKind;
   checkAvailable(): Promise<{ available: boolean; version?: string; error?: string }>;
-  createSurface(cwd: string, label: string, env: Record<string, string>): Promise<SurfaceRef>;
+  createSurface(cwd: string, label: string, env: Record<string, string>, target?: { server?: string }): Promise<SurfaceRef>;
   createPane(
     surfaceId: string,
-    opts: { cwd?: string; split?: "right" | "down"; noFocus?: boolean; env?: Record<string, string> },
+    opts: { cwd?: string; split?: "right" | "down"; noFocus?: boolean; env?: Record<string, string>; server?: string },
   ): Promise<PaneRef>;
   startWorker(surface: SurfaceRef, paneId: string, spec: WorkerStartSpec): Promise<WorkerHandle>;
   promptWorker(handle: WorkerHandle, prompt: string, opts?: { wait?: boolean; timeoutMs?: number }): Promise<PromptResult>;
@@ -135,7 +141,7 @@ export interface TaskRuntimeAdapter {
   getWorker(handle: WorkerHandle): Promise<{ name: string; status: string } | null>;
   closePane(handle: WorkerHandle): Promise<void>;
   /** Close every runtime resource the attempt created (best effort). */
-  destroySurface?(surfaceId: string): Promise<void>;
+  destroySurface?(surfaceId: string, server?: string): Promise<void>;
   saveMapping(mapping: RuntimeTaskMapping): void;
   loadMapping(taskId: string): RuntimeTaskMapping | null;
 }
@@ -149,7 +155,7 @@ const herdrAdapter: TaskRuntimeAdapter = {
 
   checkAvailable: () => checkHerdrAvailable(),
 
-  async createSurface(cwd, label, env) {
+  async createSurface(cwd, label, env) { // `target` is rex-only; herdr has no remote-server concept here
     const workspace = await createWorkspace(cwd, label, { noFocus: true, env });
     const rootPaneId = workspace.tabs[0]?.panes[0]?.id ?? "";
     // The root pane must reach an interactive shell prompt before an agent
@@ -174,6 +180,32 @@ const herdrAdapter: TaskRuntimeAdapter = {
       paneId,
       options: spec.options,
     });
+    // `herdr agent prompt --wait` requires an observed working/blocked
+    // transition within 5s of submission. OMP 19 cold-boots slower than
+    // that, so prompting immediately reports agent_prompt_stalled even
+    // though the worker is healthy (dotfiles#212). Wait for herdr's
+    // interactive_ready signal — the TUI is up and can register a turn —
+    // before the caller prompts. A herdr that never reports the field
+    // keeps the legacy no-wait behaviour; a field that stays false past
+    // the deadline is a startup failure, not a prompt failure.
+    const readyDeadline = Date.now() + 30000;
+    let sawReadyField = false;
+    for (;;) {
+      const agent = await herdrGetAgent(start.agentName).catch(() => null);
+      if (agent?.interactiveReady !== undefined) sawReadyField = true;
+      if (agent?.interactiveReady === true) break;
+      if (Date.now() >= readyDeadline) {
+        // A herdr too old to report interactive_ready keeps the legacy
+        // fire-and-observe behaviour; a reported-but-never-ready worker is
+        // a startup failure distinct from a prompt failure.
+        if (!sawReadyField) break;
+        throw new ContractError(
+          "state",
+          `herdr worker '${start.agentName}' not interactive-ready within 30s`,
+        );
+      }
+      await new Promise((r) => setTimeout(r, 500));
+    }
     return {
       runtime: "herdr",
       id: start.agentName,
@@ -184,7 +216,32 @@ const herdrAdapter: TaskRuntimeAdapter = {
     };
   },
 
-  promptWorker: (handle, prompt, opts) => herdrPromptAgent(handle.id, prompt, opts),
+  promptWorker: async (handle, prompt, opts) => {
+    const result = await herdrPromptAgent(handle.id, prompt, opts);
+    // `agent prompt --wait` demands an observed working/blocked transition
+    // within a hardcoded 5s of submission. OMP 19 reports its turn through
+    // the herdr extension with enough delay that the window can expire
+    // while the worker is healthy — the prompt text was still delivered
+    // and the turn runs to completion (dotfiles#212). A stalled verdict
+    // here is therefore NOT proof of failure: keep observing agent state
+    // until the turn settles or the caller's budget expires. Only a turn
+    // we actually saw progress on may settle as success; silence past the
+    // deadline stays stalled — never upgraded to completion.
+    if (!result.stalled || result.errorCode !== "agent_prompt_stalled") {
+      return result;
+    }
+    const deadline = Date.now() + (opts?.timeoutMs ?? 300000);
+    let sawProgress = false;
+    for (;;) {
+      const agent = await herdrGetAgent(handle.id).catch(() => null);
+      const status = agent?.status;
+      if (status === "working" || status === "blocked") sawProgress = true;
+      if (status === "done" || (sawProgress && status === "idle")) return {};
+      if (status === "blocked") return { blocked: true, errorCode: "agent-blocked" };
+      if (Date.now() >= deadline) return result;
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+  },
 
   readWorker: (handle, opts) =>
     herdrReadAgent(handle.id, { source: "recent", lines: opts?.lines ?? 200 }),
@@ -244,14 +301,15 @@ const rexAdapter: TaskRuntimeAdapter = {
 
   checkAvailable: () => checkRexAvailable(),
 
-  async createSurface(cwd, label) {
-    const session = await createSession(cwd, label);
+  async createSurface(cwd, label, _env, target) {
+    const server = target?.server;
+    const session = await createSession(cwd, label, { server });
     try {
       // The session's first window holds a root shell block; it doubles as
       // the default split anchor, mirroring the Herdr root pane. A failed
       // inspection is a transport problem, not an empty session — fail
       // closed and clean up the surface we just created.
-      const detail = await getSession(session.id);
+      const detail = await getSession(session.id, server);
       if (detail === null) {
         throw new ContractError("state", `Rex session ${session.id} inspection failed`);
       }
@@ -263,7 +321,7 @@ const rexAdapter: TaskRuntimeAdapter = {
         tabId: detail.windows[0]?.id,
       };
     } catch (error) {
-      await killSession(session.id).catch(() => {});
+      await killSession(session.id, server).catch(() => {});
       throw error;
     }
   },
@@ -272,7 +330,7 @@ const rexAdapter: TaskRuntimeAdapter = {
     // Observational pane: a plain login shell split beside the session's
     // first block. `env` is intentionally not applied — it carries worker
     // credentials policy-wise and belongs on the worker block only.
-    const blocks = await listBlocks(surfaceId);
+    const blocks = await listBlocks(surfaceId, opts.server);
     const anchor = blocks[0]?.id;
     if (!anchor) {
       throw new ContractError("state", `Rex session ${surfaceId} has no block to split`);
@@ -285,6 +343,7 @@ const rexAdapter: TaskRuntimeAdapter = {
       argv: [], // no command -> login shell
       split: { anchorBlockId: anchor, direction },
       focus: opts.noFocus === false ? true : false,
+      server: opts.server,
     });
     return { paneId: created.blockId, tabId: created.windowId };
   },
@@ -300,9 +359,11 @@ const rexAdapter: TaskRuntimeAdapter = {
       env: spec.env,
       focus: false,
       interactive: true,
+      server: spec.server ?? surface.server,
     });
     return {
       runtime: "rex",
+      server: spec.server ?? surface.server,
       id: created.blockId, // block id is the canonical worker handle
       surfaceId: surface.surfaceId,
       paneId: created.blockId,
@@ -313,12 +374,13 @@ const rexAdapter: TaskRuntimeAdapter = {
   },
 
   promptWorker: (handle, prompt, opts) =>
-    promptBlock(requireSessionId(handle, "prompt"), handle.paneId ?? handle.id, prompt, opts),
+    promptBlock(requireSessionId(handle, "prompt"), handle.paneId ?? handle.id, prompt, { ...opts, server: handle.server }),
 
   async readWorker(handle, opts) {
     const output = await captureBlock(requireSessionId(handle, "read"), handle.paneId ?? handle.id, {
       trim: true,
       tailLines: opts?.lines ?? 200,
+      server: handle.server,
     });
     return { output };
   },
@@ -326,13 +388,14 @@ const rexAdapter: TaskRuntimeAdapter = {
   async waitWorker(handle, timeoutMs) {
     const sessionId = requireSessionId(handle, "wait");
     const blockId = handle.paneId ?? handle.id;
+    const server = handle.server;
     const deadline = Date.now() + timeoutMs;
     let lastState = "unknown";
     for (;;) {
       // Existence is probed separately from status: only a definitive
       // "absent" may end the wait. A transport/command failure is "unknown"
       // and keeps polling — it is never read as worker exit.
-      const presence = await inspectBlockPresence(sessionId, blockId);
+      const presence = await inspectBlockPresence(sessionId, blockId, server);
       if (presence === "absent") {
         // The worker's terminal is gone: the process exited and the block
         // closed. That is a settled end state, equivalent to Herdr's
@@ -340,7 +403,7 @@ const rexAdapter: TaskRuntimeAdapter = {
         return { completed: true, reason: "worker exited" };
       }
       if (presence === "present") {
-        const records = await blockProgramStatus(sessionId, blockId).catch(
+        const records = await blockProgramStatus(sessionId, blockId, server).catch(
           () => [] as RexProgramStatusRecord[],
         );
         const state = deriveWorkerState(records);
@@ -351,7 +414,7 @@ const rexAdapter: TaskRuntimeAdapter = {
         if (state === "blocked") {
           return { completed: false, reason: "blocked" };
         }
-        const proc = await blockProcess(sessionId, blockId).catch(() => null);
+        const proc = await blockProcess(sessionId, blockId, server).catch(() => null);
         if (proc !== null && proc.lastExit !== null) {
           return { completed: true, reason: `exit ${proc.lastExit}` };
         }
@@ -370,24 +433,32 @@ const rexAdapter: TaskRuntimeAdapter = {
     const sessionId = handle.surfaceId;
     if (!sessionId) return null;
     const blockId = handle.paneId ?? handle.id;
-    const presence = await inspectBlockPresence(sessionId, blockId);
+    const presence = await inspectBlockPresence(sessionId, blockId, handle.server);
     if (presence === "absent") return null;
     if (presence === "unknown") {
       // Fail closed: an unreachable runtime is not proof the worker is gone.
       throw new ContractError("state", `Rex worker probe inconclusive for block ${blockId}`);
     }
-    const block = await getBlock(sessionId, blockId).catch(() => null);
-    return block === null ? null : { name: block.id, status: "present" };
+    const block = await getBlock(sessionId, blockId, handle.server).catch(() => null);
+    if (block === null) return null;
+    // A block record outlives its foreground process (e.g. across a server
+    // restart the block respawns a bare shell). Presence of the record is
+    // not presence of the worker — a shell foreground means the agent is
+    // gone, so report the worker absent rather than resuming into nothing.
+    const proc = await blockProcess(sessionId, blockId, handle.server).catch(() => null);
+    const fg = proc?.foreground?.name ?? "";
+    if (/^(ba|z|da|fi)?sh$/.test(fg)) return null;
+    return { name: block.id, status: "present" };
   },
 
   closePane: async (handle) => {
     const sessionId = handle.surfaceId;
     if (!sessionId) return;
-    await closeBlock(sessionId, handle.paneId ?? handle.id);
+    await closeBlock(sessionId, handle.paneId ?? handle.id, handle.server);
   },
 
-  destroySurface: async (surfaceId) => {
-    await killSession(surfaceId);
+  destroySurface: async (surfaceId, server) => {
+    await killSession(surfaceId, server);
   },
 
   saveMapping: (m) =>
@@ -397,6 +468,7 @@ const rexAdapter: TaskRuntimeAdapter = {
       windowId: m.windowId ?? "",
       blockId: m.workerId,
       workerLabel: m.workerLabel ?? m.workerId,
+      server: m.server,
       createdAt: m.createdAt,
       route: m.route,
       model: m.model,
@@ -410,6 +482,7 @@ const rexAdapter: TaskRuntimeAdapter = {
       surfaceId: m.sessionId,
       paneId: m.blockId,
       workerId: m.blockId,
+      server: m.server,
       windowId: m.windowId,
       workerLabel: m.workerLabel,
       createdAt: m.createdAt,
@@ -460,12 +533,14 @@ export function workerHandleOf(attempt: {
   rexWindowId?: string;
   rexBlockId?: string;
   rexWorkerLabel?: string;
+  rexHost?: string;
 }): WorkerHandle | null {
   const runtime = attemptRuntime(attempt);
   if (runtime === "rex") {
     if (!attempt.rexBlockId) return null;
     return {
       runtime,
+      server: attempt.rexHost,
       id: attempt.rexBlockId,
       surfaceId: attempt.rexSessionId,
       paneId: attempt.rexBlockId,
