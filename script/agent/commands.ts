@@ -12,7 +12,7 @@ import { readFileSync } from "node:fs";;
 import { join } from "node:path";;
 import { getPrimaryQuotaScope, loadCatalog } from "./catalog.ts";;
 import { buildFallbackCatalog, listFallbackProfiles, loadCatalogAttestations, mergeAttestations, parseFallbackProfile, resolveFallbackProfile, renderFallbackResolution, seedAttestationsFromCatalog } from "./fallback.ts";;
-import { ContractError, parseTomlTable, redactJson, splitRouteKey } from "./contract.ts";;
+import { ContractError, DEFAULT_MAX_EVIDENCE_AGE_MS, parseTomlTable, redactJson, splitRouteKey } from "./contract.ts";;
 import { routeDefaultModel, type Config, type Harness, type Provider, type Route } from "./config.ts";;
 import { AgentError, EXIT_RUNTIME, EXIT_USAGE } from "./errors.ts";;
 import { finalize, launchArgv, needsInjection, runInherited, startViaWithSecrets } from "./exec.ts";;
@@ -303,6 +303,111 @@ export function cmdCheck(config: Config): number {
       `${Object.keys(config.routes).length} routes, ` +
       `${profileCount} fallback profiles)`
   );
+  return 0;
+}
+
+/**
+ * `agent attest status [--json]`: report every fallback candidate's current
+ * attestation state without executing providers. This is the read-only side of
+ * the weekly renewal loop: stale/unknown entries identify exactly which
+ * route+model pairs need a fresh measured E2E before they can be verified.
+ */
+export function cmdAttestStatus(config: Config, json: boolean): number {
+  let parsedToml: Record<string, unknown>;
+  try {
+    parsedToml = parseTomlTable(readFileSync(config.path, "utf8"), config.path);
+  } catch (error) {
+    if (error instanceof ContractError) throw new AgentError(error.message, EXIT_USAGE);
+    throw error;
+  }
+  let catalogFacts;
+  try {
+    catalogFacts = loadCatalog(config.path);
+  } catch (error) {
+    if (error instanceof ContractError) throw new AgentError(error.message, EXIT_RUNTIME);
+    throw error;
+  }
+  const catalogLike = buildFallbackCatalog(config, catalogFacts);
+  const attestationMap = mergeAttestations(
+    seedAttestationsFromCatalog(catalogFacts),
+    loadCatalogAttestations(),
+  );
+  let profileIds: string[];
+  try {
+    profileIds = listFallbackProfiles(parsedToml);
+  } catch (error) {
+    if (error instanceof ContractError) throw new AgentError(error.message, EXIT_USAGE);
+    throw error;
+  }
+  const rows: Array<Record<string, unknown>> = [];
+  for (const id of profileIds) {
+    let profile;
+    try {
+      profile = parseFallbackProfile(parsedToml, id);
+    } catch (error) {
+      if (error instanceof ContractError) throw new AgentError(error.message, EXIT_USAGE);
+      throw error;
+    }
+    if (profile === null) continue;
+    let resolution;
+    try {
+      resolution = resolveFallbackProfile(
+        profile,
+        catalogLike,
+        attestationMap,
+        getPrimaryQuotaScope(catalogFacts, profile.primaryRoute),
+      );
+    } catch (error) {
+      if (error instanceof ContractError) throw new AgentError(error.message, EXIT_RUNTIME);
+      throw error;
+    }
+    const usable = new Set(
+      resolution.usable.map((u) => `${u.candidate.route}#${u.candidate.model}`),
+    );
+    for (const candidate of profile.candidates) {
+      const key = `${candidate.route}#${candidate.model}`;
+      const att = attestationMap.get(key);
+      const value = att?.value;
+      const valueStatus =
+        typeof value === "object" && value !== null && typeof value.status === "string"
+          ? value.status
+          : null;
+      const rejected = resolution.rejected.find(
+        (r) => r.candidate?.route === candidate.route && r.candidate.model === candidate.model,
+      );
+      rows.push({
+        profile: profile.id,
+        route: candidate.route,
+        model: candidate.model,
+        usable: usable.has(key),
+        reason: rejected?.reason ?? null,
+        status: valueStatus ?? att?.status ?? "absent",
+        provenance: (typeof value === "object" && value !== null ? value.provenance : null) ?? att?.provenance ?? null,
+        evidence: (typeof value === "object" && value !== null ? value.evidence : null) ?? att?.evidence ?? null,
+      });
+    }
+  }
+  const generatedAt = new Date().toISOString();
+  if (json) {
+    console.log(redactJson({
+      generatedAt,
+      maxEvidenceAgeMs: DEFAULT_MAX_EVIDENCE_AGE_MS,
+      candidates: rows,
+    }));
+    return 0;
+  }
+  console.log(
+    `attestation status ${generatedAt} (max evidence age ${Math.round(DEFAULT_MAX_EVIDENCE_AGE_MS / 86400000)}d)`,
+  );
+  for (const row of rows) {
+    const evidence = row.evidence as { at?: string; source?: string; sha?: string } | null;
+    console.log(
+      `${String(row.profile)} ${String(row.route)}/${String(row.model)}: ` +
+        `${row.usable ? "usable" : String(row.reason ?? "unusable")} ` +
+        `status=${String(row.status)} evidence=${evidence?.at ?? "none"} ` +
+        `source=${evidence?.source ?? "none"} sha=${evidence?.sha ?? "none"}`,
+    );
+  }
   return 0;
 }
 

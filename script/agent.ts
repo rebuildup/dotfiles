@@ -50,6 +50,7 @@ import { parseArgs } from "./agent/args";
 import { cmdExec } from "./agent/exec";
 import { usageText } from "./agent/help";
 import {
+  cmdAttestStatus,
   cmdCheck,
   cmdFallback,
   cmdGuide,
@@ -109,7 +110,7 @@ async function main(argv: string[]): Promise<number> {
   const config = loadConfig();
   const first = argv[0];
   if (
-    !["help", "--help", "-h", "--version", "-V", "list", "check", "models", "shortcuts"].includes(first) &&
+    !["help", "--help", "-h", "--version", "-V", "list", "check", "models", "shortcuts", "attest"].includes(first) &&
     !(first in config.harnesses) &&
     shortcutMap(config)[first]
   ) {
@@ -143,6 +144,9 @@ async function main(argv: string[]): Promise<number> {
   }
   if (action[0] === "check") {
     return cmdCheck(config);
+  }
+  if (action[0] === "attest") {
+    return cmdAttestStatus(config, action[2]);
   }
   if (action[0] === "models") {
     return cmdModels(config, action[1]);

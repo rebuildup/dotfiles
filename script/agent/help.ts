@@ -643,6 +643,7 @@ export function buildHelpData(usage: string): HelpData {
       { name: "models <provider>", summary: "credential names and models of a provider" },
       { name: "shortcuts", summary: "list/check/create/remove shortcut entry points" },
       { name: "check", summary: "validate config/agents.toml" },
+      { name: "attest status", summary: "report fallback attestation freshness without provider calls" },
       { name: "guide [topic]", summary: "progressive-disclosure guide (see --json)" },
       { name: "routes", summary: "route table with catalog facts (see --json)" },
     ],
@@ -667,6 +668,7 @@ usage:
   agent models <provider>
   agent shortcuts [list|check|create|remove]
   agent check
+  agent attest status [--json]
   agent guide [topic]
   agent routes [--json]
   agent fallback <profile-id> [--json]
@@ -694,6 +696,9 @@ subcommands:
   agent shortcuts remove     remove only the entries that point at this
                              launcher; other files are left untouched
   agent check                validate config/agents.toml (used by CI)
+  agent attest status        report fallback attestation freshness for every
+                             configured candidate; --json for machine-readable
+                             renewal status (no provider calls)
   agent guide [topic]        progressive disclosure: routes, status, limits,
                              distributed, recovery, quality, misfire
   agent routes               route table with catalog facts (quota scopes,

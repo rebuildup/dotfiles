@@ -202,6 +202,7 @@ export type Action =
   | ["native", string, string[]]
   | ["run", string, string, string | null, string[]]
   | ["fallback", string, boolean]  // profile-id, json
+  | ["attest", "status", boolean]  // renewal status report, json
   | ["review", string[]]           // `agent review ...` tokens after the verb
   | TaskAction
 export function parseArgs(argv: string[]): Action {
@@ -259,6 +260,17 @@ export function parseArgs(argv: string[]): Action {
     // `agent review run|run-file ...` — parsed by cmdReview; kept out of the
     // harness/provider grammar so 'review' is never mistaken for a harness.
     return ["review", argv.slice(1)];
+  }
+  if (head === "attest") {
+    if (argv[1] !== "status") {
+      throw new AgentError("usage: agent attest status [--json]");
+    }
+    let json = false;
+    for (let i = 2; i < argv.length; i++) {
+      if (argv[i] === "--json") json = true;
+      else throw new AgentError(`unexpected argument '${argv[i]}'; usage: agent attest status [--json]`);
+    }
+    return ["attest", "status", json];
   }
   if (head === "fallback") {
     if (argv.length < 2) {
