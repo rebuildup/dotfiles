@@ -1,0 +1,56 @@
+name: Attestation renewal
+
+on:
+  schedule:
+    # Weekly reminder only: this workflow never calls providers or uses credentials.
+    - cron: '23 1 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: '1.4.3'
+      - name: Install dev dependencies
+        run: bun install --frozen-lockfile
+      - name: Report fallback attestation state
+        run: |
+          bun script/agent.ts attest status --json > attest-status.json
+          cat attest-status.json
+      - name: Remind when measured evidence needs renewal
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          count=$(jq '[.candidates[] | select(.usable == false and (.reason == "attestation-stale" or .reason == "attestation-unknown"))] | length' attest-status.json)
+          if [ "$count" -eq 0 ]; then
+            echo "No stale/unknown fallback attestation evidence."
+            exit 0
+          fi
+          summary=$(jq -r '.candidates[] | select(.usable == false and (.reason == "attestation-stale" or .reason == "attestation-unknown")) | "- `\(.profile)` `\(.route)/\(.model)` — \(.reason), evidence=\(.evidence.at // "none")"' attest-status.json)
+          body=$(cat <<EOF
+          Weekly attestation renewal reminder (#217).
+
+          The read-only report found $count fallback candidate(s) whose measured E2E evidence is stale or absent:
+
+          $summary
+
+          Renewal procedure: re-run the real route/model probe (`agent task run` for omp routes or the harness-native run/print path for opencode/claude), confirm tool-call/file effects on disk, then update only the measured \`catalog.routes.*.e2e\` entries with the new \`at\`, \`sha\`, and note. Do not mark unverified routes verified-live; do not extend TTL or weaken checks. \`agent attest status --json\` is the read-only status command; this workflow never calls providers or uses credentials.
+          EOF
+          )
+          existing=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search 'in:title "Attestation renewal due"' --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" --body "$body"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "Attestation renewal due" --body "$body"
+          fi

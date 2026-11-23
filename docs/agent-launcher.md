@@ -361,6 +361,22 @@ Any present restriction blocks; only an explicit `unknown` status is treated as
 "no fact". A route with no committed evidence stays `attestation-unknown` and is
 not usable.
 
+### Attestation renewal
+
+`agent attest status [--json]` is the read-only renewal report: it lists every
+fallback candidate's route/model, usable verdict, rejection reason, attestation
+status/provenance, and evidence timestamp/source/SHA without calling a provider
+or reading credentials. The scheduled **Attestation renewal** workflow runs the
+same report weekly and opens or comments on an issue only when a candidate is
+`attestation-stale` or `attestation-unknown`.
+
+Renewal is deliberately manual and measured: run the real route/model probe,
+confirm the tool/file effect on disk, then update only that route/model's
+committed `catalog.routes.*.e2e` evidence (`at`, `sha`, `note`, and the observed
+`tool_call` result). Do not copy another model's evidence, do not mark an
+unverified route `verified-live`, and do not extend `DEFAULT_MAX_EVIDENCE_AGE_MS`
+or weaken freshness checks to avoid renewal.
+
 ## Route coverage notes
 
 `claude.logfare` joins `opencode.logfare`: Logfare serves both an

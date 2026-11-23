@@ -457,6 +457,27 @@ test(
 );
 
 test(
+  "test_attest_status_reports_candidates_without_provider_calls",
+  withFixture((fixture) => {
+    const result = fixture.run(["attest", "status", "--json"], { config: REAL_CONFIG });
+    check(result.exitCode === 0, result.stderr.toString());
+    const report = JSON.parse(result.stdout.toString()) as {
+      candidates: Array<{ profile: string; route: string; model: string; usable: boolean; reason: string | null; evidence: { at?: string } | null }>;
+      maxEvidenceAgeMs: number;
+    };
+    check(report.candidates.length > 0, "attest status must list fallback candidates");
+    check(report.maxEvidenceAgeMs === 7 * 24 * 60 * 60 * 1000, "freshness window changed unexpectedly");
+    check(
+      report.candidates.every((c) => typeof c.profile === "string" && typeof c.route === "string" && typeof c.model === "string"),
+      "candidate identity fields missing",
+    );
+    const bad = fixture.run(["attest"], { config: REAL_CONFIG });
+    check(bad.exitCode === 2, "bare attest must exit 2");
+    check(bad.stderr.toString().includes("agent attest status"), bad.stderr.toString());
+  }),
+);
+
+test(
   "test_check_validates_fallback_profiles",
   withFixture((fixture) => {
     const header = `
