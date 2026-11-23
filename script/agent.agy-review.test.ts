@@ -279,6 +279,24 @@ describe("runLocal pipeline (stub agy)", () => {
     expect(existsSync(join(result.isolation.workdir, "inputs", "00-shot.png"))).toBe(true);
   });
 
+  it("recovers the verdict when the response duplicates the JSON object", async () => {
+    // Observed with claude-sonnet-5-5-high: agy returns two complete verdict
+    // objects concatenated; the last one is the final answer (#227).
+    const dupResponse = [
+      JSON.stringify({ verdict: "approve", summary: "draft", findings: [] }),
+      JSON.stringify({
+        verdict: "request-changes",
+        summary: "final",
+        findings: [{ severity: "minor", description: "x", location: "top-left" }],
+      }),
+    ].join("\n");
+    const dup = JSON.stringify({ status: "SUCCESS", response: dupResponse, denied_actions: [] });
+    const stub = makeStub("dup.sh", `cat <<'EOF'\n${dup}\nEOF`);
+    const result = await runAgyReview({ ...base(), agyBin: stub });
+    expect(result.classification).toBe("review-completed");
+    expect(result.verdict).toMatchObject({ verdict: "request-changes", summary: "final" });
+  });
+
   it("readonly-violation when the model hits deny rules", async () => {
     const denied = JSON.stringify({
       status: "SUCCESS",
