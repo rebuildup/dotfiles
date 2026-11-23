@@ -272,9 +272,15 @@ export function parseFallbackProfile(
 ): FallbackProfile | null {
   // Bun.TOML.parse returns nested structure: { fallback_profile: { "omp-mistral-quota": {...} } }
   const fallbackSection = toml.fallback_profile;
-  if (!isPlainObject(fallbackSection)) return null;
+  if (fallbackSection === undefined) return null;
+  if (!isPlainObject(fallbackSection)) {
+    throw new ContractError("schema", "fallback_profile: expected table");
+  }
   const table = fallbackSection[profileId];
-  if (!isPlainObject(table)) return null;
+  if (table === undefined) return null;
+  if (!isPlainObject(table)) {
+    throw new ContractError("schema", `fallback_profile.${profileId}: expected table`);
+  }
 
   const t = table;
   const key = `fallback_profile.${profileId}`;
@@ -353,7 +359,10 @@ export function parseFallbackProfile(
  */
 export function listFallbackProfiles(toml: Record<string, unknown>): string[] {
   const fallbackSection = toml.fallback_profile;
-  if (!isPlainObject(fallbackSection)) return [];
+  if (fallbackSection === undefined) return [];
+  if (!isPlainObject(fallbackSection)) {
+    throw new ContractError("schema", "fallback_profile: expected table");
+  }
   return Object.keys(fallbackSection).sort();
 }
 

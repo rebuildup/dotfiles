@@ -331,6 +331,11 @@ rejects a candidate when:
   profile/global cap (`spend-cap-invalid` / `spend-cap-exceeded`). A
   `global_max_spend = 0` profile admits only candidates that cannot bill at
   all;
+- for billable candidates, `max_spend` is only the operator-declared ceiling
+  used by admission arithmetic. The resolver does not estimate task cost or
+  measure provider spend, so a positive budget is not a spending guarantee;
+  the account-side limit remains the only hard stop where the provider offers
+  one;
 - the candidate's *effective* scope equals the primary's
   (`quota-exhausted-scope`) — e.g. two models on the *same* Kilo account are
   not fresh capacity — or its scope is not catalogued (`quota-scope-unknown`).

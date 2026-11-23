@@ -232,6 +232,18 @@ describe("parseFallbackProfile", () => {
     expect(profile).toBeNull();
   });
 
+  it("rejects a present non-table profile instead of treating it as absent", () => {
+    const badToml = { fallback_profile: { bad: "not-a-table" } };
+    expect(() => parseFallbackProfile(badToml, "bad")).toThrow(ContractError);
+    expect(() => listFallbackProfiles(badToml)).not.toThrow();
+  });
+
+  it("rejects a non-table fallback_profile section", () => {
+    const badToml = { fallback_profile: "not-a-table" };
+    expect(() => parseFallbackProfile(badToml, "bad")).toThrow(ContractError);
+    expect(() => listFallbackProfiles(badToml)).toThrow(ContractError);
+  });
+
   it("rejects mismatched id", () => {
     const badToml = {
       fallback_profile: {
