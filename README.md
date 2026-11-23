@@ -247,11 +247,13 @@ The current common Git baseline includes:
 - global ignore via `~/.config/git/ignore`
 - machine/user-local `~/.gitconfig.local`
 
-The editor baseline is shared between Vim and Neovim:
+The editor baseline is shared between Vim and Neovim. Each OS has only a thin
+entry point; the configuration itself lives once under `home/vimfiles/`:
 
-- `~/vimfiles/shared/base.vim` — the single source of truth for both editors (encoding, `~/.cache/vim` backup/swap/undo, display, folding, search, indent, statusline, `list`, window/tab/normal/insert/visual mappings, transparent background). Sourced by Vim's `_vimrc` and by Neovim's `init.lua`.
+- `~/vimfiles/shared/base.vim` — the single source of truth for both editors (encoding, `~/.cache/vim` backup/swap/undo, display, folding, search, indent, statusline, `list`, window/tab/normal/insert/visual mappings, transparent background).
 - `~/vimfiles/keymap/onishi.vim` — 大西配列 key placement; sourced last from `base.vim` so it overrides the defaults above.
-- `%LOCALAPPDATA%\Programs\Vim\_vimrc` and `%LOCALAPPDATA%\nvim\` (Neovim config, lockfiles, `scripts/`, `snippets/`) mirror their real Windows locations under `home/AppData/Local/` so neither editor needs an environment variable to find its config.
+- `~/vimfiles/nvim/init.lua` — the canonical Neovim config. `home/.config/nvim/init.lua` (POSIX) and `home/AppData/Local/nvim/init.lua` (Windows) are byte-identical thin loaders of that file.
+- Entry points: `home/.vimrc` → `~/.vimrc` on macOS/WSL; `%LOCALAPPDATA%\Programs\Vim\_vimrc` and `%LOCALAPPDATA%\nvim\init.lua` at their real Windows locations via `home/AppData/Local/`. `script/link` skips `home/AppData/` on POSIX and `script/link.ps1` skips `home/.vimrc` / `home/.config/nvim/` on Windows; skipped sources are never deleted.
 
 `set background=transparent` is rejected with E474 by both Vim and Neovim, so transparency is applied as `guibg=NONE` on `Normal` / `NormalNC` / `SignColumn` / `EndOfBuffer`, re-applied on `ColorScheme`.
 

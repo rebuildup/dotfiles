@@ -21,6 +21,16 @@ managed_is_composer_owned() {
   return 1
 }
 
+# home/AppData mirrors %LOCALAPPDATA% for Windows-native editors. POSIX link/check
+# must never create ~/AppData; the Windows adapter (script/link.ps1) owns those
+# entries. Skipped sources are never deleted, so an older POSIX link stays put.
+managed_is_platform_owned() {
+  case "$1" in
+    AppData/*) return 0 ;;
+  esac
+  return 1
+}
+
 # Top-level unit names discovered by managed_sources; matched exactly, never
 # word-split or substring-matched (names may contain spaces).
 MANAGED_UNIT_NAMES=()
@@ -75,6 +85,7 @@ managed_sources() {
     first="${relative%%/*}"
     managed_is_unit_name "$first" && continue
     managed_is_composer_owned "$relative" && continue
+    managed_is_platform_owned "$relative" && continue
     printf '%s\0' "$source"
   done < <(find "$source_root" \( -type f -o -type l \) -print0)
 }
