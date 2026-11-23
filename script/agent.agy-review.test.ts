@@ -10,15 +10,18 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "bun:test";
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync, rmSync, chmodSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync, rmSync, chmodSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  acquireReviewLock,
   buildReviewPrompt,
   buildSeatbeltProfile,
   countPermissionErrors,
+  minQuotaFraction,
   parseAgyEnvelope,
   parseAgyQuota,
+  releaseReviewLock,
   reviewEnv,
   runAgyReview,
   runAgyReviewFile,
@@ -188,6 +191,56 @@ describe("envelope/quota parsing", () => {
       countPermissionErrors('tool error: permission check failed for write_file "/x"')
     ).toBe(1);
   });
+
+  it("minQuotaFraction takes the worst bucket and fails closed on unknown", () => {
+    expect(minQuotaFraction({ buckets: [{ remainingFraction: 0.5 }, { remainingFraction: 0.9 }] })).toBe(0.5);
+    expect(minQuotaFraction({ buckets: [{ remainingFraction: null }] })).toBeNull();
+    expect(minQuotaFraction({ error: "x" })).toBeNull();
+    expect(minQuotaFraction(null)).toBeNull();
+  });
+
+  it("minQuotaFraction scopes buckets to the model family when identifiable", () => {
+    const quota = {
+      buckets: [
+        { group: "Gemini Models", remainingFraction: 0.9 },
+        { group: "Claude and GPT models", remainingFraction: 0.05 },
+        { group: "Gemini 4 Argon", remainingFraction: 0.8 },
+      ],
+    };
+    expect(minQuotaFraction(quota)).toBe(0.05);
+    expect(minQuotaFraction(quota, "gemini-3-pro")).toBe(0.8);
+    expect(minQuotaFraction(quota, "claude-sonnet-4-5")).toBe(0.05);
+    // Unrecognized model id never narrows the gate.
+    expect(minQuotaFraction(quota, "unknown-model-x")).toBe(0.05);
+  });
+});
+
+describe("single-flight lock (#221)", () => {
+  it("second acquire is refused while a fresh lock is held; release frees it", () => {
+    const lockDir = join(stateDir, "agy-review");
+    mkdirSync(lockDir, { recursive: true });
+    // Ensure no leftover lock from earlier tests.
+    try { unlinkSync(join(lockDir, ".single-flight.lock")); } catch {}
+    const p1 = acquireReviewLock("run-a");
+    expect(p1).not.toBeNull();
+    expect(acquireReviewLock("run-b")).toBeNull();
+    releaseReviewLock(p1!, "run-a");
+    expect(existsSync(join(lockDir, ".single-flight.lock"))).toBe(false);
+    const p2 = acquireReviewLock("run-b");
+    expect(p2).not.toBeNull();
+    releaseReviewLock(p2!, "run-b");
+  });
+
+  it("a foreign lock is not released by another id", () => {
+    const lockDir = join(stateDir, "agy-review");
+    mkdirSync(lockDir, { recursive: true });
+    const lockPath = join(lockDir, ".single-flight.lock");
+    try { unlinkSync(lockPath); } catch {}
+    writeFileSync(lockPath, JSON.stringify({ id: "other", pid: 1, startedAt: Date.now() }));
+    releaseReviewLock(lockPath, "mine");
+    expect(existsSync(lockPath)).toBe(true);
+    try { unlinkSync(lockPath); } catch {}
+  });
 });
 
 describe("runLocal pipeline (stub agy)", () => {
@@ -311,6 +364,72 @@ describe("run-file (herdr inner path)", () => {
       expect(existsSync(join(workdir, "result.json"))).toBe(true);
     } finally {
       delete process.env.AGY_CLI;
+    }
+  });
+});
+
+describe("pre-flight quota gate and single-flight (#221)", () => {
+  const base = () => ({ images: [img], spec: "review this", skipQuota: true, noOsSandbox: true });
+
+  function quotaStub(pct: string, name: string): string {
+    const quotaEnv = JSON.stringify({
+      status: "SUCCESS",
+      response: `Gemini Models\tWeekly Limit Remaining\t${pct}\t2026-11-29T00:00:00Z`,
+    });
+    return makeStub(name, `if [ "$2" = "/quota" ]; then\ncat <<'QEOF'\n${quotaEnv}\nQEOF\nelse\ncat <<'VEOF'\n${VALID_ENVELOPE}\nVEOF\nfi`);
+  }
+
+  it("quota-exhausted when remaining is below --min-remaining; model is not called", async () => {
+    const stub = quotaStub("30%", "quota-low.sh");
+    const result = await runAgyReview({ ...base(), agyBin: stub, minRemaining: 0.5 });
+    expect(result.classification).toBe("quota-exhausted");
+    expect(result.reasons.join(" ")).toContain("30.0%");
+    expect(result.agy).toBeNull();
+    expect(existsSync(join(result.isolation.workdir, "agy.stdout.log"))).toBe(false);
+  });
+
+  it("proceeds when quota clears the threshold", async () => {
+    const stub = quotaStub("80%", "quota-ok.sh");
+    const result = await runAgyReview({ ...base(), agyBin: stub, minRemaining: 0.5 });
+    expect(result.classification).toBe("review-completed");
+  });
+
+  it("quota gate scopes to the model family when --model is given", async () => {
+    const quotaEnv = JSON.stringify({
+      status: "SUCCESS",
+      response: [
+        "Gemini Models\tWeekly Limit Remaining\t80%\t2026-11-29T00:00:00Z",
+        "Claude and GPT models\tWeekly Limit Remaining\t5%\t2026-11-29T00:00:00Z",
+      ].join("\n"),
+    });
+    const stub = makeStub("quota-scoped.sh", `if [ "$2" = "/quota" ]; then\ncat <<'QEOF'\n${quotaEnv}\nQEOF\nelse\ncat <<'VEOF'\n${VALID_ENVELOPE}\nVEOF\nfi`);
+    const scoped = await runAgyReview({ ...base(), agyBin: stub, minRemaining: 0.5, model: "gemini-3-pro" });
+    expect(scoped.classification).toBe("review-completed");
+    const unscoped = await runAgyReview({ ...base(), agyBin: stub, minRemaining: 0.5 });
+    expect(unscoped.classification).toBe("quota-exhausted");
+  });
+
+  it("fails closed when the quota probe itself fails", async () => {
+    const stub = makeStub("quota-dead.sh", `if [ "$2" = "/quota" ]; then exit 1; else cat <<'VEOF'\n${VALID_ENVELOPE}\nVEOF\nfi`);
+    const result = await runAgyReview({ ...base(), agyBin: stub, minRemaining: 0.1 });
+    expect(result.classification).toBe("quota-exhausted");
+    expect(result.reasons.join(" ")).toContain("unavailable");
+  });
+
+  it("deferred while another review holds the lock; --no-exclusive bypasses", async () => {
+    const lockDir = join(stateDir, "agy-review");
+    mkdirSync(lockDir, { recursive: true });
+    try { unlinkSync(join(lockDir, ".single-flight.lock")); } catch {}
+    const held = acquireReviewLock("held-by-other");
+    expect(held).not.toBeNull();
+    try {
+      const stub = makeStub("ok4.sh", `cat <<'EOF'\n${VALID_ENVELOPE}\nEOF`);
+      const deferred = await runAgyReview({ ...base(), agyBin: stub });
+      expect(deferred.classification).toBe("deferred");
+      const bypass = await runAgyReview({ ...base(), agyBin: stub, exclusive: false });
+      expect(bypass.classification).toBe("review-completed");
+    } finally {
+      releaseReviewLock(held!, "held-by-other");
     }
   });
 });
