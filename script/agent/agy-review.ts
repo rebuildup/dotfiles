@@ -729,6 +729,14 @@ function classify(
   if (run.code !== 0) {
     result.classification = "agy-error";
     reasons.push(`agy exited ${run.code}: ${run.stderr.slice(0, 300)}`);
+    // Check quota exhaustion before auth: agy's 429 payload can contain
+    // tokens (e.g. "unauthorized") that would otherwise misfire the auth
+    // heuristic observed in Issue #226 eval runs.
+    if (/resource_exhausted|quota reached|individual quota|rate.?limit|too many requests|\b429\b/i.test(run.stderr + run.stdout)) {
+      result.classification = "quota-exhausted";
+      reasons.push("agy reported quota exhaustion");
+      return;
+    }
     const auth = /sign in|oauth|unauthorized|401|403/i.test(run.stderr + run.stdout);
     if (auth) {
       result.classification = "auth-required";
