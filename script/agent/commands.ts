@@ -612,7 +612,8 @@ export async function cmdTask(config: Config, action: TaskAction): Promise<numbe
 const REVIEW_USAGE =
   "usage: agent review run --image <path>... --spec <text>|--spec-file <path> " +
   "[--schema-file <path>] [--model <id>] [--out <dir>] [--protect <dir>] " +
-  "[--executor local|herdr] [--timeout <ms>] [--no-quota]";
+  "[--executor local|herdr] [--timeout <ms>] [--no-quota] " +
+  "[--min-remaining <0..1>] [--no-exclusive] | agent review quota";
 
 /**
  * `agent review run|run-file`: single-shot `agy -p` review with layered
@@ -624,6 +625,13 @@ const REVIEW_USAGE =
 export async function cmdReview(args: string[]): Promise<number> {
   const review = await import("./agy-review.ts");
   const sub = args[0];
+  if (sub === "quota") {
+    if (args.length > 1) {
+      throw new AgentError("usage: agent review quota", EXIT_USAGE);
+    }
+    console.log(redactJson(await review.fetchAgyQuota()));
+    return 0;
+  }
   if (sub === "run-file") {
     const workdir = args[1];
     if (!workdir || args.length > 2) {
@@ -649,6 +657,8 @@ export async function cmdReview(args: string[]): Promise<number> {
   let skipQuota = false;
   let noOsSandbox = false;
   let agyBin: string | undefined;
+  let minRemaining: number | undefined;
+  let exclusive: boolean | undefined;
 
   const need = (flag: string, i: number): string => {
     const v = args[i + 1];
@@ -685,6 +695,16 @@ export async function cmdReview(args: string[]): Promise<number> {
       case "--no-quota": skipQuota = true; break;
       case "--no-os-sandbox": noOsSandbox = true; break;
       case "--agy": agyBin = need(t, i); i++; break;
+      case "--min-remaining": {
+        const v = need(t, i); i++;
+        const n = Number(v);
+        if (!Number.isFinite(n) || n < 0 || n > 1) {
+          throw new AgentError(`--min-remaining must be a fraction in [0,1], got '${v}'`, EXIT_USAGE);
+        }
+        minRemaining = n;
+        break;
+      }
+      case "--no-exclusive": exclusive = false; break;
       default:
         throw new AgentError(`unexpected argument '${t}'; ${REVIEW_USAGE}`, EXIT_USAGE);
     }
@@ -708,6 +728,8 @@ export async function cmdReview(args: string[]): Promise<number> {
       skipQuota,
       noOsSandbox,
       agyBin,
+      minRemaining,
+      exclusive,
     });
   } catch (error) {
     if (error instanceof ContractError) {

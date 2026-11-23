@@ -30,6 +30,7 @@ import {
   mkdirSync,
   readFileSync,
   statSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, extname, join, resolve } from "node:path";
@@ -68,7 +69,9 @@ export type ReviewClassification =
   | "timeout"
   | "invalid-output"
   | "readonly-violation"
-  | "executor-error";
+  | "executor-error"
+  | "quota-exhausted"
+  | "deferred";
 
 export interface AgyReviewResult {
   version: string;
@@ -124,6 +127,21 @@ export interface AgyReviewOptions {
   resultFile?: string;
   /** Result id override (Herdr run-file reuses the dispatch id for correlation). */
   id?: string;
+  /**
+   * Pre-flight quota gate (#221): fetch `/quota` before the model call and
+   * refuse with `quota-exhausted` when the minimum remaining fraction across
+   * reported buckets is below this threshold (0..1). Conservative: any
+   * nearly-empty shared window defers the run. Per-model scoping is future
+   * work — the gate does not know which quota group a given --model draws on.
+   */
+  minRemaining?: number;
+  /**
+   * Single-flight lock (#221): serialize reviews through a state-dir
+   * lockfile so concurrent runs cannot consume the same quota window at
+   * once. Default on; a fresh lock yields `deferred`, a stale one (>30min)
+   * is reclaimed. `--no-exclusive` opts out.
+   */
+  exclusive?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -487,9 +505,9 @@ export function parseAgyQuota(stdout: string): { buckets: AgyQuotaBucket[]; raw:
   return null;
 }
 
-export async function fetchAgyQuota(timeoutMs = QUOTA_TIMEOUT_MS): Promise<unknown> {
+export async function fetchAgyQuota(timeoutMs = QUOTA_TIMEOUT_MS, agyOverride?: string): Promise<unknown> {
   try {
-    const run = await spawnAgy(["-p", "/quota", "--output-format", "json", "--print-timeout", "20s"], process.cwd(), timeoutMs, null);
+    const run = await spawnAgy(["-p", "/quota", "--output-format", "json", "--print-timeout", "20s"], process.cwd(), timeoutMs, null, agyOverride);
     if (run.timedOut || run.code !== 0) {
       return { error: run.timedOut ? "quota probe timed out" : `agy exited ${run.code}` };
     }
@@ -497,6 +515,68 @@ export async function fetchAgyQuota(timeoutMs = QUOTA_TIMEOUT_MS): Promise<unkno
     return parsed ?? { error: "unrecognized quota response", stderr: run.stderr.slice(0, 500) };
   } catch (error) {
     return { error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/** Minimum remainingFraction across parsed quota buckets; null when unknown. */
+export function minQuotaFraction(quota: unknown): number | null {
+  if (!isPlainObject(quota) || !Array.isArray(quota["buckets"])) return null;
+  const fracs = (quota["buckets"] as unknown[])
+    .map((b) => (isPlainObject(b) ? b["remainingFraction"] : null))
+    .filter((f): f is number => typeof f === "number" && Number.isFinite(f));
+  return fracs.length > 0 ? Math.min(...fracs) : null;
+}
+
+// ---------------------------------------------------------------------------
+// Single-flight lock (#221): one review at a time per state dir
+// ---------------------------------------------------------------------------
+
+const REVIEW_LOCK_NAME = ".single-flight.lock";
+const REVIEW_LOCK_STALE_MS = 30 * 60 * 1000;
+
+function reviewLockPath(): string {
+  return join(agentStateDir(), "agy-review", REVIEW_LOCK_NAME);
+}
+
+/**
+ * O_EXCL lockfile. Returns the lock path on success, null when a fresh lock
+ * is held. A lock older than REVIEW_LOCK_STALE_MS is treated as abandoned
+ * (crashed run) and reclaimed once.
+ */
+export function acquireReviewLock(id: string): string | null {
+  const path = reviewLockPath();
+  mkdirSync(dirname(path), { recursive: true });
+  const payload = JSON.stringify({ id, pid: process.pid, startedAt: Date.now() });
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      writeFileSync(path, payload, { flag: "wx" });
+      return path;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      let stale = false;
+      try {
+        stale = Date.now() - statSync(path).mtimeMs > REVIEW_LOCK_STALE_MS;
+      } catch {
+        stale = true; // vanished between EEXIST and stat — retry the create
+      }
+      if (!stale) return null;
+      try {
+        unlinkSync(path);
+      } catch {
+        return null;
+      }
+    }
+  }
+  return null;
+}
+
+/** Release only when the lock still belongs to this run. */
+export function releaseReviewLock(path: string, id: string): void {
+  try {
+    const holder = JSON.parse(readFileSync(path, "utf8")) as { id?: string };
+    if (holder.id === id) unlinkSync(path);
+  } catch {
+    // Lock already gone or unreadable — nothing to release.
   }
 }
 
@@ -600,6 +680,11 @@ function classify(
  * inside a Herdr pane — the review contract (schema, isolation, verification)
  * is identical because it is literally the same code path.
  */
+function osSandboxMode(opts: AgyReviewOptions): AgyReviewResult["isolation"]["osSandbox"] {
+  if (process.platform === "darwin") return opts.noOsSandbox ? "disabled" : "seatbelt";
+  return "unsupported";
+}
+
 export async function runAgyReview(opts: AgyReviewOptions): Promise<AgyReviewResult> {
   // ids land in a filesystem path; only well-formed tokens are honored.
   const id = opts.id && /^[A-Za-z0-9][A-Za-z0-9-]{0,63}$/.test(opts.id) ? opts.id : randomUUID();
@@ -607,10 +692,51 @@ export async function runAgyReview(opts: AgyReviewOptions): Promise<AgyReviewRes
   const { spec, schema } = validateReviewInputs(opts);
   const protectPath = opts.protect ? resolve(opts.protect) : null;
 
-  if (executor === "herdr") {
-    return runViaHerdr(opts, id, spec, schema, protectPath);
+  // #221 pre-flight controls wrap BOTH executors: the quota gate and the
+  // single-flight lock live here so `local` and `herdr` share them. The
+  // Herdr inner run-file skips both (the outer dispatch already holds them).
+  const exclusive = opts.exclusive !== false;
+  let lockPath: string | null = null;
+  if (exclusive) {
+    lockPath = acquireReviewLock(id);
+    if (lockPath === null) {
+      const deferred = baseResult(id, prepareWorkdir(id), osSandboxMode(opts), executor, protectPath);
+      deferred.classification = "deferred";
+      deferred.reasons.push("another review holds the single-flight lock; retry later");
+      if (opts.outDir) {
+        mkdirSync(opts.outDir, { recursive: true });
+        writeFileSync(join(opts.outDir, `agy-review-${id}.json`), JSON.stringify(deferred, null, 2) + "\n");
+      }
+      return deferred;
+    }
   }
-  return runLocal(opts, id, spec, schema, protectPath);
+  try {
+    if (opts.minRemaining !== undefined) {
+      const quota = await fetchAgyQuota(QUOTA_TIMEOUT_MS, opts.agyBin);
+      const min = minQuotaFraction(quota);
+      if (min === null || min < opts.minRemaining) {
+        const exhausted = baseResult(id, prepareWorkdir(id), osSandboxMode(opts), executor, protectPath);
+        exhausted.classification = "quota-exhausted";
+        exhausted.quota = quota;
+        exhausted.reasons.push(
+          min === null
+            ? "quota unavailable; gate fails closed"
+            : `min remaining ${(min * 100).toFixed(1)}% below threshold ${(opts.minRemaining * 100).toFixed(1)}%`
+        );
+        if (opts.outDir) {
+          mkdirSync(opts.outDir, { recursive: true });
+          writeFileSync(join(opts.outDir, `agy-review-${id}.json`), JSON.stringify(exhausted, null, 2) + "\n");
+        }
+        return exhausted;
+      }
+    }
+    if (executor === "herdr") {
+      return await runViaHerdr(opts, id, spec, schema, protectPath);
+    }
+    return await runLocal(opts, id, spec, schema, protectPath);
+  } finally {
+    if (lockPath !== null) releaseReviewLock(lockPath, id);
+  }
 }
 
 async function runLocal(
@@ -623,7 +749,7 @@ async function runLocal(
   const workdir = prepareWorkdir(id);
   const home = process.env["HOME"] ?? "";
   const useSeatbelt = process.platform === "darwin" && !opts.noOsSandbox;
-  const osSandbox: AgyReviewResult["isolation"]["osSandbox"] = useSeatbelt ? "seatbelt" : process.platform === "darwin" ? "disabled" : "unsupported";
+  const osSandbox = osSandboxMode(opts);
   const result = baseResult(id, workdir, osSandbox, "local", protectPath);
 
   // 1. Input isolation: copy images into the workdir; the prompt references
@@ -736,7 +862,7 @@ async function runLocal(
 
 async function finishResult(result: AgyReviewResult, opts: AgyReviewOptions): Promise<AgyReviewResult> {
   if (!opts.skipQuota) {
-    result.quota = await fetchAgyQuota();
+    result.quota = await fetchAgyQuota(QUOTA_TIMEOUT_MS, opts.agyBin);
   }
   if (opts.resultFile) {
     mkdirSync(join(opts.resultFile, ".."), { recursive: true });
@@ -782,6 +908,10 @@ export async function runAgyReviewFile(workdir: string): Promise<AgyReviewResult
     executor: "local",
     resultFile: join(workdir, "result.json"),
     id: request.id,
+    // The Herdr outer dispatch already ran the quota gate and holds the
+    // single-flight lock for the whole wait — the inner run must not re-gate
+    // or deadlock on its own lock attempt.
+    exclusive: false,
   });
 }
 

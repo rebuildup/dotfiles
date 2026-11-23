@@ -676,6 +676,8 @@ usage:
   agent task status|reconcile <task-id>
   agent review run --image <p>... --spec <t>|--spec-file <f>
       [--protect <dir>] [--executor local|herdr] [--out <dir>] [--no-quota]
+      [--min-remaining <0..1>] [--no-exclusive]
+  agent review quota
   agent help
 subcommands:
   agent help                 show this help
@@ -712,7 +714,9 @@ subcommands:
                              isolated, read-only-verified workdir; prints a
                              classified result JSON (exit 0 only on
                              review-completed); --executor herdr = same
-                             contract in a Herdr pane (#219)
+                             contract in a Herdr pane; --min-remaining gates
+                             on /quota, single-flight lock is default (#219/#221)
+  agent review quota                   print normalized agy quota buckets
   agent help --json          machine-readable help (quotes this text)
 
 shortcut form:
