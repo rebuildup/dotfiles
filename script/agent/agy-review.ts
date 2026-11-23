@@ -616,6 +616,50 @@ export function releaseReviewLock(path: string, id: string): void {
   }
 }
 
+/**
+ * Extract every complete top-level `{...}` JSON value from `text`, in
+ * order. Tolerates prose/fences/duplicated objects around the payload;
+ * unparseable candidates are skipped.
+ */
+export function extractJsonValues(text: string): unknown[] {
+  const values: unknown[] = [];
+  let i = 0;
+  while (i < text.length) {
+    const start = text.indexOf("{", i);
+    if (start === -1) break;
+    let depth = 0;
+    let inStr = false;
+    let esc = false;
+    let end = -1;
+    for (let j = start; j < text.length; j++) {
+      const c = text[j];
+      if (inStr) {
+        if (esc) esc = false;
+        else if (c === "\\") esc = true;
+        else if (c === '"') inStr = false;
+        continue;
+      }
+      if (c === '"') inStr = true;
+      else if (c === "{") depth++;
+      else if (c === "}") {
+        depth--;
+        if (depth === 0) {
+          end = j;
+          break;
+        }
+      }
+    }
+    if (end === -1) break;
+    try {
+      values.push(JSON.parse(text.slice(start, end + 1)));
+    } catch {
+      // Not a complete JSON object — skip past it.
+    }
+    i = end + 1;
+  }
+  return values;
+}
+
 // ---------------------------------------------------------------------------
 // Orchestration
 // ---------------------------------------------------------------------------
@@ -871,20 +915,23 @@ async function runLocal(
   let verdict: unknown = null;
   let schemaValid = false;
   if (envelope?.response) {
-    try {
-      const parsed = JSON.parse(envelope.response);
+    // Some models (observed: claude-sonnet via agy) emit the verdict object
+    // more than once in one response. Take the LAST complete top-level JSON
+    // value — earlier copies are drafts/duplicates — and keep failing closed
+    // when nothing parses.
+    const candidates = extractJsonValues(envelope.response);
+    const parsed = candidates.length > 0 ? candidates[candidates.length - 1] : null;
+    if (parsed !== null) {
       // Minimal schema check: required keys present with right primitive types.
       // The model-facing --json-schema enforces the full contract; this layer
       // guards against a harness/CLI drift producing plausible-but-wrong JSON.
       if (isPlainObject(schema) && Array.isArray((schema as Record<string, unknown>)["required"])) {
         const required = (schema as Record<string, unknown>)["required"] as string[];
-        schemaValid = required.every((k) => k in parsed);
+        schemaValid = required.every((k) => k in (parsed as Record<string, unknown>));
       } else {
         schemaValid = true;
       }
       verdict = schemaValid ? parsed : null;
-    } catch {
-      schemaValid = false;
     }
   }
   result.verdict = verdict;
