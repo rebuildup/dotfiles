@@ -79,6 +79,9 @@ export interface AgyReviewResult {
   id: string;
   /** Model id passed via --model, or null when agy picked the default. */
   model: string | null;
+  /** Effective model id reported by agy, or null when the CLI does not
+   *  expose it (agy 1.5.14). Never guessed. */
+  resolvedModel: string | null;
   /** SHA-256 of the review spec text — the criteria version actually used. */
   specSha256: string;
   classification: ReviewClassification;
@@ -385,6 +388,7 @@ export function parseAgyEnvelope(stdout: string): {
   numTurns: number | null;
   usage: unknown;
   deniedActions: string[];
+  resolvedModel: string | null;
 } | null {
   let parsed: unknown;
   try {
@@ -404,6 +408,11 @@ export function parseAgyEnvelope(stdout: string): {
     numTurns: num(parsed["num_turns"]),
     usage: parsed["usage"] ?? null,
     deniedActions: Array.isArray(denied) ? denied.filter((d): d is string => typeof d === "string") : [],
+    // Effective model id if the CLI ever reports one; agy 1.5.14 does not,
+    // so this stays null rather than guessing. Check likely key names.
+    resolvedModel: ["resolved_model", "resolvedModel", "model_id", "modelId", "model"]
+      .map((k) => str(parsed[k]))
+      .find((v): v is string => v !== null) ?? null,
   };
 }
 
@@ -701,6 +710,7 @@ function baseResult(id: string, workdir: string, osSandbox: AgyReviewResult["iso
     version: AGY_REVIEW_VERSION,
     id,
     model: meta.model,
+    resolvedModel: null,
     specSha256: meta.specSha256,
     classification: "executor-error",
     verified: false,
@@ -925,6 +935,7 @@ async function runLocal(
 
   // 4. Post-run verification.
   const envelope = parseAgyEnvelope(run.stdout);
+  result.resolvedModel = envelope?.resolvedModel ?? null;
   result.agy = envelope
     ? {
         status: envelope.status,
