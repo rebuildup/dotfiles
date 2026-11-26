@@ -1,12 +1,17 @@
 {
-  "provider": "opencode-go",
-  "model": "mimo-v2.6-flash",
+  "provider": "minimax",
+  "model": "MiniMax-M3.1-Flash",
+  "providers": {
+    "minimax": {
+      "api_key_cmd": "ocr-key minimax"
+    }
+  },
   "custom_providers": {
     "opencode-go": {
       "url": "https://opencode.ai/inference/go/v1",
       "protocol": "openai",
       "model": "mimo-v2.6-flash",
-      "api_key_cmd": "ocr-go-key",
+      "api_key_cmd": "ocr-key opencode-go",
       "extra_headers": {
         "x-opencode-session": "{ocr_session_key}"
       }
