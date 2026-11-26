@@ -1,3 +1,13 @@
 #!/usr/bin/env bash
+# `ocr-key <provider>` — Open Code Review credential bridge shim.
+# Installed into ~/.local/bin by script/link; the implementation lives in
+# the dotfiles repository (script/ocr-key.ts). It resolves the provider's
+# Infisical secret and prints only that key for OCR's api_key_cmd.
 set -euo pipefail
+
+if ! command -v bun >/dev/null 2>&1; then
+  printf 'ocr-key: bun is required (install it via pc-setup / mise)\n' >&2
+  exit 1
+fi
+
 exec bun "$HOME/.dotfiles/script/ocr-key.ts" "$@"
