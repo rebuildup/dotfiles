@@ -6,7 +6,7 @@ home/.claude/statusline-command.sh
 home/.local/bin/agent
 home/.local/bin/agy
 home/.local/bin/devices
-home/.local/bin/ocr-go-key
+home/.local/bin/ocr-key
 script/agent/infisical-key.sh
 script/agent/mimo
 script/agent/minimax
