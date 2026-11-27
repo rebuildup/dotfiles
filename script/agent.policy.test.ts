@@ -90,25 +90,26 @@ describe("policy resolver: real repository (no mocks)", () => {
     expect(factKinds(resolution)).toContain("baseline-pinned");
   });
 
-  test("reports the committed skills lock as floating (unpinned) source", () => {
+  test("reports the committed skills lock as pinned aude-skills source", () => {
     expect(resolution.lockPresent).toBe(true);
-    expect(resolution.lockUnpinned).toBe(true);
+    expect(resolution.lockUnpinned).toBe(false);
     expect(resolution.skills.length).toBeGreaterThan(0);
     for (const skill of resolution.skills) {
-      expect(skill.source).toBe("rebuildup/project-init");
+      expect(skill.source).toBe("rebuildup/aude-skills");
+      expect(skill.lockHash).toMatch(/^[0-9a-f]{64}$/);
     }
-    expect(factKinds(resolution)).toContain("lock-unpinned-source");
-    expect(factKinds(resolution)).toContain("baseline-divergence-risk");
+    expect(resolution.skills.every((skill) => skill.status === "ok")).toBe(true);
+    expect(factKinds(resolution)).toContain("skills-lock-present");
+    expect(factKinds(resolution)).toContain("baseline-pinned");
+    expect(factKinds(resolution)).not.toContain("lock-unpinned-source");
+    expect(factKinds(resolution)).not.toContain("baseline-divergence-risk");
     expect(factKinds(resolution)).not.toContain("project-init-absent");
   });
 
   test("surfaces unresolved consequential decisions and limitations", () => {
-    expect(resolution.unresolvedDecisions.length).toBeGreaterThan(0);
-    expect(
-      resolution.unresolvedDecisions.some((decision) =>
-        decision.includes(BASELINE_SHA.slice(0, 12)),
-      ),
-    ).toBe(true);
+    expect(resolution.unresolvedDecisions).toContain(
+      "quality profile declared by the operating model is not compiled yet",
+    );
     expect(resolution.knownLimitations.length).toBeGreaterThan(0);
   });
 
