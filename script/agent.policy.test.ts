@@ -25,6 +25,12 @@ const BASELINE_SHA = "57fb4a2e5abe6f52e4fd9cb2cb88234496e47d4b";
  * from the documented algorithm, independent of the resolver implementation. */
 const FRESH_SKILL_FOLDER_HASH =
   "0ac5560b3a1b6da13cebb57ca706b8bdb1e2b52ed7a34b21304c09b188d803a6";
+/** skills >= 1.9 (lock version 2) folder hash of a skill directory holding
+ * SKILL.md ("exact locked body\n", CRLF-normalized) and references/note.md
+ * ("note text"), excluding metadata.json. Precomputed independently. */
+const FRESH_SKILL_V2_FOLDER_HASH =
+  "7c805ed1df6b64777404fb6b7a8238a619b375cade4529d42d3c92cd45eab373";
+const AUDE_SKILLS_V0141_SHA = "2ac7951c01cdce3a59dade7eb6434e9b13382cb8";
 
 function factKinds(resolution: PolicyResolution): Set<string> {
   return new Set(resolution.facts.map((fact) => fact.kind));
@@ -40,8 +46,11 @@ function writeFixture(
   writeFileSync(path, content);
 }
 
-function lockJson(entries: Record<string, Record<string, string>>): string {
-  return JSON.stringify({ version: 1, skills: entries }, null, 2);
+function lockJson(
+  entries: Record<string, Record<string, string>>,
+  version = 1,
+): string {
+  return JSON.stringify({ version, skills: entries }, null, 2);
 }
 
 describe("policy resolver: real repository (no mocks)", () => {
@@ -389,6 +398,94 @@ describe("policy resolver: fixture repositories (mocks)", () => {
           decision.includes("quality profile"),
         ),
       ).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("resolves renamed rebuildup/aude-skills baselines alongside legacy project-init baselines", () => {
+    const root = mkdtempSync(join(tmpdir(), "policy-aude-baseline-"));
+    try {
+      writeFixture(
+        root,
+        "organization/profiles/release-driven-solo.md",
+        `## Upstream source\n\n\`rebuildup/aude-skills@v0.14.1\` (\`${AUDE_SKILLS_V0141_SHA}\`) を基準にする。\n`,
+      );
+      writeFixture(
+        root,
+        "skills-lock.json",
+        lockJson(
+          {
+            "fresh-skill": {
+              source: "rebuildup/aude-skills",
+              sourceType: "github",
+              ref: "v0.14.1",
+              commit: AUDE_SKILLS_V0141_SHA,
+              skillPath: "skills/fresh-skill/SKILL.md",
+              computedHash: FRESH_SKILL_V2_FOLDER_HASH,
+            },
+          },
+          2,
+        ),
+      );
+      writeFixture(
+        root,
+        ".agents/skills/fresh-skill/SKILL.md",
+        "exact locked body\r\n",
+      );
+      writeFixture(
+        root,
+        ".agents/skills/fresh-skill/references/note.md",
+        "note text",
+      );
+      writeFixture(
+        root,
+        ".agents/skills/fresh-skill/metadata.json",
+        '{"ignored":true}',
+      );
+      const resolution = resolvePolicy(root);
+      expect(resolution.baseline).toEqual({
+        ref: "v0.14.1",
+        sha: AUDE_SKILLS_V0141_SHA,
+      });
+      expect(resolution.lockUnpinned).toBe(false);
+      expect(resolution.skills[0]?.source).toBe("rebuildup/aude-skills");
+      expect(resolution.skills[0]?.status).toBe("ok");
+      expect(factKinds(resolution)).toContain("baseline-pinned");
+      expect(factKinds(resolution)).not.toContain("baseline-divergence-risk");
+      expect(factKinds(resolution)).not.toContain("skill-hash-mismatch");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("detects hash mismatch under skills-lock.json version 2 for aude-skills", () => {
+    const root = mkdtempSync(join(tmpdir(), "policy-aude-v2-mismatch-"));
+    try {
+      writeFixture(
+        root,
+        "skills-lock.json",
+        lockJson(
+          {
+            "tampered-skill": {
+              source: "rebuildup/aude-skills",
+              sourceType: "github",
+              ref: "v0.14.1",
+              skillPath: "skills/tampered-skill/SKILL.md",
+              computedHash: FRESH_SKILL_V2_FOLDER_HASH,
+            },
+          },
+          2,
+        ),
+      );
+      writeFixture(
+        root,
+        ".agents/skills/tampered-skill/SKILL.md",
+        "tampered body\n",
+      );
+      const resolution = resolvePolicy(root);
+      expect(resolution.skills[0]?.status).toBe("hash-mismatch");
+      expect(factKinds(resolution)).toContain("skill-hash-mismatch");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
