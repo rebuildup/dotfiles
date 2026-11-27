@@ -34,7 +34,7 @@ aude-skills（旧称 project-init）由来の Agent Skills は **project-local**
 
 - fresh clone はコミット済みの `.agents/skills/` と agent links を使う。
 - 明示的な再導入は `mise run skills-bootstrap`。対象 Skill と upstream の版を profile に沿って確認する。
-- 継続更新: `bunx skills@1.7.0 update -p -y`
+- 継続更新: `bunx skills@1.9.1 update -p -y`
 - `skills-lock.json` は `skills` CLI が生成・更新する source/freshness metadata として commit する。手で hash / source entry を捏造しない。
 - upstream-managed Skill 本文は手編集しない。project 固有の refinement / override は別の project-local Skill、adapter、ADR、docs に置き、次回 update で上書きされない構造にする。
 - update 後は Git diff と applicable quality gate を確認し、upstream 更新を無条件に current project policy とみなさない。

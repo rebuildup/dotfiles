@@ -6,12 +6,12 @@ bun = "1.4.2"
 
 [tasks.skills-list]
 description = "List Agent Skills available from rebuildup/aude-skills (formerly rebuildup/project-init)"
-run = "bunx skills@1.7.0 add rebuildup/aude-skills --list"
+run = "bunx skills@1.9.1 add rebuildup/aude-skills --list"
 
 [tasks.skills-bootstrap]
 description = "Reconcile the adopted aude-skills set for the configured agents"
 run = """
-bunx skills@1.7.0 add rebuildup/aude-skills --skill \
+bunx skills@1.9.1 add rebuildup/aude-skills --skill \
   agent-delivery-estimation agent-recovery correctness-assurance design-refinement engineering-decisions \
   github-delivery herdr-runtime interaction-discipline linear-release-control onboarding \
   parallel-orchestration policy-evaluation quality-gate sandbox-runtime secrets-management \
@@ -21,4 +21,4 @@ bunx skills@1.7.0 add rebuildup/aude-skills --skill \
 
 [tasks.skills-update]
 description = "Update tracked project-local Agent Skills non-interactively"
-run = "bunx skills@1.7.0 update -p -y"
+run = "bunx skills@1.9.1 update -p -y"
