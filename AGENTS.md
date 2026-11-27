@@ -18,7 +18,7 @@ This repository manages personal CLI configuration. Preserve these project-local
 - Durable architecture/workflow decisions belong in `docs/adr/`; supporting external research belongs in `docs/research/`.
 - Before presenting a change as ready, run `./script/test`, `./script/test-workflow`, `./script/check-secrets`, and relevant `./script/check` / `./script/secrets-doctor` validation.
 
-Project-wide delivery, authority, evidence, and review rules follow the current `rebuildup/project-init` operating profile.
+Project-wide delivery, authority, evidence, and review rules follow the current `rebuildup/aude-skills` (formerly `rebuildup/project-init`; migration tracking: `rebuildup/aude-skills#212`) operating profile.
 
 
 ## Constitution / operating profile
@@ -30,9 +30,9 @@ Project-wide delivery, authority, evidence, and review rules follow the current 
 
 ## Agent Skills lifecycle
 
-project-init 由来の Agent Skills は **project-local** に管理し、global install を canonical にしない。
+aude-skills（旧称 project-init）由来の Agent Skills は **project-local** に管理し、global install を canonical にしない。
 
-- 初回導入 / 全体 reconcile: `bunx skills@1.7.0 add rebuildup/project-init --skill '*' --agent claude-code opencode codex devin -y`
+- 初回導入 / 全体 reconcile: `bunx skills@1.7.0 add rebuildup/aude-skills --skill '*' --agent claude-code opencode codex devin -y`
 - fresh clone から lock を復元: `bunx skills@1.7.0 experimental_install`
 - 継続更新: `bunx skills@1.7.0 update -p -y`
 - `skills-lock.json` は `skills` CLI が生成・更新する source/freshness metadata として commit する。手で hash / source entry を捏造しない。

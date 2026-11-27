@@ -23,7 +23,13 @@
  */
 
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import {
+  existsSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+} from "node:fs";
 import { join, relative, sep } from "node:path";
 import { errorMessage, isPlainObject } from "./contract";
 
@@ -114,7 +120,7 @@ const QUALITY_PROFILE_PATHS = [
 ];
 
 const BASELINE_RE =
-  /rebuildup\/project-init@([A-Za-z0-9._-]+)`?\s*\(`?([0-9a-f]{40})`?\)/;
+  /rebuildup\/(?:aude-skills|project-init)@([A-Za-z0-9._-]+)`?\s*\(`?([0-9a-f]{40})`?\)/;
 const LANDING_RE = /PR landing method:\s*([^\n`]+)/;
 const MERGE_SETTING_RE =
   /allow_(merge_commit|squash_merge|rebase_merge)=(true|false)/g;
@@ -202,7 +208,7 @@ function collectSkillFiles(
   }
 }
 
-function computeSkillFolderHash(skillDir: string): string {
+function computeSkillFolderHashV1(skillDir: string): string {
   const files: Array<{ relativePath: string; content: Buffer }> = [];
   collectSkillFiles(skillDir, skillDir, files);
   files.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
@@ -214,9 +220,101 @@ function computeSkillFolderHash(skillDir: string): string {
   return hash.digest("hex");
 }
 
+// skills-lock.json version 2 (skills CLI >= 1.9): mirrors hashSkillFiles —
+// excludes metadata.json and cache dirs, resolves symlinks only inside the
+// skill root, normalizes CRLF on non-binary files, sorts paths byte-wise,
+// and frames each entry as `path\0length\0content`.
+const V2_EXCLUDE_FILES = new Set(["metadata.json"]);
+const V2_EXCLUDE_DIRS = new Set([".git", "__pycache__", "__pypackages__"]);
+
+function isV2Excluded(name: string, isDirectory: boolean): boolean {
+  return (
+    V2_EXCLUDE_FILES.has(name) || (isDirectory && V2_EXCLUDE_DIRS.has(name))
+  );
+}
+
+function normalizeV2Content(content: Buffer): Buffer {
+  if (content.includes(0) || !content.includes("\r\n")) return content;
+  return Buffer.from(
+    content.toString("latin1").replaceAll("\r\n", "\n"),
+    "latin1",
+  );
+}
+
+function collectSkillFilesV2(
+  dir: string,
+  prefix: string,
+  rootRealPath: string,
+  results: Array<{ relativePath: string; content: Buffer }>,
+): void {
+  const current = prefix ? join(dir, prefix) : dir;
+  for (const entry of readdirSync(current, { withFileTypes: true })) {
+    if (isV2Excluded(entry.name, entry.isDirectory())) continue;
+    const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+    const full = join(current, entry.name);
+    if (entry.isDirectory()) {
+      collectSkillFilesV2(dir, rel, rootRealPath, results);
+    } else if (entry.isSymbolicLink()) {
+      try {
+        const target = realpathSync(full);
+        if (
+          target !== rootRealPath &&
+          !target.startsWith(`${rootRealPath}${sep}`)
+        ) {
+          continue;
+        }
+        const st = statSync(target);
+        if (st.isDirectory()) {
+          if (isV2Excluded(entry.name, true)) continue;
+          collectSkillFilesV2(dir, rel, rootRealPath, results);
+        } else if (st.isFile()) {
+          results.push({
+            relativePath: rel,
+            content: normalizeV2Content(readFileSync(target)),
+          });
+        }
+      } catch {
+        // Dangling symlink: skipped, matching Skills CLI behavior.
+      }
+    } else if (entry.isFile()) {
+      results.push({
+        relativePath: rel,
+        content: normalizeV2Content(readFileSync(full)),
+      });
+    }
+  }
+}
+
+function computeSkillFolderHashV2(skillDir: string): string {
+  const rootRealPath = realpathSync(skillDir);
+  const files: Array<{ relativePath: string; content: Buffer }> = [];
+  collectSkillFilesV2(skillDir, "", rootRealPath, files);
+  files.sort((a, b) =>
+    Buffer.compare(
+      Buffer.from(a.relativePath, "utf8"),
+      Buffer.from(b.relativePath, "utf8"),
+    ),
+  );
+  const hash = createHash("sha256");
+  for (const file of files) {
+    hash.update(Buffer.from(file.relativePath, "utf8"));
+    hash.update("\0");
+    hash.update(String(file.content.length));
+    hash.update("\0");
+    hash.update(file.content);
+  }
+  return hash.digest("hex");
+}
+
+function computeSkillFolderHash(skillDir: string, lockVersion: number): string {
+  return lockVersion >= 2
+    ? computeSkillFolderHashV2(skillDir)
+    : computeSkillFolderHashV1(skillDir);
+}
+
 function resolveSkills(
   repoRoot: string,
-  lock: { skills: Record<string, LockEntry> } | null,
+  lock: { version: number; skills: Record<string, LockEntry> } | null,
 ): SkillState[] {
   if (!lock) return [];
   return Object.keys(lock.skills)
@@ -235,7 +333,7 @@ function resolveSkills(
             hashMatchesLock: null,
           };
         }
-        const hash = computeSkillFolderHash(path);
+        const hash = computeSkillFolderHash(path, lock.version);
         return {
           layout,
           path: relative(repoRoot, path).split(sep).join("/"),
@@ -307,11 +405,18 @@ function landingFacts(profile: string): PolicyFact[] {
 
 function resolveLock(
   repoRoot: string,
-): { lock: { skills: Record<string, LockEntry> } | null; facts: PolicyFact[] } {
+): {
+  lock: { version: number; skills: Record<string, LockEntry> } | null;
+  facts: PolicyFact[];
+} {
   const read = readIfPresent(repoRoot, LOCK_PATH);
   if (!read.present) return { lock: null, facts: [] };
   try {
     const parsed: unknown = JSON.parse(read.content);
+    const lockVersion =
+      isPlainObject(parsed) && typeof parsed["version"] === "number"
+        ? parsed["version"]
+        : 1;
     const skillsRaw = isPlainObject(parsed) ? parsed["skills"] : undefined;
     if (
       skillsRaw === null ||
@@ -349,7 +454,7 @@ function resolveLock(
         detail: `${LOCK_PATH}: dropped non-object skill entr${dropped.length === 1 ? "y" : "ies"}: ${dropped.join(", ")}`,
       });
     }
-    return { lock: { skills }, facts };
+    return { lock: { version: lockVersion, skills }, facts };
   } catch (error) {
     return {
       lock: null,
@@ -517,7 +622,7 @@ export function resolvePolicy(repoRoot: string): PolicyResolution {
 
   const knownLimitations = [
     "network-free: upstream freshness of floating-source skills and GitHub Issue/PR state are not resolved; only committed local state is read",
-    "skill hash comparison validates installed skill directories against the lock's computedHash using the skills@1.7.0 folder-hash algorithm (locale-sorted relative paths + contents); locale-dependent collation could theoretically differ across environments",
+    "skill hash comparison validates installed skill directories against the lock's computedHash using both v1 (skills@1.7.0 locale-sorted relative paths + contents) and v2 (skills >= 1.9 byte-sorted length-framed hashSkillFiles) folder-hash algorithms; v1 locale-dependent collation could theoretically differ across environments",
     "the landing-policy check is an internal consistency check of the operating model text, not a semantic policy evaluation",
     "this resolver reports facts only; it does not authorize, apply or overwrite policy",
   ];
