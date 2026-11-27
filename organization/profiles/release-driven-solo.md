@@ -147,9 +147,9 @@ explicit user/project decisionとして固定されたrelease scope/version/publ
 - Bun は Skills CLI 用の development prerequisite とする。Bun が application runtime / package manager でない repository でも、既存の project-local `mise` または established bootstrap から利用可能にし、application の native toolchain ownership は変更しない。
 - aude-skills（旧称 project-init）由来 Skills は canonical source `rebuildup/aude-skills` を追跡する（既存 lock の旧 `rebuildup/project-init` 参照は移行期間中リダイレクト互換、次回再導入時に新名へ移行。移行正本: `rebuildup/aude-skills#212`）。上記の `release-0-3-0` は Constitution / Operating Model の reconciliation baseline であり、Skills の freeze/pin ではない。freeze が必要なら ADR で明示する。
 - canonical install layout は `.agents/skills/` と `.claude/skills/`。Codex / OpenCode / Cursor は universal `.agents/skills/` を共有し、Claude Code は `.claude/skills/` を使用する。
-- 初回導入 / scope変更は `bunx skills@1.7.0 add rebuildup/aude-skills --list` で候補を確認し、標準bootstrapは `bunx skills@1.7.0 add rebuildup/aude-skills --skill '*' --agent claude-code --agent codex -y` とする。repositoryに `mise.toml` taskがある場合は `mise run skills-bootstrap` を同じ入口とする。
+- 再導入の入口は `mise run skills-bootstrap`。採用対象を `mise.toml` に列挙し、追加候補は `mise run skills-list` で確認する。浮動依存の再導入では解決された版と内容差分を確認し、組織方針の再採択には T009 の判断を適用する。
 - project-local `skills-lock.json` は source / skill path / content hash の durable metadata として commit する。通常の追従更新は `bunx skills@1.7.0 update -p -y`（または `mise run skills-update`）を使う。
-- current Skills CLI では lock からの復元は `skills experimental_install` を使う（`skills install` は `add` の alias で、lock からの復元には使わない）。ただし fresh clone bootstrap の入口は `mise run skills-bootstrap` とし、lock 復元だけで Claude Code 側の配置を保証しない。
+- fresh clone は Git にコミットした Skill file と agent links を使う。lock の内容と実配置を照合する。`skills experimental_install` は採用済み内容やリンクの再現を保証しない。
 - `--global` は通常運用で使用しない。user-global Skills を repository policy / freshness evidence にしない。
 - project固有 Skill や intentional customization は upstream update で無条件上書きせず、source ownershipを分けてreconcileする。
 

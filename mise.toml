@@ -9,8 +9,15 @@ description = "List Agent Skills available from rebuildup/aude-skills (formerly 
 run = "bunx skills@1.7.0 add rebuildup/aude-skills --list"
 
 [tasks.skills-bootstrap]
-description = "Install aude-skills (formerly project-init) Skills for Claude Code and universal .agents/skills consumers"
-run = "bunx skills@1.7.0 add rebuildup/aude-skills --skill '*' --agent claude-code --agent codex -y"
+description = "Reconcile the adopted aude-skills set for the configured agents"
+run = """
+bunx skills@1.7.0 add rebuildup/aude-skills --skill \
+  agent-delivery-estimation agent-recovery correctness-assurance design-refinement engineering-decisions \
+  github-delivery herdr-runtime interaction-discipline linear-release-control onboarding \
+  parallel-orchestration policy-evaluation quality-gate sandbox-runtime secrets-management \
+  security-audit security-maintenance system-quality worktree-workflow \
+  --agent claude-code --agent codex -y
+"""
 
 [tasks.skills-update]
 description = "Update tracked project-local Agent Skills non-interactively"
