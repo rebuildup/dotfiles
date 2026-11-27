@@ -5,12 +5,12 @@
 bun = "1.4.2"
 
 [tasks.skills-list]
-description = "List Agent Skills available from rebuildup/project-init"
-run = "bunx skills@1.7.0 add rebuildup/project-init --list"
+description = "List Agent Skills available from rebuildup/aude-skills (formerly rebuildup/project-init)"
+run = "bunx skills@1.7.0 add rebuildup/aude-skills --list"
 
 [tasks.skills-bootstrap]
-description = "Install project-init Skills for Claude Code and universal .agents/skills consumers"
-run = "bunx skills@1.7.0 add rebuildup/project-init --skill '*' --agent claude-code --agent codex -y"
+description = "Install aude-skills (formerly project-init) Skills for Claude Code and universal .agents/skills consumers"
+run = "bunx skills@1.7.0 add rebuildup/aude-skills --skill '*' --agent claude-code --agent codex -y"
 
 [tasks.skills-update]
 description = "Update tracked project-local Agent Skills non-interactively"

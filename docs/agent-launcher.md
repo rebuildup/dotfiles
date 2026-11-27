@@ -34,7 +34,7 @@ agent task reconcile <task-id>        # resolve journal UNKNOWNs vs evidence
 | `script/agent/limits.ts` | Failure classification & retry policy (issue #92) |
 | `script/agent/telemetry.ts` | Usage/task efficiency ledger (issue #93) |
 | `script/agent/recommend.ts` | Task-aware route recommendation (issue #94) |
-| `script/agent/policy.ts` | project-init policy resolver (issue #95) |
+| `script/agent/policy.ts` | aude-skills (formerly project-init) policy resolver (issue #95) |
 | `script/agent/preflight.ts` | Execution admission & task classification (issue #96) |
 | `script/agent/machines.ts` | Machine inventory & placement (issue #97) |
 | `script/agent/workspace.ts` | Workspace/runtime leases (issue #98) |
