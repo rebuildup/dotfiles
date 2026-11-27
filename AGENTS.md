@@ -18,7 +18,7 @@ This repository manages personal CLI configuration. Preserve these project-local
 - Durable architecture/workflow decisions belong in `docs/adr/`; supporting external research belongs in `docs/research/`.
 - Before presenting a change as ready, run `./script/test`, `./script/test-workflow`, `./script/check-secrets`, and relevant `./script/check` / `./script/secrets-doctor` validation.
 
-Project-wide delivery, authority, evidence, and review rules follow the current `rebuildup/aude-skills` (formerly `rebuildup/project-init`; migration tracking: `rebuildup/aude-skills#212`) operating profile.
+The [project operating profile](organization/profiles/release-driven-solo.md) defines delivery, authority, evidence, and review. The upstream distribution source is `rebuildup/aude-skills`.
 
 
 ## Constitution / operating profile
@@ -32,8 +32,8 @@ Project-wide delivery, authority, evidence, and review rules follow the current 
 
 aude-skills（旧称 project-init）由来の Agent Skills は **project-local** に管理し、global install を canonical にしない。
 
-- 初回導入 / 全体 reconcile: `bunx skills@1.9.1 add rebuildup/aude-skills --skill '*' --agent claude-code opencode codex devin -y`
-- fresh clone から lock を復元: `bunx skills@1.9.1 experimental_install`
+- fresh clone はコミット済みの `.agents/skills/` と agent links を使う。
+- 明示的な再導入は `mise run skills-bootstrap`。対象 Skill と upstream の版を profile に沿って確認する。
 - 継続更新: `bunx skills@1.9.1 update -p -y`
 - `skills-lock.json` は `skills` CLI が生成・更新する source/freshness metadata として commit する。手で hash / source entry を捏造しない。
 - upstream-managed Skill 本文は手編集しない。project 固有の refinement / override は別の project-local Skill、adapter、ADR、docs に置き、次回 update で上書きされない構造にする。
